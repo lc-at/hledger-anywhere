@@ -1,0 +1,4 @@
+This directory receives `hledger.wasm`, resolved by scripts/fetch-hledger-wasm.sh
+from wasm.lock (a local build in artifacts/, or a pinned URL with a SHA-256
+checksum). The binary itself is gitignored; this file keeps the directory
+present so Trunk's `copy-dir` asset rule has something to copy on a fresh clone.

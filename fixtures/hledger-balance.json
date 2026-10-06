@@ -1,0 +1,290 @@
+[
+  [
+    [
+      "assets:bank:checking",
+      "assets:bank:checking",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": 223475,
+            "decimalPlaces": 2,
+            "floatingPoint": 2234.75
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "assets:bank:savings",
+      "assets:bank:savings",
+      0,
+      [
+        {
+          "acommodity": "EUR",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": 50000,
+            "decimalPlaces": 2,
+            "floatingPoint": 500
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "equity:opening balances",
+      "equity:opening balances",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": -100000,
+            "decimalPlaces": 2,
+            "floatingPoint": -1000
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        },
+        {
+          "acommodity": "EUR",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": -50000,
+            "decimalPlaces": 2,
+            "floatingPoint": -500
+          },
+          "astyle": {
+            "ascommodityside": "R",
+            "ascommodityspaced": true,
+            "asdecimalmark": ".",
+            "asdigitgroups": null,
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "expenses:food:coffee",
+      "expenses:food:coffee",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": 475,
+            "decimalPlaces": 2,
+            "floatingPoint": 4.75
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "expenses:food:groceries",
+      "expenses:food:groceries",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": 4250,
+            "decimalPlaces": 2,
+            "floatingPoint": 42.5
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "expenses:housing:rent",
+      "expenses:housing:rent",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": 120000,
+            "decimalPlaces": 2,
+            "floatingPoint": 1200
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "expenses:misc:books",
+      "expenses:misc:books",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": 1800,
+            "decimalPlaces": 2,
+            "floatingPoint": 18
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ],
+    [
+      "income:salary",
+      "income:salary",
+      0,
+      [
+        {
+          "acommodity": "$",
+          "aprice": null,
+          "aquantity": {
+            "decimalMantissa": -250000,
+            "decimalPlaces": 2,
+            "floatingPoint": -2500
+          },
+          "astyle": {
+            "ascommodityside": "L",
+            "ascommodityspaced": false,
+            "asdecimalmark": ".",
+            "asdigitgroups": [
+              ",",
+              [
+                3
+              ]
+            ],
+            "asprecision": 2,
+            "asrounding": "HardRounding"
+          }
+        }
+      ]
+    ]
+  ],
+  [
+    {
+      "acommodity": "$",
+      "aprice": null,
+      "aquantity": {
+        "decimalMantissa": 0,
+        "decimalPlaces": 2,
+        "floatingPoint": 0
+      },
+      "astyle": {
+        "ascommodityside": "L",
+        "ascommodityspaced": false,
+        "asdecimalmark": ".",
+        "asdigitgroups": [
+          ",",
+          [
+            3
+          ]
+        ],
+        "asprecision": 2,
+        "asrounding": "HardRounding"
+      }
+    },
+    {
+      "acommodity": "EUR",
+      "aprice": null,
+      "aquantity": {
+        "decimalMantissa": 0,
+        "decimalPlaces": 2,
+        "floatingPoint": 0
+      },
+      "astyle": {
+        "ascommodityside": "R",
+        "ascommodityspaced": true,
+        "asdecimalmark": ".",
+        "asdigitgroups": null,
+        "asprecision": 2,
+        "asrounding": "HardRounding"
+      }
+    }
+  ]
+]
+

@@ -1,0 +1,6 @@
+; Included by hledger.journal, to prove that a loaded directory is mounted in
+; the engine's filesystem well enough for `include` directives to resolve.
+
+2024-04-02 * Bookshop
+    expenses:misc:books                $18.00
+    assets:bank:checking

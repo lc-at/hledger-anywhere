@@ -1,0 +1,27 @@
+cabal-version:      2.4
+name:               terminal-size
+version:            0.3.4
+synopsis:           WASI stub: terminal size is unavailable in a browser
+description:
+    A drop-in replacement for the @terminal-size@ package used when building
+    hledger for wasm32-wasi.
+    .
+    The real package determines the terminal window size with an @ioctl@ on a
+    file descriptor. WASI has no such concept, and a browser has no terminal at
+    all, so every entry point here reports "unknown size". hledger treats that
+    as \"use the default report width\", which is the correct browser behaviour.
+    .
+    The version number matches the real @terminal-size@ so that hledger's
+    version bounds are satisfied unchanged.
+    .
+    The module interface mirrors the BSD-3-Clause @terminal-size@ package by
+    Evan Czaplicki and contributors.
+license:            BSD-3-Clause
+build-type:         Simple
+category:           System
+
+library
+    exposed-modules:  System.Console.Terminal.Size
+    build-depends:    base >=4 && <5
+    hs-source-dirs:   .
+    default-language: Haskell2010

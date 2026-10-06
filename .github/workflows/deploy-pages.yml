@@ -1,0 +1,105 @@
+name: Deploy to GitHub Pages
+
+# Builds the client-side app and publishes `dist/` to GitHub Pages.
+#
+# The hledger WASM module is NOT in the repository: it is a ~17 MB binary pinned
+# by URL and SHA-256 in `wasm.lock`, fetched at build time by
+# `scripts/fetch-hledger-wasm.sh`. That keeps the repository small and keeps the
+# artifact reproducible from its checksum, which matters because hledger is
+# GPL-3.0-or-later and its corresponding source has to stay identifiable.
+#
+# Requires, once, in the repository settings:
+#   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+#   Settings -> Pages -> Custom domain: hledger.gru.fi
+# and a DNS CNAME record `hledger` -> `<owner>.github.io`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Pinned to match Trunk.toml and the toolchain the project is tested with.
+  # Trunk 0.22 requires rustc 1.96.1, which is newer than the MSRV this project
+  # targets, so the version is deliberate rather than "latest".
+  TRUNK_VERSION: "0.21.14"
+  TRUNK_TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with the wasm target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm-release
+
+      - name: Install Trunk (pinned, checksum-verified)
+        run: |
+          set -eu
+          base="https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}"
+          curl -sSL -o /tmp/trunk.tar.gz "$base/trunk-${TRUNK_TARGET}.tar.gz"
+          curl -sSL -o /tmp/trunk.sha256 "$base/trunk-${TRUNK_TARGET}.tar.gz.sha256"
+          expected="$(tr -d '[:space:]' < /tmp/trunk.sha256)"
+          actual="$(sha256sum /tmp/trunk.tar.gz | cut -d' ' -f1)"
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Trunk tarball checksum mismatch (expected $expected, got $actual)"
+            exit 1
+          fi
+          mkdir -p .tools/bin
+          tar xzf /tmp/trunk.tar.gz -C .tools/bin trunk
+          echo "$PWD/.tools/bin" >> "$GITHUB_PATH"
+          .tools/bin/trunk --version
+
+      - name: Fetch the pinned hledger WASM artifact
+        # Run explicitly rather than relying on Trunk's pre-build hook, so a
+        # missing or mismatched artifact fails as its own clearly-labelled step.
+        run: sh scripts/fetch-hledger-wasm.sh
+
+      - name: Build
+        run: trunk build --release
+
+      - name: Add Pages metadata
+        # Written here rather than committed, so the domain has one home and the
+        # dotfile cannot be lost to a copy rule that skips hidden files.
+        # `.nojekyll` matters: without it Pages runs the output through Jekyll,
+        # which drops files it considers special.
+        run: |
+          set -eu
+          test -f dist/wasm/hledger.wasm || { echo "::error::hledger.wasm missing from dist"; exit 1; }
+          printf 'hledger.gru.fi\n' > dist/CNAME
+          : > dist/.nojekyll
+          du -sh dist
+          find dist -maxdepth 2 -type f | sort
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

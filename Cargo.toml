@@ -1,0 +1,56 @@
+[package]
+name = "hledger-anywhere"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A client-side, easily extensible hledger analytics platform"
+license = "AGPL-3.0-or-later"
+publish = false
+
+# Browser-only dependencies. Gating them on wasm32 keeps `cargo test` able to
+# compile and run the pure (wasm-free) modules natively: see the module layout
+# in src/main.rs, where every wasm-dependent module is behind the same cfg.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+leptos = { version = "0.8.22", features = ["csr"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlSelectElement",
+    "FileList",
+    "File",
+    "Blob",
+    "Event",
+    "EventTarget",
+    "MouseEvent",
+    "PointerEvent",
+    "CssStyleDeclaration",
+    "DomRect",
+    "DomTokenList",
+    "NodeList",
+    "Performance",
+    "Storage",
+]
+
+# Pure logic, no wasm: journal parsing, money, analytics, report argv,
+# layout model. Natively testable with `cargo test`.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rust_decimal = { version = "1", features = ["serde"] }
+thiserror = "2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

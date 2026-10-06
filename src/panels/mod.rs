@@ -1,0 +1,179 @@
+//! The panel registry.
+//!
+//! This table is the *only* place a panel is registered. The layout tree, the
+//! tab bar, the "add panel" menu, layout persistence validation and the default
+//! layout all read from it, so exposing a new report means adding one entry here
+//! and one module beside it — nothing else needs to learn about it.
+//!
+//! `PANELS` order also drives the default layout: [`Layout::default_with`]
+//! places entries 0-1 in the left column, 2 in the middle, 3 on the right, and
+//! any further entries across the bottom.
+//!
+//! [`Layout::default_with`]: crate::layout::model::Layout::default_with
+
+use leptos::prelude::*;
+
+use crate::hledger::HledgerOutput;
+use crate::layout::model::PanelId;
+use crate::state::{AppState, ReportState};
+
+mod accounts;
+mod balances;
+mod console;
+mod journals;
+mod transactions;
+
+/// One registered panel type.
+pub struct PanelDef {
+    /// Stable key stored in the layout and in persisted JSON. Renaming this
+    /// makes existing panels disappear from a restored layout, which is why
+    /// [`Layout::retain_kinds`] drops unknown kinds rather than rendering them.
+    ///
+    /// [`Layout::retain_kinds`]: crate::layout::model::Layout::retain_kinds
+    pub kind: &'static str,
+    /// Tab label.
+    pub title: &'static str,
+    /// A short glyph for the tab and the add-panel menu.
+    pub icon: &'static str,
+    /// One-line description shown in the add-panel menu.
+    pub summary: &'static str,
+    /// Renders one instance of this panel. A function pointer (not a closure)
+    /// so the registry can stay a `const` table.
+    pub view: fn(PanelId) -> AnyView,
+}
+
+/// Every panel the application knows how to render.
+pub const PANELS: &[PanelDef] = &[
+    PanelDef {
+        kind: "journals",
+        title: "Journals",
+        icon: "🗂",
+        summary: "Load a directory of journal files and pick the main one",
+        view: journals::view,
+    },
+    PanelDef {
+        kind: "accounts",
+        title: "Accounts",
+        icon: "🌳",
+        summary: "Every account name in the journal, as an indented tree",
+        view: accounts::view,
+    },
+    PanelDef {
+        kind: "balances",
+        title: "Balances",
+        icon: "⚖",
+        summary: "Balance report with depth, tree/flat and period options",
+        view: balances::view,
+    },
+    PanelDef {
+        kind: "transactions",
+        title: "Transactions",
+        icon: "📄",
+        summary: "Every transaction with its postings, sortable and paged",
+        view: transactions::view,
+    },
+    PanelDef {
+        kind: "console",
+        title: "Console",
+        icon: "▤",
+        summary: "Engine log: argv, exit codes, timings and raw output",
+        view: console::view,
+    },
+];
+
+/// Look up a panel by kind.
+pub fn def(kind: &str) -> Option<&'static PanelDef> {
+    PANELS.iter().find(|def| def.kind == kind)
+}
+
+/// Every known kind, for validating a restored layout.
+pub fn kinds() -> Vec<&'static str> {
+    PANELS.iter().map(|def| def.kind).collect()
+}
+
+/// Registry order, used to build the default layout.
+pub fn default_kinds() -> Vec<&'static str> {
+    kinds()
+}
+
+/// Tab label for a kind, falling back to the raw key for an unknown panel.
+pub fn title_for(kind: &str) -> String {
+    def(kind)
+        .map(|def| def.title.to_string())
+        .unwrap_or_else(|| kind.to_string())
+}
+
+/// Tab glyph for a kind.
+pub fn icon_for(kind: &str) -> &'static str {
+    def(kind).map(|def| def.icon).unwrap_or("▪")
+}
+
+/// Placeholder for a panel kind that is no longer registered.
+///
+/// [`Layout::retain_kinds`] normally removes these before rendering; this is the
+/// second line of defence so an unknown kind can never produce a blank tab with
+/// no explanation.
+///
+/// [`Layout::retain_kinds`]: crate::layout::model::Layout::retain_kinds
+pub fn unknown_kind(kind: &str) -> AnyView {
+    error_panel(&format!(
+        "This layout refers to a panel that is not registered: {kind}. \
+         Close this tab, or reset the layout."
+    ))
+}
+
+// -- shared panel chrome ----------------------------------------------------
+
+/// A neutral centred message, used for empty and loading states.
+pub(crate) fn message_panel(text: &str) -> AnyView {
+    let text = text.to_string();
+    view! {
+        <div class="panel panel-message">
+            <p>{text}</p>
+        </div>
+    }
+    .into_any()
+}
+
+/// An error state, deliberately visually distinct from "no data".
+pub(crate) fn error_panel(text: &str) -> AnyView {
+    let text = text.to_string();
+    view! {
+        <div class="panel panel-error">
+            <p>{text}</p>
+        </div>
+    }
+    .into_any()
+}
+
+/// Render the state machine every report panel shares.
+///
+/// Keeping this in one place is what stops a panel from quietly rendering an
+/// empty table when the engine actually failed: `Failed` is its own arm, and it
+/// can only be reached from [`crate::state::ReportState::Failed`], which
+/// [`AppState::report_for`] derives from the engine's exit code and stderr.
+///
+/// [`AppState::report_for`]: crate::state::AppState::report_for
+pub(crate) fn report_view<F>(state: AppState, id: PanelId, ready: F) -> AnyView
+where
+    // `Send + Sync` because Leptos type-erases views through `AnyView`, which
+    // requires it; signals are `Send + Sync`, so panels satisfy this naturally.
+    F: Fn(&HledgerOutput) -> AnyView + Send + Sync + 'static,
+{
+    (move || match state.report(id) {
+        ReportState::Idle => message_panel("Load a journal to see this report."),
+        ReportState::Loading => message_panel("Running hledger…"),
+        ReportState::Failed { message, .. } => error_panel(&message),
+        ReportState::Ready(output) => ready(&output),
+    })
+    .into_any()
+}
+
+/// The command line a panel's report used, shown in its header for traceability.
+pub(crate) fn argv_line(state: AppState, id: PanelId) -> AnyView {
+    let text = move || match state.report(id) {
+        ReportState::Ready(output) | ReportState::Failed { output, .. } => output.argv.join(" "),
+        _ => String::new(),
+    };
+    view! { <div class="panel-argv">{text}</div> }.into_any()
+}

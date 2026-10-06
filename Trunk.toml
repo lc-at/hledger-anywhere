@@ -1,0 +1,22 @@
+[build]
+target = "index.html"
+dist = "dist"
+# The hledger WASM module is large; keep asset fingerprinting off so the
+# bridge can reference stable paths like /wasm/hledger.wasm.
+filehash = false
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8080
+open = false
+
+[watch]
+watch = ["src", "assets/css", "assets/js", "index.html"]
+
+# Resolve assets/wasm/hledger.wasm before every build/serve. The script is
+# intentionally non-fatal: without the artifact the app still builds and
+# renders, showing a "hledger.wasm missing" state instead of blank panels.
+[[hooks]]
+stage = "pre_build"
+command = "sh"
+command_arguments = ["scripts/fetch-hledger-wasm.sh"]

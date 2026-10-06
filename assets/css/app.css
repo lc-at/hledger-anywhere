@@ -1,0 +1,769 @@
+/* hledger-anywhere — visual theme.
+ *
+ * The look deliberately follows Golden Layout's default dark theme: near-black
+ * panel bodies, a slightly lighter tab strip, 1px hairline borders, thin gutters
+ * and a blue accent. Everything is driven by the custom properties below, so
+ * restyling the whole application is a single edit.
+ *
+ * Layout mechanism (see src/layout/view.rs for the reasoning): a split is a flex
+ * container, each pane is a `.gl-cell` whose `flex-grow` *is* its share of the
+ * split, and the gutters are fixed-size flex items between them. Nothing here
+ * measures pixels except the drag handler.
+ */
+
+:root {
+  /* Golden Layout-ish palette */
+  --gl-bg: #2b2b2b;
+  --gl-panel-bg: #1e1e1e;
+  --gl-header-bg: #333333;
+  --gl-tabbar-bg: #3a3a3a;
+  --gl-tab-hover-bg: #454545;
+  --gl-border: #111111;
+  --gl-gutter: #1a1a1a;
+  --gl-gutter-hover: #0099ff;
+  --gl-text: #dddddd;
+  --gl-text-dim: #999999;
+  --gl-accent: #0099ff;
+
+  --gl-header-height: 34px;
+  --gl-tabbar-height: 27px;
+  --gl-gutter-size: 5px;
+  --gl-radius: 2px;
+
+  --gl-font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --gl-font-mono: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--gl-bg);
+  color: var(--gl-text);
+  font: var(--gl-font);
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------- shell -- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 var(--gl-header-height);
+  padding: 0 10px;
+  background: var(--gl-header-bg);
+  border-bottom: 1px solid var(--gl-border);
+  user-select: none;
+}
+
+.app-title {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.app-subtitle {
+  color: var(--gl-text-dim);
+  font-size: 12px;
+}
+
+.app-spacer {
+  flex: 1;
+}
+
+.app-menu {
+  position: relative;
+}
+
+/* -------------------------------------------------------------- controls -- */
+
+.gl-btn {
+  padding: 4px 10px;
+  background: #3d3d3d;
+  color: var(--gl-text);
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  font: inherit;
+  cursor: pointer;
+}
+
+.gl-btn:hover {
+  background: var(--gl-tab-hover-bg);
+}
+
+.gl-btn:active {
+  background: #2f2f2f;
+}
+
+.gl-btn:focus-visible {
+  outline: 1px solid var(--gl-accent);
+  outline-offset: 1px;
+}
+
+.gl-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  min-width: 300px;
+  padding: 4px;
+  background: #383838;
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+}
+
+.gl-dropdown-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  padding: 7px 8px;
+  background: none;
+  border: 0;
+  border-radius: var(--gl-radius);
+  color: var(--gl-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gl-dropdown-item:hover {
+  background: var(--gl-accent);
+}
+
+.gl-dropdown-icon {
+  width: 16px;
+  text-align: center;
+  color: var(--gl-text-dim);
+}
+
+.gl-dropdown-item:hover .gl-dropdown-icon {
+  color: #fff;
+}
+
+.gl-dropdown-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.gl-dropdown-title {
+  font-weight: 600;
+}
+
+.gl-dropdown-summary {
+  color: var(--gl-text-dim);
+  font-size: 12px;
+}
+
+.gl-dropdown-item:hover .gl-dropdown-summary {
+  color: #eaf6ff;
+}
+
+/* --------------------------------------------------------- layout tree -- */
+
+.gl-root {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.gl-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.gl-row {
+  flex-direction: row;
+}
+
+.gl-col {
+  flex-direction: column;
+}
+
+/* A pane. `flex-grow` is set inline from the model and *is* the pane's share.
+ * `flex-basis: 0` makes the flex algorithm hand out exactly the space the
+ * gutters leave over, so shares stay honest without measuring anything. */
+.gl-cell {
+  display: flex;
+  flex-grow: 0;
+  flex-shrink: 1;
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* A gutter. Never grows or shrinks, and never inherits a share. */
+.gl-splitter {
+  flex: 0 0 var(--gl-gutter-size);
+  background: var(--gl-gutter);
+  /* Suppress text selection and touch scrolling for the whole gesture. */
+  user-select: none;
+  touch-action: none;
+}
+
+.gl-splitter-row {
+  cursor: col-resize;
+}
+
+.gl-splitter-col {
+  cursor: row-resize;
+}
+
+.gl-splitter:hover,
+.gl-splitter:active {
+  background: var(--gl-gutter-hover);
+}
+
+/* ---------------------------------------------------------------- stack -- */
+
+.gl-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--gl-panel-bg);
+  border: 1px solid var(--gl-border);
+  overflow: hidden;
+}
+
+.gl-tabbar {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 var(--gl-tabbar-height);
+  background: var(--gl-tabbar-bg);
+  border-bottom: 1px solid var(--gl-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  user-select: none;
+}
+
+.gl-tabbar::-webkit-scrollbar {
+  height: 0;
+}
+
+.gl-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 9px;
+  max-width: 220px;
+  border-right: 1px solid var(--gl-border);
+  color: var(--gl-text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  /* Tabs are dragged with the pointer; stop touch scrolling from stealing it. */
+  touch-action: none;
+}
+
+.gl-tab:hover {
+  background: var(--gl-tab-hover-bg);
+  color: var(--gl-text);
+}
+
+.gl-tab-active,
+.gl-tab-active:hover {
+  background: var(--gl-panel-bg);
+  color: var(--gl-text);
+  /* A hairline on top reads as "this tab is connected to the body below". */
+  box-shadow: inset 0 2px 0 var(--gl-accent);
+}
+
+.gl-tab-icon {
+  opacity: 0.85;
+}
+
+.gl-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gl-tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 2px;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.gl-tab:hover .gl-tab-close {
+  opacity: 0.8;
+}
+
+.gl-tab-close:hover {
+  background: #b03030;
+  color: #fff;
+  opacity: 1;
+}
+
+.gl-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---------------------------------------------------------- empty state -- */
+
+.gl-empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+.gl-empty-inner {
+  text-align: center;
+  color: var(--gl-text-dim);
+}
+
+.gl-empty-inner h2 {
+  margin: 0 0 4px;
+  color: var(--gl-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.gl-empty-inner p {
+  margin: 0 0 14px;
+}
+
+.gl-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+/* -------------------------------------------------------------- panels -- */
+
+.panel {
+  padding: 10px 12px;
+}
+
+.panel h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.panel p {
+  margin: 0 0 6px;
+  color: var(--gl-text-dim);
+}
+
+.panel code {
+  padding: 1px 4px;
+  background: #00000055;
+  border-radius: 2px;
+  font: var(--gl-font-mono);
+  color: var(--gl-text);
+}
+
+.panel-hint {
+  font-size: 12px;
+}
+
+.panel-placeholder h3 {
+  color: var(--gl-text);
+}
+
+/* --------------------------------------------------------- panel chrome -- */
+
+.panel {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.panel h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.panel p {
+  margin: 0 0 8px;
+  color: var(--gl-text-dim);
+}
+
+.panel code {
+  padding: 1px 4px;
+  background: #00000055;
+  border-radius: 2px;
+  font: var(--gl-font-mono);
+  color: var(--gl-text);
+}
+
+/* A failed report must never look like "no data". */
+.panel-error {
+  border-left: 2px solid #d05050;
+}
+
+.panel-error p {
+  color: #f0b0b0;
+  white-space: pre-wrap;
+  font: var(--gl-font-mono);
+}
+
+.panel-message p {
+  margin: 0;
+}
+
+.panel-remedy {
+  padding: 8px 10px;
+  background: #3a2f1a;
+  border-left: 2px solid #d0a050;
+  border-radius: var(--gl-radius);
+  color: #f0dcb0;
+}
+
+.panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.panel-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--gl-text-dim);
+}
+
+.panel-controls label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.panel-count {
+  margin-bottom: 6px;
+  color: var(--gl-text-dim);
+  font-size: 12px;
+}
+
+.panel-argv {
+  margin-bottom: 8px;
+  padding: 4px 6px;
+  background: #00000044;
+  border-radius: var(--gl-radius);
+  color: var(--gl-text-dim);
+  font: var(--gl-font-mono);
+  word-break: break-all;
+}
+
+.panel-argv:empty {
+  display: none;
+}
+
+.panel-field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.panel-field label {
+  color: var(--gl-text-dim);
+  font-size: 12px;
+}
+
+.panel-field select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: #262626;
+  color: var(--gl-text);
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  font: var(--gl-font-mono);
+}
+
+.panel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--gl-font-mono);
+}
+
+.panel-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 6px;
+  border-radius: var(--gl-radius);
+}
+
+.panel-list li:hover {
+  background: #ffffff08;
+}
+
+.panel-list-main {
+  color: var(--gl-accent);
+}
+
+.panel-list-meta {
+  color: var(--gl-text-dim);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- tables -- */
+
+.panel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.panel-table th {
+  position: sticky;
+  top: 0;
+  padding: 5px 8px;
+  background: var(--gl-tabbar-bg);
+  border-bottom: 1px solid var(--gl-border);
+  color: var(--gl-text-dim);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.panel-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid #ffffff0a;
+  vertical-align: top;
+}
+
+.panel-table tbody tr:hover {
+  background: #ffffff08;
+}
+
+.panel-table tfoot td {
+  padding-top: 6px;
+  border-top: 1px solid var(--gl-border);
+  font-weight: 600;
+}
+
+.panel-table .num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.panel-table .date,
+.panel-table .status {
+  color: var(--gl-text-dim);
+  white-space: nowrap;
+}
+
+.panel-table .status {
+  color: var(--gl-accent);
+}
+
+/* A zero balance is noise in a balance report; dim it rather than hide it. */
+.panel-row-zero {
+  color: var(--gl-text-dim);
+}
+
+.panel-table .account {
+  font-family: var(--gl-font-mono);
+}
+
+.panel-more {
+  margin: 10px 0 4px;
+  text-align: center;
+}
+
+.account-tree {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--gl-font-mono);
+}
+
+.account-tree li {
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+
+.account-tree li:hover {
+  background: #ffffff08;
+}
+
+/* -------------------------------------------------------------- console -- */
+
+.console-log {
+  max-height: 100%;
+}
+
+.console-entry {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #1a1a1a;
+  border-left: 2px solid #3f7f3f;
+  border-radius: var(--gl-radius);
+}
+
+.console-entry-fail {
+  border-left-color: #d05050;
+}
+
+.console-entry-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.console-status-ok {
+  color: #6fbf6f;
+}
+
+.console-status-fail {
+  color: #e07070;
+}
+
+.console-argv {
+  background: none;
+  color: var(--gl-text);
+  word-break: break-all;
+}
+
+.console-entry-summary {
+  margin-top: 3px;
+  color: var(--gl-text-dim);
+  font-size: 12px;
+}
+
+.console-details {
+  margin-top: 5px;
+}
+
+.console-details summary {
+  color: var(--gl-text-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.console-pre {
+  max-height: 220px;
+  margin: 5px 0 0;
+  padding: 6px;
+  overflow: auto;
+  background: #111;
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  color: var(--gl-text-dim);
+  font: var(--gl-font-mono);
+  white-space: pre-wrap;
+}
+
+.console-pre-err {
+  color: #f0b0b0;
+}
+
+/* ------------------------------------------------------- drop indicator -- */
+
+/* Drawn over the pane a dragged tab is hovering. Fixed positioning, because it
+ * is sized and placed from the pane's viewport rectangle rather than being a
+ * child of it. */
+.gl-drop-indicator {
+  position: fixed;
+  z-index: 50;
+  pointer-events: none;
+  background: rgba(0, 153, 255, 0.16);
+  border: 1px solid var(--gl-accent);
+  border-radius: var(--gl-radius);
+  box-shadow: inset 0 0 12px rgba(0, 153, 255, 0.25);
+}
+
+/* An edge drop splits, so it is shown more emphatically than a merge. */
+.gl-drop-indicator-split {
+  background: rgba(0, 153, 255, 0.26);
+}
+
+/* ------------------------------------------------------------ drag state -- */
+
+/* Tabs read as draggable, and the whole viewport shows the grab cursor while a
+ * drag is in progress so it is obvious the gesture is still live. Both are
+ * applied as classes rather than through reactive state, because re-rendering
+ * the dragged tab would replace the element holding the pointer capture. */
+.gl-tab {
+  cursor: grab;
+}
+
+.gl-tab:active {
+  cursor: grabbing;
+}
+
+.gl-tab-dragging {
+  opacity: 0.55;
+}
+
+html.gl-dragging,
+html.gl-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+/* ---------------------------------------------------------------- badges -- */
+
+.header-chip,
+.engine-badge {
+  padding: 2px 7px;
+  max-width: 340px;
+  overflow: hidden;
+  background: #262626;
+  border: 1px solid var(--gl-border);
+  border-radius: 10px;
+  color: var(--gl-text-dim);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.engine-badge-ready {
+  border-color: #3f7f3f;
+  color: #9fdf9f;
+}
+
+.header-chip-ready {
+  border-color: #3f7f3f;
+}
+
+.engine-badge-error,
+.header-chip-error {
+  border-color: #a04040;
+  color: #f0b0b0;
+}
+
+/* The Console toolbar packs a badge and buttons; keep the badge from stretching. */
+.panel-console .panel-toolbar .engine-badge {
+  flex: 0 1 auto;
+}
+

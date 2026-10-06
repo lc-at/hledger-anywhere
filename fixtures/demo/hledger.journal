@@ -1,0 +1,38 @@
+; Demo journal for hledger-anywhere.
+;
+; This is the journal behind the built-in "Load demo journal" button, and the
+; input for the fixture files in this directory. It is small on purpose but
+; exercises the things the decoder and the panels must get right:
+;
+;   * two commodities with different symbols and styles ($ and EUR)
+;   * an inferred (amount-less) posting inside a multi-commodity transaction
+;   * account names deep enough to make tree/flat reporting interesting
+;   * cleared and pending transaction statuses
+;   * a tag, both bare and with a value
+;   * an include directive, so multi-file journals are covered end to end
+;
+; Keep this file readable: it is documentation as much as test data.
+
+include extra.journal
+
+2024-01-01 * Opening balances
+    assets:bank:checking            $1,000.00
+    assets:bank:savings               500.00 EUR
+    equity:opening balances
+
+2024-02-03 * Grocery Store  ; weekly shop
+    expenses:food:groceries            $42.50
+    assets:bank:checking
+
+2024-02-14 ! Employer
+    ; A pending paycheck: the amount lands later.
+    assets:bank:checking            $2,500.00
+    income:salary
+
+2024-03-01 * Rent
+    expenses:housing:rent           $1,200.00
+    assets:bank:checking
+
+2024-03-15 * Coffee  ; receipt:yes
+    expenses:food:coffee               $4.75
+    assets:bank:checking

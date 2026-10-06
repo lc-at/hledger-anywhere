@@ -1,0 +1,22 @@
+# Build output
+/dist
+/target
+
+# Scratch output from verifying the release build without clobbering /dist
+/dist-release
+
+# Cabal build output for the hledger wasm build
+/dist-newstyle
+
+# Locally installed toolchain (trunk, ghc-wasm-meta)
+/.tools
+
+# Pinned upstream sources and locally built wasm artifacts
+/vendor
+/artifacts
+
+# Fetched hledger WASM binary (see wasm.lock + scripts/fetch-hledger-wasm.sh)
+assets/wasm/*.wasm
+!assets/wasm/.gitkeep
+
+.DS_Store

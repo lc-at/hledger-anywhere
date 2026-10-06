@@ -1,0 +1,36 @@
+# Pinned hledger WASM artifact descriptor.
+#
+# This file is the single source of truth for *which* hledger WASM binary the
+# app runs against. It is read by:
+#   * scripts/fetch-hledger-wasm.sh  — resolves/verifies assets/wasm/hledger.wasm
+#   * build.rs                       — bakes the values in as compile-time env
+#                                      vars, so the UI can report exactly what
+#                                      it is running and whether it matches
+#
+# `flavor` selects how argv is assembled, because the two available artifacts
+# take different command lines:
+#
+#   hledger-cli           the real hledger CLI. argv is
+#                         `hledger -f <journal> <command> [args...]`, supports
+#                         the full report/query surface and `-O json`.
+#                         Built by scripts/build-hledger-wasm.sh.
+#
+#   hledger-wasm-bridge   the interim/fallback artifact from the
+#                         `hledger-wasm@0.1.0` npm package, whose argv is
+#                         `<command> <journal> [args...]`. It exposes only
+#                         accounts/print/balance/aregister/commodities, always
+#                         emits JSON, and accepts no report options.
+#
+# Target state: flavor = "hledger-cli" once the full build succeeds. Until then
+# the interim artifact keeps the pipeline verifiable end to end.
+#
+# NOTE: keys here are read by a small awk parser, so keep the flat
+# `key = "value"` form.
+
+[hledger-wasm]
+flavor = "hledger-wasm-bridge"
+hledger_version = "1.51.99"
+ghc_version = "n/a"
+size = 17653240
+sha256 = "8cd2615e093b7274bf7223aef3548be9ee2fd310d30eaf0e513fb4f663ff223b"
+url = "https://cdn.jsdelivr.net/npm/hledger-wasm@0.1.0/dist/hledger-wasm.wasm"

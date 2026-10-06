@@ -1,0 +1,8 @@
+assets:bank:checking
+assets:bank:savings
+equity:opening balances
+expenses:food:coffee
+expenses:food:groceries
+expenses:housing:rent
+expenses:misc:books
+income:salary

@@ -1,0 +1,334 @@
+# hledger-anywhere
+
+A client-side, easily extensible analytics platform for [hledger](https://hledger.org)
+journals. Everything runs in the browser: there is no server, no upload, and no
+backend. You point it at a directory of journal files and it runs the real
+**hledger CLI compiled to WebAssembly** against them.
+
+![hledger-anywhere showing the demo journal](docs/screenshot.png)
+
+## What works today
+
+- **Load a directory** of journal files from disk (`<input webkitdirectory>`),
+  or the built-in demo journal with one click.
+- **Multi-file journals**: the whole loaded directory is mounted into the
+  engine's filesystem, so `include` directives resolve exactly as they do on the
+  command line.
+- **Main-journal selection**, with a heuristic that prefers the file that
+  includes the others, then conventional names, and finally generates an
+  include-root when the choice is genuinely ambiguous. Any loaded file can be
+  chosen manually.
+- **Reports**: an account tree, a balance report with `--tree`/`--flat` and
+  `--depth` controls, and the full transaction list.
+- **A Console panel** that records every engine invocation — argv, exit code,
+  duration, output sizes and raw output. This is the surface that makes a
+  surprising number traceable to the exact command that produced it.
+- **A Golden-Layout-style shell**: nested row/column splits, tabbed stacks,
+  draggable splitters, per-tab close, an add-panel menu, and a layout that
+  persists to `localStorage`.
+- **Drag-and-drop docking**: drag a tab onto another pane, or onto one of its
+  edges to split against it. The pane under the pointer is highlighted, and an
+  edge drop shows which half the panel will take.
+
+The demo above shows `expenses:misc:books $18.00`, which comes from a *different
+file* reached through an `include` directive — the clearest evidence that the
+engine is reading the user's journal, not a copy of it.
+
+## Quick start
+
+```sh
+# One-time: fetch the pinned hledger WASM artifact (see "The engine" below).
+sh scripts/fetch-hledger-wasm.sh
+
+# Build and serve.
+. scripts/env.sh
+trunk serve            # http://127.0.0.1:8080
+```
+
+`scripts/env.sh` must be sourced before any build command. It puts the
+workspace-local tooling on `PATH` and redirects caches (`CARGO_HOME`,
+`XDG_CACHE_HOME`, `npm_config_cache`) into `.tools/`. Those redirects are what
+let the project build under a restricted filesystem sandbox, and they are
+overridable, so on an ordinary machine your existing caches are used unchanged.
+
+Toolchain: Rust ≥ 1.88 with the `wasm32-unknown-unknown` target, and
+[Trunk](https://trunkrs.dev) 0.21.x. If `trunk` is missing:
+
+```sh
+curl -sSL -o /tmp/trunk.tar.gz \
+  https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz
+tar xzf /tmp/trunk.tar.gz -C .tools/bin trunk
+```
+
+## The engine
+
+hledger is a Haskell program, so "run hledger in the browser" means compiling it
+to `wasm32-wasi` and driving it as a WASI command module. The app does that via a
+**Web Worker**, because `_start()` is synchronous: on the main thread every
+report would freeze the tab.
+
+Three layers, each replaceable on its own:
+
+| Layer | Where | Responsibility |
+|---|---|---|
+| Bridge (JS) | `assets/js/hledger-worker.js`, `assets/js/hledger-wasi.js` | Compile the module once, build the in-memory filesystem, capture raw stdout/stderr, report the real exit code |
+| Boundary (Rust) | `src/hledger/bridge.rs` | Call `window.hledgerWasi` and turn its result into `HledgerOutput` |
+| Engine + argv (Rust) | `src/hledger/mod.rs`, `src/hledger/report.rs` | Describe reports declaratively and build the argv each engine flavor expects |
+
+The published `hledger-wasm` JavaScript bridge is **not** used. It re-fetches and
+re-instantiates the ~18 MB module on every call, and captures output with a
+line-buffered writer that would drop a trailing partial line — which corrupts
+JSON that does not end in a newline.
+
+### Two flavors, one interface
+
+`wasm.lock` records which engine the app targets, and `build.rs` bakes it into
+the binary so the argv dialect can never disagree with the artifact:
+
+| `flavor` | argv | Commands |
+|---|---|---|
+| `hledger-cli` | `hledger -f /data/<journal> <cmd> -O json [args…]` | all, with the full report/query surface |
+| `hledger-wasm-bridge` | `hledger-wasm <cmd> /data/<journal> [args…]` | `accounts`, `print`, `balance`, `aregister`, `commodities` |
+
+The second is the interim artifact from the `hledger-wasm@0.1.0` npm package. It
+is not the hledger CLI: it is a ~78-line Haskell wrapper around `hledger-lib`
+whose `balance` is a flat per-account sum with no tree, periods or queries. It is
+supported so the app stays demonstrable, and `Flavor::supports_report_options`
+lets panels hide options that would otherwise be silently ignored.
+
+### Building the real hledger CLI
+
+```sh
+sh scripts/build-hledger-wasm.sh      # long: toolchain download + a full build
+```
+
+This installs the [`ghc-wasm-meta`](https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta)
+toolchain (GHC 9.12 flavour, matching hledger 1.52.4's `tested-with`), clones the
+pinned hledger tag into `vendor/`, and builds with `hledger-wasm/cabal.project`.
+That project file exists to substitute a local `terminal-size` stub: the real
+package queries the terminal with an `ioctl`, which does not exist under WASI.
+When it finishes, the script prints the values to put back into `wasm.lock` —
+set `flavor = "hledger-cli"` and the new `size`/`sha256`.
+
+#### Current status of that build: blocked, with a known cause
+
+The toolchain installs, hledger 1.52.4 resolves, and ~30 of its ~150
+dependencies build. It then fails on **`basement-0.0.16`**:
+
+```
+cbits/foundation_system.h:57:5: error: "foundation: system: Unknown compiler"
+```
+
+`basement` detects the host OS/architecture with C preprocessor macros and has no
+branch for `wasm32-wasi`. It is reached through
+`hledger` (exe) → `req` → `crypton` → `memory` → `basement`.
+
+Two things are worth knowing, because they explain why this is a small,
+well-scoped problem rather than a mystery:
+
+- The dependency is pulled in by the **`hledger` executable package**, not by
+  `hledger-lib`. `req` and `http-client` are unconditional dependencies of the
+  exe, used for its price-downloading feature. This is exactly why the reference
+  `hledger-wasm` project was able to build: it linked `hledger-lib` only.
+- The failure is in one C header, not in hledger.
+
+The two candidate fixes, in order of preference:
+
+1. **Stub `req`.** Add a local package named `req` exposing only the surface the
+   hledger exe actually uses, exactly as `terminal-size-stub` already does for
+   `terminal-size`. This removes the whole crypton/TLS/memory/basement subtree. A
+   browser has no business downloading prices anyway.
+2. **Patch `basement`.** Vendor it and add a `wasm32-wasi` branch to
+   `foundation_system.h`; its C is otherwise portable.
+
+Until then, `wasm.lock` keeps pointing at the interim
+`flavor = "hledger-wasm-bridge"` artifact, and the app is fully usable — it just
+offers the reduced command set described above.
+
+## Adding a panel
+
+This is the extensibility story, and it is deliberately one step:
+
+1. Add a module under `src/panels/` with `pub fn view(id: PanelId) -> AnyView`.
+2. Add one entry to `PANELS` in `src/panels/mod.rs`.
+
+The layout tree, tab bar, add-panel menu, layout-persistence validation and the
+default layout all read from that table, so nothing else needs to learn about the
+new report. The entry's position also determines where it lands in the default
+layout.
+
+A panel that shows a report gets its state machine for free:
+
+```rust
+Effect::new(move |_| {
+    let _ = state.generation.get();   // re-run when the journal changes
+    let _ = state.refresh.get();      // re-run on Refresh
+    state.report_for(id, ReportSpec::json("incomestatement"));
+});
+
+report_view(state, id, |output| { /* decode output.stdout */ })
+```
+
+`report_view` renders loading, failure and ready states, and a failure can only
+come from the engine's exit code or stderr — so a broken run can never be
+mistaken for an empty journal.
+
+## Architecture notes
+
+The crate is split along a wasm boundary that the compiler enforces:
+
+- **Pure modules** (`journal`, `layout::model`, `hledger::report`,
+  `hledger::mod`) never touch `web_sys`/`js_sys`. They compile for the host and
+  are covered by `cargo test`.
+- **Browser modules** (`app`, `layout::view`, `panels`, `hledger::bridge`,
+  `fsx`, `state`) are behind `cfg(target_arch = "wasm32")`.
+
+Because the wasm-only dependencies are themselves target-gated in `Cargo.toml`,
+`cargo test` builds a small, fast, host-native crate. A `web_sys` import cannot
+silently leak into logic that has to stay testable.
+
+Two design decisions are worth knowing before changing them:
+
+- **A splitter drag never touches the model.** Re-rendering the tree on every
+  pointermove would replace the element that holds the pointer capture and break
+  the gesture, so the drag writes `flex-grow` straight to the two DOM nodes and
+  commits the final delta on pointer-up — and even then *without notifying*, so
+  the tree is not rebuilt to change two numbers. This is why nothing may read
+  `AppState::drag` reactively in a view.
+- **Requesting a report is idempotent.** A panel's effect re-runs whenever the
+  panel is re-rendered, and panels are re-rendered by any layout change, so
+  without a guard resizing a splitter would silently re-run every report in the
+  app. `report_for` records what each panel's result was computed for —
+  journal generation, refresh generation, and the exact report options — and
+  ignores a request it has already satisfied. Anything that invalidates a result
+  (loading a journal, refreshing, changing an option) changes the key.
+- **Docking measures once, not per frame.** A drag snapshots every pane's
+  rectangle when it starts and then does pure arithmetic against that snapshot.
+  Hit-testing by reading the DOM on each pointermove — `elementFromPoint` plus
+  `getBoundingClientRect` — forces a synchronous reflow per frame, because the
+  indicator has just been moved; measured, that was one forced layout per move,
+  which is exactly the lag you feel when a drag cannot keep up with the pointer.
+  The preview is also only written when the target or region actually changes,
+  rather than on every move inside the same zone. `hit_test` and `region_at` are
+  pure and unit-tested.
+- **A drag cannot get stuck.** Pointer capture is the normal way to follow a
+  gesture past the element it started on, but it is not absolute: releasing
+  outside the window or over browser chrome can take the capture with it and
+  strand the drop indicator on screen. Every ending funnels through
+  `AppState::end_tab_drag`, and document-level `pointerup`, `pointercancel` and
+  `blur` guards catch the cases the tab never hears about.
+- **Money never goes through a float.** hledger's JSON encodes a quantity as a
+  mantissa and a scale plus a lossy `floatingPoint` convenience field; only the
+  first two are used. `aquantity` is an *object*, not a number, which is easy to
+  miss.
+
+## Testing
+
+```sh
+. scripts/env.sh
+cargo test                 # 70 pure-module tests
+cargo clippy --all-targets
+```
+
+The JSON fixtures in `fixtures/` were captured from a real hledger and are what
+keeps the decoders honest; `fixtures/demo/` doubles as the built-in demo journal,
+so the two cannot drift apart.
+
+### Verifying the directory picker
+
+The picker is the one part that cannot be unit-tested, and it has two failure
+modes that both look like "the button does nothing", so it is worth knowing how
+to check it:
+
+- **The dialog must be opened synchronously**, from inside the click handler.
+  Browsers gate a file picker on transient user activation, so routing the click
+  through `spawn_local` — which defers it to a later task — makes it get refused
+  *silently*: no dialog, no error, and a promise that never settles.
+- **The click has to exist at all.** An input that is created and awaited but
+  never clicked has the same symptom.
+
+Both are checkable in a real browser without touching the OS dialog by recording
+the call, then driving a selection over CDP:
+
+```js
+// 1. Record that the picker is requested, and by which element.
+HTMLInputElement.prototype.click = function () { window.__c.push(this.id); };
+
+// 2. After clicking "Load directory…", confirm a click was issued on a
+//    type=file input with webkitdirectory set, and that the panel shows
+//    "Reading directory…".
+
+// 3. Populate the selection. CDP's DOM.setFileInputFiles cannot fill a
+//    directory-mode input (Chrome answers with `cancel`), so drop that one
+//    attribute first; everything else in the code path stays as shipped.
+```
+
+Note that the accessibility tree in headless Chrome can report structure without
+any text, so read `document.querySelector(...).innerText` rather than trusting a
+snapshot when checking what a panel says.
+
+## Known limitations
+
+- Reports run against the interim bridge unless the full CLI has been built.
+- Panels can be docked by dragging their tab, but there is no floating, popout or
+  maximize, and a drop only targets the pane under the pointer — there are no
+  insertion guides between panes.
+- Directory loading uses the `<input webkitdirectory>` picker, so a re-pick is
+  required to see file changes. The File System Access API and live watching are
+  not wired up.
+- Reports re-run on journal change or on Refresh; there are no timers.
+- hledger's own `-O json` shapes are decoded case by case. A command whose output
+  is not one of the decoded shapes will fail loudly rather than render a guess.
+
+## Deploying
+
+Published at **<https://hledger.gru.fi>** via GitHub Pages, built by
+[`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml) on
+every push to `main`.
+
+The build is entirely client-side, so deployment is just static files — with two
+things that are easy to get wrong:
+
+- **The hledger WASM module is not in the repository.** It is ~17 MB and pinned
+  by URL and SHA-256 in [`wasm.lock`](wasm.lock). The workflow runs
+  [`scripts/fetch-hledger-wasm.sh`](scripts/fetch-hledger-wasm.sh), which
+  downloads it and verifies the checksum, before building. A build without it
+  still succeeds and renders, but every report panel reports a missing engine —
+  which is why the workflow asserts `dist/wasm/hledger.wasm` exists rather than
+  trusting that it does.
+- **`.nojekyll` and `CNAME` are written into `dist/` by the workflow.** Without
+  `.nojekyll`, Pages runs the output through Jekyll, which drops files it
+  considers special; `CNAME` is what keeps the custom domain attached to the
+  deployment. Writing them at deploy time keeps the domain in one place and
+  avoids depending on how a copy rule treats dotfiles.
+
+### One-time setup
+
+1. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
+   Not "Deploy from a branch" — the artifact has to be assembled at build time
+   because the WASM binary is fetched rather than committed.
+2. **Settings → Pages → Custom domain:** `hledger.gru.fi`, then enable
+   "Enforce HTTPS" once the certificate is issued.
+3. **DNS:** a `CNAME` record for `hledger` pointing at `lc-at.github.io`.
+
+### Reproducing the deploy locally
+
+```sh
+. scripts/env.sh
+sh scripts/fetch-hledger-wasm.sh
+trunk build --release
+# Serve it the way a host would, not from the filesystem: the app needs real
+# HTTP for its module worker and for fetching the WASM module.
+python3 -m http.server -d dist 8080
+```
+
+`file://` will not work, and neither will opening `dist/index.html` directly —
+the page fetches `/wasm/hledger.wasm` and starts a module worker.
+
+## Licensing
+
+The application code is AGPL-3.0-or-later. **hledger itself is GPL-3.0-or-later**,
+which is why `hledger.wasm` is kept as a separate, independently loaded WASI
+module invoked over argv and stdio, never statically linked into the Rust wasm,
+and pinned by tag and checksum so its corresponding source is always
+identifiable. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
