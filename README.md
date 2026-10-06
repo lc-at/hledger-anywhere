@@ -35,6 +35,25 @@ backend. You point it at a directory of journal files and it runs the real
 - **Maximise and restore**: the button at the end of each tab bar fills the
   layout with that stack and puts it back. The tree underneath is untouched, so
   restoring is exact — no split or size can be lost.
+- **Analytics**: a net-assets panel (`balancesheetequity`), a balance-over-time
+  chart (`balance --historical --monthly|--weekly|--quarterly|--yearly`), an
+  expenses breakdown chart (`balance expenses --tree`) and a budget table
+  (`balance --budget --monthly`, showing actual against goal with the variance).
+  The charts are hand-rolled SVG, so there is no charting dependency and they
+  theme themselves from the same custom properties as everything else.
+- **An interactive terminal**: a scrollback and a command line that runs any
+  hledger command against the loaded journal, with `Tab` completion for commands,
+  flags, account names and file paths, and a persisted history.
+- **Gruvbox, dark or light**: the whole interface is driven by one palette of CSS
+  custom properties, with a theme choice of System, Dark or Light that is
+  remembered across reloads.
+- **A main-currency setting**: pick one of the commodities the journal actually
+  uses and every amount report is re-denominated through hledger's
+  `--value=end,COMM --infer-market-prices`.
+- **Local persistence**: the layout, the settings and the terminal history live in
+  `localStorage`; the loaded journal itself is cached in IndexedDB, so a
+  returning visit can reopen the last session without picking the directory
+  again.
 
 The demo above shows `expenses:misc:books $18.00`, which comes from a *different
 file* reached through an `include` directive — the clearest evidence that the
@@ -147,9 +166,24 @@ The two candidate fixes, in order of preference:
 2. **Patch `basement`.** Vendor it and add a `wasm32-wasi` branch to
    `foundation_system.h`; its C is otherwise portable.
 
-Until then, `wasm.lock` keeps pointing at the interim
-`flavor = "hledger-wasm-bridge"` artifact, and the app is fully usable — it just
-offers the reduced command set described above.
+**This is now done.** `scripts/build-hledger-wasm.sh` builds the real hledger CLI
+for wasm32-wasi, and `wasm.lock` points at it (`flavor = "hledger-cli"`). Three
+adaptations were needed, two of which only surface once the real CLI runs:
+
+1. `req` + `http-client` stubs (above), which remove the C subtree.
+2. **`-threaded` must be dropped.** GHC's wasm backend has no threaded RTS — the
+   toolchain ships `libHSrts-1.0.3.a` but no `_thr` — while hledger's executable
+   stanza asks for it, so linking fails with "unable to find library". The build
+   script removes the flag from the vendored `.cabal` with `sed` (idempotent, and
+   `vendor/` stays a pristine clone). WASI has no threads in any case.
+3. **`PATH` must exist in the WASI environment.** The real CLI looks it up (it
+   scans for add-on `hledger-*` commands) rather than defaulting, and the WASI
+   shim turns a missing variable into a hard failure. The worker passes `PATH=/`,
+   so the lookup succeeds and finds no add-ons.
+
+The interim `hledger-wasm-bridge` artifact remains a supported flavor; setting
+that value in `wasm.lock` reverts the app to the reduced command set described
+above.
 
 ## Adding a panel
 
@@ -291,7 +325,11 @@ snapshot when checking what a panel says.
 
 ## Known limitations
 
-- Reports run against the interim bridge unless the full CLI has been built.
+- Reports run on the real hledger CLI, built for wasm32-wasi. The artifact is not
+  committed (`assets/wasm/*.wasm`), so a clone must either build it
+  (`scripts/build-hledger-wasm.sh`, a long Haskell build) or point `wasm.lock`'s
+  `url` at a published copy — `sha256` is enforced either way. The interim
+  bridge artifact remains a supported flavor.
 - The layout covers docking, splitting, tab reordering, maximise and persisted
   sizes. What Golden Layout also has and this does not: **floating and popout
   panels**, a **tab overflow menu** (tabs scroll horizontally here instead), and
@@ -300,9 +338,15 @@ snapshot when checking what a panel says.
 - Directory loading uses the `<input webkitdirectory>` picker, so a re-pick is
   required to see file changes. The File System Access API and live watching are
   not wired up.
+- The journal snapshot is cached in IndexedDB so a later visit can reopen it
+  without a pick, but file *changes* still require a re-pick.
 - Reports re-run on journal change or on Refresh; there are no timers.
 - hledger's own `-O json` shapes are decoded case by case. A command whose output
   is not one of the decoded shapes will fail loudly rather than render a guess.
+- The decoders deliberately cover the whole wire format, including reports no
+  panel displays yet (`aregister`, cost basis, and some chart-axis helpers), so
+  those modules carry an explicit dead-code allowance and are covered by tests
+  instead.
 
 ## Deploying
 

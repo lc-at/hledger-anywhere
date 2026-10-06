@@ -1,0 +1,35 @@
+cabal-version:      2.4
+name:               req
+version:            3.13.4
+synopsis:           WASI stub: HTTP is unavailable in a browser
+description:
+    A drop-in replacement for the @req@ package used when building hledger for
+    wasm32-wasi.
+    .
+    The only use of @req@ in hledger is the @setup@ command's \"is this the
+    latest version?\" check, which fetches a page from hledger.org. A browser
+    cannot reach arbitrary hosts anyway, and hledger already wraps every one of
+    those calls in @try@\/@catch@ and degrades to \"unknown\", so this stub simply
+    throws.
+    .
+    Stubbing @req@ and @http-client@ together is what removes the whole C
+    dependency tree that made a wasm build impossible:
+    @req -> http-client-tls -> tls -> crypton -> memory -> basement@. The
+    @basement@ header has no wasm32 branch, and patching it only reveals the
+    next blockers (@crypton@'s x86 intrinsics, @network@'s raw sockets, @zlib@'s
+    @pkg-config@), so removing the subtree is the only tractable route.
+    .
+    The version number matches the real @req@ so hledger's version bounds are
+    satisfied unchanged.
+    .
+    The module interface mirrors the BSD-3-Clause @req@ package by Mark Karpov
+    and contributors.
+license:            BSD-3-Clause
+build-type:         Simple
+category:           Network
+
+library
+    exposed-modules:  Network.HTTP.Req
+    build-depends:    base >=4 && <5, bytestring, text, http-client
+    hs-source-dirs:   .
+    default-language: Haskell2010

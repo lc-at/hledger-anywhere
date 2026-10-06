@@ -11,6 +11,10 @@
 # Locally installed toolchain (trunk, ghc-wasm-meta)
 /.tools
 
+# Alternative cargo home/target used when the shared target directory is busy or
+# the default ~/.cargo is not writable. A build cache, never source.
+/.cargo-home
+
 # Pinned upstream sources and locally built wasm artifacts
 /vendor
 /artifacts

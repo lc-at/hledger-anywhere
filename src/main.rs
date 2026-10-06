@@ -4,13 +4,14 @@
 //!
 //! The crate is deliberately split along a wasm boundary:
 //!
-//! * **Pure modules** (`journal`, `layout::model`, `hledger::report`) contain the
-//!   accounting model, the money type, the analytics, the report-to-argv mapping
-//!   and the layout tree. They never touch `web_sys`/`js_sys`, compile for the
-//!   host, and are covered by `cargo test`.
+//! * **Pure modules** (`journal`, `layout::model`, `hledger::report`, `settings`,
+//!   `charts::scale`) contain the accounting model, the money type, the
+//!   analytics, the report-to-argv mapping, the layout tree and the user
+//!   settings. They never touch `web_sys`/`js_sys`, compile for the host, and are
+//!   covered by `cargo test`.
 //! * **Browser modules** (`app`, `layout::view`, `panels`, `hledger::bridge`,
-//!   `fsx`) are gated behind `cfg(target_arch = "wasm32")` and hold every DOM and
-//!   worker interaction.
+//!   `fsx`, `storage`) are gated behind `cfg(target_arch = "wasm32")` and hold
+//!   every DOM, worker and IndexedDB interaction.
 //!
 //! Keeping the boundary enforced by `cfg` rather than by convention means a
 //! `web_sys` import cannot silently leak into logic that needs to stay testable.
@@ -23,10 +24,17 @@ mod fsx;
 mod panels;
 #[cfg(target_arch = "wasm32")]
 mod state;
+#[cfg(target_arch = "wasm32")]
+mod storage;
 
+// Declared unconditionally, but split internally: `charts::scale` is pure and
+// natively testable, while the Leptos view components it feeds are wasm-only.
+mod charts;
+mod format;
 mod hledger;
 mod journal;
 mod layout;
+mod settings;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

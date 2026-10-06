@@ -10,12 +10,27 @@
 -- Why this file exists at all
 -- ---------------------------
 -- hledger's dependency tree assumes a POSIX host. Almost all of it cross-compiles
--- to wasm32-wasi unchanged, with one known exception:
+-- to wasm32-wasi unchanged. Two parts do not, and both are replaced by local
+-- stub packages:
 --
 --   terminal-size  queries the terminal window size via ioctl, which does not
---                  exist under WASI. We substitute a local stub package that
---                  reports "no terminal", which is exactly right for a browser
---                  (hledger then falls back to its default report width).
+--                  exist under WASI. The stub reports "no terminal", which is
+--                  exactly right for a browser (hledger then falls back to its
+--                  default report width).
+--
+--   req,           the HTTP client, used in exactly one place: the `setup`
+--   http-client    command's "is this the latest version?" check. A browser
+--                  cannot reach arbitrary hosts, and hledger already catches
+--                  every failure there and reports "unknown", so the stubs
+--                  throw. Stubbing both is what removes the C dependency tree
+--                  that otherwise makes the build impossible:
+--
+--                    req -> http-client-tls -> tls -> crypton -> memory
+--                        -> basement   (no wasm32 branch in its C header)
+--
+--                  Patching `basement` instead only exposes the next blockers
+--                  (crypton's x86 intrinsics, network's raw sockets, zlib's
+--                  pkg-config), so removing the subtree is the tractable route.
 --
 -- The `allow-newer`/`constraints` block below pins GHC's own boot libraries to
 -- the copies that ship inside the wasm bindist. Without it, cabal tries to
@@ -27,6 +42,8 @@ packages:
     ../vendor/hledger/hledger
     ../vendor/hledger/hledger-lib
     terminal-size-stub
+    req-stub
+    http-client-stub
 
 allow-newer:
     all:Cabal,

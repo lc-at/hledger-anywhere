@@ -18,9 +18,14 @@ use crate::layout::model::PanelId;
 use crate::state::{AppState, ReportState};
 
 mod accounts;
+mod balance_over_time;
 mod balances;
+mod budget;
 mod console;
+mod expenses;
 mod journals;
+mod net_assets;
+mod terminal;
 mod transactions;
 
 /// One registered panel type.
@@ -79,6 +84,41 @@ pub const PANELS: &[PanelDef] = &[
         summary: "Engine log: argv, exit codes, timings and raw output",
         view: console::view,
     },
+    PanelDef {
+        kind: "balance_over_time",
+        title: "Over Time",
+        icon: "📈",
+        summary: "Balance over time as a line chart, by month, week, quarter or year",
+        view: balance_over_time::view,
+    },
+    PanelDef {
+        kind: "net_assets",
+        title: "Net Assets",
+        icon: "◈",
+        summary: "Balance sheet: assets, liabilities, equity and the net figure",
+        view: net_assets::view,
+    },
+    PanelDef {
+        kind: "expenses",
+        title: "Expenses",
+        icon: "🧾",
+        summary: "Where the money went: expenses as a bar chart and a table",
+        view: expenses::view,
+    },
+    PanelDef {
+        kind: "budget",
+        title: "Budget",
+        icon: "🎯",
+        summary: "Actual spending against its monthly budget goals",
+        view: budget::view,
+    },
+    PanelDef {
+        kind: "terminal",
+        title: "Terminal",
+        icon: "⌨",
+        summary: "Run any hledger command interactively and see its output",
+        view: terminal::view,
+    },
 ];
 
 /// Look up a panel by kind.
@@ -91,9 +131,15 @@ pub fn kinds() -> Vec<&'static str> {
     PANELS.iter().map(|def| def.kind).collect()
 }
 
-/// Registry order, used to build the default layout.
+/// The panels a fresh layout opens with.
+///
+/// Deliberately a curated subset rather than every registered kind: the registry
+/// is the *menu* of what can be shown, and putting all ten panels in the default
+/// layout would open a wall of tabs on a laptop. The analytics and the terminal
+/// are one click away in the add-panel menu, and the layout remembers whatever
+/// the user settles on.
 pub fn default_kinds() -> Vec<&'static str> {
-    kinds()
+    vec!["journals", "accounts", "balances", "transactions", "console"]
 }
 
 /// Tab label for a kind, falling back to the raw key for an unknown panel.

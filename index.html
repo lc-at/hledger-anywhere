@@ -5,6 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>hledger-anywhere</title>
 
+    <!--
+      Apply the saved theme before anything paints, so a light-mode user never
+      sees a dark flash while the wasm bundle loads. This duplicates a little
+      logic from src/settings.rs on purpose: it has to run synchronously, before
+      the Rust module is even fetched. Wrapped in try/catch so a hostile or
+      unavailable localStorage cannot break boot.
+    -->
+    <script>
+      (function () {
+        var theme = "dark";
+        try {
+          var raw = window.localStorage.getItem("hledger-anywhere.settings.v1");
+          var saved = raw ? JSON.parse(raw) : null;
+          var value = saved && typeof saved.theme === "string" ? saved.theme : "system";
+          if (value === "dark" || value === "light") {
+            theme = value;
+          } else {
+            theme = window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          }
+        } catch (error) {
+          theme = "dark";
+        }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+
     <link data-trunk rel="copy-dir" href="assets/css" />
     <link data-trunk rel="copy-dir" href="assets/js" />
     <link data-trunk rel="copy-dir" href="assets/wasm" />

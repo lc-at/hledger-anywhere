@@ -52,6 +52,35 @@ pub fn view(_id: PanelId) -> AnyView {
         _ => "panel-status",
     };
 
+    // Offered only while there is nothing loaded: once a journal is on screen
+    // the same button would be a way to *replace* it, which is what
+    // "Load directory…" is for, and having two buttons that do that is worse
+    // than having one.
+    let reopen = move || {
+        let Some(meta) = state.last_session.get() else {
+            return ().into_any();
+        };
+        if matches!(state.source.get(), SourceStatus::Ready { .. }) {
+            return ().into_any();
+        }
+        let label = format!(
+            "Reopen last session — {} file(s), {}, {}",
+            meta.file_count,
+            meta.main_journal,
+            crate::format::describe_age(meta.saved_at_ms, js_sys::Date::now())
+        );
+        view! {
+            <button
+                class="gl-btn"
+                title="Reload the journal this browser cached, without a directory pick"
+                on:click=move |_| state.restore_last_session()
+            >
+                {label}
+            </button>
+        }
+        .into_any()
+    };
+
     view! {
         <div class="panel panel-journals">
             <div class="panel-toolbar">
@@ -68,6 +97,7 @@ pub fn view(_id: PanelId) -> AnyView {
                 >
                     "Refresh reports"
                 </button>
+                {reopen}
             </div>
 
             <p class=status_class>{status}</p>

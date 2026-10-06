@@ -9,6 +9,7 @@
 
 pub mod model;
 pub mod money;
+pub mod reports;
 
 /// Extensions hledger reads as a journal.
 const JOURNAL_EXTENSIONS: [&str; 3] = ["journal", "hledger", "j"];

@@ -97,6 +97,14 @@ pub struct ReportSpec {
     /// Whether to ask for JSON. Meaningless for the bridge, which always emits
     /// JSON and has no output-format option, so it is dropped there.
     pub json: bool,
+    /// The commodity to re-denominate amounts into, if the user chose a main
+    /// currency.
+    ///
+    /// Held as a field rather than pushed into `args` so that the flavor which
+    /// cannot honour it (the bridge accepts no options at all) structurally
+    /// cannot receive it — an option that is silently ignored is worse than an
+    /// absent one, because the user sees a setting that does nothing.
+    pub value: Option<String>,
 }
 
 impl ReportSpec {
@@ -106,6 +114,7 @@ impl ReportSpec {
             command,
             args: Vec::new(),
             json: true,
+            value: None,
         }
     }
 
@@ -115,6 +124,7 @@ impl ReportSpec {
             command,
             args: Vec::new(),
             json: false,
+            value: None,
         }
     }
 
@@ -131,6 +141,28 @@ impl ReportSpec {
         S: Into<String>,
     {
         self.args.extend(arguments.into_iter().map(Into::into));
+        self
+    }
+
+    /// Re-denominate every amount into `commodity`, using market prices.
+    ///
+    /// This is the closest hledger has to "show me everything in my main
+    /// currency": `--value=end,COMM` converts each amount at end-of-period
+    /// market prices, and `--infer-market-prices` additionally lets it use
+    /// prices implied by `@`/`@@` costs rather than only explicit `P` directive
+    /// prices. Without the second flag, a journal that records costs inline but
+    /// declares no prices converts nothing.
+    ///
+    /// A blank commodity is ignored, so an unset or empty setting degrades to
+    /// "leave the amounts as they are" rather than producing invalid argv.
+    ///
+    /// Only the full CLI can honour this; see the `value` field for why it is
+    /// stored rather than appended here.
+    pub fn with_value(mut self, commodity: &str) -> Self {
+        let commodity = commodity.trim();
+        if !commodity.is_empty() {
+            self.value = Some(commodity.to_string());
+        }
         self
     }
 
@@ -154,12 +186,24 @@ impl ReportSpec {
                     argv.push("-O".to_string());
                     argv.push("json".to_string());
                 }
+                // "Show it all in one commodity": convert at end-of-period
+                // market prices, and allow prices implied by @/@@ costs as well
+                // as explicit `P` directives.
+                if let Some(commodity) = &self.value {
+                    argv.push(format!("--value=end,{commodity}"));
+                    argv.push("--infer-market-prices".to_string());
+                }
                 argv.extend(self.args.iter().cloned());
                 argv
             }
             Flavor::WasmBridge => {
                 // The bridge takes the command first, then the file, and has no
                 // output-format option at all.
+                //
+                // `value` is dropped here on purpose: the bridge accepts extra
+                // arguments and ignores them, so passing `--value` would leave
+                // the user with a main-currency setting that visibly does
+                // nothing. The panels hide the control on this flavor instead.
                 let mut argv = vec![
                     "hledger-wasm".to_string(),
                     self.command.to_string(),
@@ -292,6 +336,49 @@ mod tests {
     fn extend_args_appends_in_order() {
         let spec = ReportSpec::json("balance").extend_args(["--tree", "--depth", "3"]);
         assert_eq!(spec.args, vec!["--tree", "--depth", "3"]);
+    }
+
+    #[test]
+    fn a_main_currency_becomes_the_value_and_inferred_market_prices() {
+        let argv = ReportSpec::json("balance")
+            .with_value("EUR")
+            .argv(Flavor::HledgerCli, "a.journal");
+        assert!(argv.contains(&"--value=end,EUR".to_string()), "{argv:?}");
+        assert!(
+            argv.contains(&"--infer-market-prices".to_string()),
+            "without this, a journal that records costs inline but declares no \
+             prices would convert nothing: {argv:?}"
+        );
+        // The user's own arguments are still passed, after the valuation.
+        let argv = ReportSpec::json("balance")
+            .arg("--tree")
+            .with_value("EUR")
+            .argv(Flavor::HledgerCli, "a.journal");
+        assert_eq!(argv.last(), Some(&"--tree".to_string()));
+    }
+
+    #[test]
+    fn a_blank_main_currency_changes_nothing() {
+        // An unset setting must not produce an empty `--value=end,`.
+        let plain = ReportSpec::json("balance").argv(Flavor::HledgerCli, "a.journal");
+        for blank in ["", "   "] {
+            let argv = ReportSpec::json("balance")
+                .with_value(blank)
+                .argv(Flavor::HledgerCli, "a.journal");
+            assert_eq!(argv, plain);
+        }
+    }
+
+    #[test]
+    fn the_bridge_never_receives_the_valuation_option() {
+        // The bridge ignores extra arguments, so passing --value would leave the
+        // user with a setting that visibly does nothing. It must be dropped.
+        let argv = ReportSpec::json("balance")
+            .with_value("EUR")
+            .argv(Flavor::WasmBridge, "a.journal");
+        assert_eq!(argv, vec!["hledger-wasm", "balance", "/data/a.journal"]);
+        assert!(!argv.iter().any(|arg| arg.starts_with("--value")));
+        assert!(!argv.contains(&"--infer-market-prices".to_string()));
     }
 
     #[test]

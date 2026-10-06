@@ -28,6 +28,8 @@ use crate::hledger::{Engine, EngineError, HledgerOutput, HledgerRequest, Journal
 use crate::journal::{self, MainJournal};
 use crate::layout::model::{DropGeometry, Layout, PanelId};
 use crate::panels;
+use crate::settings::{self, Settings, Theme};
+use crate::storage::{JournalStore, SessionMeta};
 
 /// `localStorage` key for the persisted layout. Versioned so a future change to
 /// the layout schema cannot be silently misread as the current one.
@@ -156,6 +158,27 @@ pub struct AppState {
     pub drag: RwSignal<Option<DragState>>,
     /// Whether the header's add-panel menu is open.
     pub add_menu_open: RwSignal<bool>,
+    /// The user's persisted preferences: the theme and the main currency.
+    ///
+    /// Read reactively by the header's settings menu, and read *untracked* by
+    /// `report_for`, which needs the current currency but must not make every
+    /// panel's effect depend on the whole settings object: changing the currency
+    /// bumps `refresh` instead, so reports re-run once, deliberately.
+    pub settings: RwSignal<Settings>,
+    /// The commodities the loaded journal actually uses, one per line from
+    /// hledger's `commodities`.
+    ///
+    /// Populated when a journal loads so the currency control can offer real
+    /// choices. A free-text box would let a typo pick a commodity that exists
+    /// nowhere in the journal, and hledger would then convert nothing at all —
+    /// a setting that appears to work and silently does not.
+    pub commodities: RwSignal<Vec<String>>,
+    /// The journal snapshot this browser cached last time, if any.
+    ///
+    /// Only metadata: it is what lets the Journals panel offer "reopen last
+    /// session" instead of showing a picker button with no explanation of why
+    /// there is something to reopen.
+    pub last_session: RwSignal<Option<SessionMeta>>,
 
     /// The engine, and the argv dialect it speaks.
     pub engine: Engine,
@@ -255,6 +278,9 @@ impl AppState {
             layout: layout_signal,
             drag: RwSignal::new(None),
             add_menu_open: RwSignal::new(false),
+            settings: RwSignal::new(settings::load()),
+            commodities: RwSignal::new(Vec::new()),
+            last_session: RwSignal::new(None),
             engine,
             flavor: RwSignal::new(engine.flavor()),
             engine_status: RwSignal::new(EngineStatus::Unknown),
@@ -408,6 +434,14 @@ impl AppState {
         // stale report is still current for the new journal.
         self.report_keys.update(|keys| keys.clear());
         self.generation.update(|generation| *generation += 1);
+        // The main-currency control can only offer commodities that exist here.
+        self.load_commodities();
+        // Cache the snapshot so a later visit can reopen it without a picker.
+        // Only when a journal was actually found: caching a directory that holds
+        // no journal would offer to restore something unusable.
+        if let Some(main) = &main {
+            self.cache_session(&files, main.path());
+        }
     }
 
     /// Point reports at a different file from the loaded set.
@@ -429,6 +463,8 @@ impl AppState {
         // stale report is still current for the new journal.
         self.report_keys.update(|keys| keys.clear());
         self.generation.update(|generation| *generation += 1);
+        // A different journal can use different commodities.
+        self.load_commodities();
     }
 
     /// Load the built-in demo journal, so the app is usable with one click.
@@ -571,6 +607,143 @@ impl AppState {
         });
     }
 
+    // -- settings -----------------------------------------------------------
+
+    /// Change the theme, persist it, and repaint.
+    pub fn set_theme(&self, theme: Theme) {
+        self.settings.update(|settings| settings.theme = theme);
+        settings::save(&self.settings.get_untracked());
+        settings::apply_theme(theme);
+    }
+
+    /// Change the main currency, persist it, and re-run the reports.
+    ///
+    /// The `refresh` bump is what makes the change visible: the panels' effects
+    /// are keyed on it and [`AppState::valued`] reads the currency untracked, so
+    /// without it the setting would save and then appear to do nothing until the
+    /// next reload.
+    pub fn set_main_currency(&self, currency: Option<String>) {
+        self.settings
+            .update(|settings| settings.main_currency = currency);
+        settings::save(&self.settings.get_untracked());
+        self.refresh_all();
+    }
+
+    /// Apply the settings that change *what an amount means* to a report.
+    ///
+    /// Only JSON report specs. The text commands (`accounts`, `commodities`, …)
+    /// are list commands that accept no report options, so handing one a
+    /// valuation flag would be an option hledger ignores — and a silently
+    /// ignored option is the failure mode this app refuses elsewhere.
+    fn valued(&self, spec: ReportSpec) -> ReportSpec {
+        if !spec.json {
+            return spec;
+        }
+        match self.settings.get_untracked().main_currency {
+            Some(currency) if self.flavor.get_untracked().supports_report_options() => {
+                spec.with_value(&currency)
+            }
+            _ => spec,
+        }
+    }
+
+    /// Ask the engine which commodities the journal uses.
+    ///
+    /// Text output, one name per line, like the other list commands. A failure
+    /// is ignored on purpose: an empty list only means the currency control has
+    /// nothing to offer, which is a weaker app rather than a broken one.
+    pub fn load_commodities(&self) {
+        let state = *self;
+        spawn_local(async move {
+            let Ok(output) = state.run(ReportSpec::text("commodities")).await else {
+                return;
+            };
+            if !output.is_failure() {
+                state
+                    .commodities
+                    .set(journal::model::parse_line_list(&output.stdout));
+            }
+        });
+    }
+
+    // -- session cache ------------------------------------------------------
+
+    /// Read back what the last visit cached, so the Journals panel can offer to
+    /// reopen it.
+    ///
+    /// A browser with no usable IndexedDB (private browsing, storage disabled)
+    /// simply yields `None`, which the UI reads as "nothing to reopen" rather
+    /// than as an error.
+    pub fn load_last_session(&self) {
+        let state = *self;
+        spawn_local(async move {
+            let Ok(store) = JournalStore::open().await else {
+                return;
+            };
+            state.last_session.set(store.load_meta().await.ok().flatten());
+        });
+    }
+
+    /// Cache the journal that was just loaded, so the next visit can skip the
+    /// picker.
+    ///
+    /// Failures are swallowed deliberately. This is a cache, never a source of
+    /// truth: the worst case is that the user picks the directory again.
+    fn cache_session(&self, files: &[JournalFile], main: &str) {
+        let files = files.to_vec();
+        let main = main.to_string();
+        spawn_local(async move {
+            let Ok(store) = JournalStore::open().await else {
+                return;
+            };
+            if store.save_snapshot(&files).await.is_err() {
+                return;
+            }
+            let meta = SessionMeta {
+                // `Date::now` rather than `Performance::now`: this wants a
+                // wall-clock instant to show the user, not a monotonic one.
+                saved_at_ms: js_sys::Date::now(),
+                file_count: files.len(),
+                main_journal: main,
+            };
+            let _ = store.save_meta(&meta).await;
+        });
+    }
+
+    /// Reopen the cached journal without a directory pick.
+    ///
+    /// The cached main journal is honoured after `publish_files` has run its
+    /// heuristic: the user's own choice from last time beats a guess, but only
+    /// if that file is still in the snapshot.
+    pub fn restore_last_session(&self) {
+        let state = *self;
+        spawn_local(async move {
+            let Ok(store) = JournalStore::open().await else {
+                return;
+            };
+            let Ok(files) = store.load_snapshot().await else {
+                return;
+            };
+            if files.is_empty() {
+                // A stale offer: stop advertising something that is not there.
+                state.last_session.set(None);
+                return;
+            }
+            let wanted_main = state
+                .last_session
+                .get_untracked()
+                .map(|meta| meta.main_journal);
+            state.publish_files(files, 0);
+            // The user's own choice from last time beats the heuristic, but only
+            // if that file is still in the snapshot.
+            if let Some(path) = wanted_main
+                && state.files.get_untracked().iter().any(|file| file.path == path)
+            {
+                state.set_main_journal(path);
+            }
+        });
+    }
+
     /// Run `spec` for one panel, recording the result against that instance.
     ///
     /// Panels call this from an effect that tracks `generation` and `refresh`,
@@ -578,6 +751,10 @@ impl AppState {
     /// refresh, and never at any other time. The report map is deliberately not
     /// read by that effect, or writing a result would re-trigger the run.
     pub fn report_for(&self, id: PanelId, spec: ReportSpec) {
+        // The main-currency setting is applied here, once, rather than in every
+        // panel: it has to reach every amount-bearing report, and a panel that
+        // forgot it would show unconverted figures next to converted ones.
+        let spec = self.valued(spec);
         let key = ReportKey {
             generation: self.generation.get_untracked(),
             refresh: self.refresh.get_untracked(),

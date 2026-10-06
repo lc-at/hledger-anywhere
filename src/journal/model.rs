@@ -14,9 +14,13 @@
 //! balance rows — which fail loudly instead of defaulting to zero.
 
 // The consumers of this model are the report panels, which only exist in the
-// browser build. A native (`cargo test`) build therefore sees a deliberately
-// wider API surface than it uses, which is not dead code — it is the wire format.
-#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+// browser build. Allowing dead code here is deliberate rather than an oversight:
+// this module is hledger's *wire format*, and not every part of it has a panel
+// yet — the `aregister` decoder, for instance, is exercised only by tests,
+// because nothing in the UI displays that report. Keeping it (and `money`'s cost
+// and cost-basis fields) means a version change to those shapes is caught by a
+// unit test rather than by a user.
+#![allow(dead_code)]
 
 use serde::{Deserialize, Deserializer};
 use thiserror::Error;
@@ -143,7 +147,12 @@ impl Transaction {
     }
 }
 
-/// One row of a balance report: `[display name, full name, depth, amounts]`.
+/// One row of a balance report.
+///
+/// hledger-lib models this as `(AccountName, AccountName, Int, MixedAmount)` and
+/// documents the fields as: the **full** account name, then the Ledger-style
+/// **elided short** name used for display. The wire order is therefore
+/// `[full name, display name, depth, amounts]` — see `Hledger.Reports.BalanceReport`.
 #[derive(Clone, Debug)]
 pub struct BalanceRow {
     /// The name to show, which may be elided by `--drop`/ellipsis options.
@@ -165,7 +174,8 @@ impl<'de> Deserialize<'de> for BalanceRow {
         #[derive(Deserialize)]
         struct Raw(String, String, i64, Vec<Amount>);
 
-        let Raw(display_name, full_name, depth, amounts) = Raw::deserialize(deserializer)?;
+        // Field order follows hledger-lib: full name first, display name second.
+        let Raw(full_name, display_name, depth, amounts) = Raw::deserialize(deserializer)?;
         Ok(BalanceRow {
             display_name,
             full_name,
@@ -269,6 +279,116 @@ impl BalanceReport {
     }
 }
 
+/// One line of `aregister -O json`, a transaction viewed from one account.
+///
+/// hledger-lib types this as a six-tuple
+/// `(Transaction, Transaction, Bool, [AccountName], MixedAmount, MixedAmount)`:
+/// the transaction unmodified, the transaction filtered to the report's account,
+/// whether it is a split, the other accounts involved, the amount posted to the
+/// account, and the running (or historical) balance after it. See
+/// `Hledger.Reports.AccountTransactionsReport`.
+///
+/// The fourth element is an **array of full account names** in 1.52. The interim
+/// wasm bridge emitted a pre-joined display string instead, so both are accepted
+/// and a joined string becomes a single-element list.
+#[derive(Clone, Debug)]
+pub struct AccountTransaction {
+    /// The transaction, unmodified.
+    pub transaction: Transaction,
+    /// The transaction as seen from the report's account.
+    pub account_transaction: Transaction,
+    /// Whether more than one other account is involved.
+    pub is_split: bool,
+    /// The other accounts, by full name.
+    pub other_accounts: Vec<String>,
+    /// The amount posted to the reported account(s).
+    pub amount: Vec<Amount>,
+    /// The register's running or historical balance after this transaction.
+    pub balance: Vec<Amount>,
+}
+
+/// The fourth `aregister` field: an array of names in 1.52, a joined string in
+/// the bridge.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OtherAccounts {
+    Names(Vec<String>),
+    Joined(String),
+}
+
+impl From<OtherAccounts> for Vec<String> {
+    fn from(raw: OtherAccounts) -> Self {
+        match raw {
+            OtherAccounts::Names(names) => names,
+            OtherAccounts::Joined(joined) => {
+                if joined.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![joined]
+                }
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AccountTransaction {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw(
+            Transaction,
+            Transaction,
+            bool,
+            OtherAccounts,
+            Vec<Amount>,
+            Vec<Amount>,
+        );
+
+        let Raw(
+            transaction,
+            account_transaction,
+            is_split,
+            other_accounts,
+            amount,
+            balance,
+        ) = Raw::deserialize(deserializer)?;
+        Ok(AccountTransaction {
+            transaction,
+            account_transaction,
+            is_split,
+            other_accounts: other_accounts.into(),
+            amount,
+            balance,
+        })
+    }
+}
+
+impl AccountTransaction {
+    /// The amount posted to the account, as one display string.
+    pub fn amount_display(&self) -> String {
+        display_amounts(&self.amount)
+    }
+
+    /// The running balance after this transaction, as one display string.
+    pub fn balance_display(&self) -> String {
+        display_amounts(&self.balance)
+    }
+}
+
+/// Render a mixed amount the way hledger joins its commodities.
+fn display_amounts(amounts: &[Amount]) -> String {
+    if amounts.is_empty() {
+        return "—".to_string();
+    }
+    amounts
+        .iter()
+        .map(Amount::display)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Decode the output of `print -O json`.
 pub fn parse_transactions(json: &str) -> Result<Vec<Transaction>, JournalError> {
     if json.trim().is_empty() {
@@ -285,9 +405,23 @@ pub fn parse_balance(json: &str) -> Result<BalanceReport, JournalError> {
     Ok(serde_json::from_str(json)?)
 }
 
+/// Decode the output of `aregister -O json`.
+pub fn parse_aregister(json: &str) -> Result<Vec<AccountTransaction>, JournalError> {
+    if json.trim().is_empty() {
+        return Err(JournalError::Empty);
+    }
+    Ok(serde_json::from_str(json)?)
+}
+
 /// Decode the one-name-per-line output of `accounts` and friends.
 ///
 /// Blank lines are dropped so the result can be used directly as a list.
+///
+/// These list commands — `accounts`, `commodities`, `payees`, `tags`,
+/// `descriptions`, `prices` — are **text-only** in hledger: they reject
+/// `-O json`, so there is deliberately no JSON decoder for them. `prices` is
+/// tabular (one price per line, columns separated by whitespace) but still
+/// plain text, and callers that need the columns split the line themselves.
 pub fn parse_line_list(text: &str) -> Vec<String> {
     text.lines()
         .map(str::trim)
@@ -370,15 +504,18 @@ mod tests {
         let parent = report
             .rows
             .iter()
-            .find(|row| row.display_name == "assets:bank")
+            .find(|row| row.full_name == "assets:bank")
             .expect("parent row present");
         let child = report
             .rows
             .iter()
-            .find(|row| row.display_name == "assets:bank:checking")
+            .find(|row| row.full_name == "assets:bank:checking")
             .expect("child row present");
         assert_eq!(parent.depth, 0, "the parent is a top-level account");
         assert_eq!(child.depth, 1, "the child is indented under it");
+        // The second field is the elided Ledger-style short name.
+        assert_eq!(parent.display_name, "assets:bank");
+        assert_eq!(child.display_name, "checking");
     }
 
     #[test]
@@ -436,6 +573,89 @@ mod tests {
         // A balance report that is a flat list of rows, rather than
         // `[rows, totals]`, must be rejected rather than half-decoded.
         assert!(parse_balance(r#"[[["a","a",0,[]]]]"#).is_err());
+    }
+
+    #[test]
+    fn balance_rows_keep_full_and_display_names_apart() {
+        // hledger-lib's row is (full name, elided display name, depth, amounts).
+        // The demo journal happens not to elide anything, so a hand-written row
+        // is the only way to pin the field order down.
+        let report = parse_balance(
+            r#"[ [ ["assets:bank:checking", "checking", 2, []] ], [] ]"#,
+        )
+        .expect("decode");
+        assert_eq!(report.rows[0].full_name, "assets:bank:checking");
+        assert_eq!(report.rows[0].display_name, "checking");
+        assert_eq!(report.rows[0].depth, 2);
+    }
+
+    #[test]
+    fn decodes_aregister_with_an_array_of_other_accounts() {
+        // 1.52 emits the other accounts as [AccountName].
+        let json = r#"[
+          [
+            {"tdate":"2024-01-05","tdescription":"Groceries"},
+            {"tdate":"2024-01-05","tdescription":"Groceries"},
+            true,
+            ["expenses:food","assets:cash"],
+            [{"acommodity":"$","aquantity":{"decimalMantissa":4500,"decimalPlaces":2},
+              "astyle":{"ascommodityside":"L","ascommodityspaced":false,"asdecimalmark":".",
+                        "asdigitgroups":[",",[3]],"asprecision":2}}],
+            [{"acommodity":"$","aquantity":{"decimalMantissa":95500,"decimalPlaces":2},
+              "astyle":{"ascommodityside":"L","ascommodityspaced":false,"asdecimalmark":".",
+                        "asdigitgroups":[",",[3]],"asprecision":2}}]
+          ],
+          [
+            {"tdate":"2024-01-03","tdescription":"Salary"},
+            {"tdate":"2024-01-03","tdescription":"Salary"},
+            false,
+            ["income:salary"],
+            [{"acommodity":"$","aquantity":{"decimalMantissa":100000,"decimalPlaces":2}}],
+            [{"acommodity":"$","aquantity":{"decimalMantissa":90500,"decimalPlaces":2}}]
+          ]
+        ]"#;
+        let items = parse_aregister(json).expect("aregister should decode");
+        assert_eq!(items.len(), 2);
+        assert!(items[0].is_split);
+        assert_eq!(
+            items[0].other_accounts,
+            vec!["expenses:food".to_string(), "assets:cash".to_string()]
+        );
+        assert_eq!(items[0].transaction.description, "Groceries");
+        assert_eq!(items[0].amount_display(), "$45.00");
+        assert_eq!(items[0].balance_display(), "$955.00");
+        assert!(!items[1].is_split);
+        assert_eq!(items[1].other_accounts, vec!["income:salary".to_string()]);
+    }
+
+    #[test]
+    fn aregister_tolerates_the_bridges_joined_account_string() {
+        // The interim bridge pre-joined the other accounts into one string.
+        let json = r#"[
+          [
+            {"tdate":"2024-01-05","tdescription":"x"},
+            {"tdate":"2024-01-05","tdescription":"x"},
+            false,
+            "expenses:food, assets:cash",
+            [],
+            []
+          ]
+        ]"#;
+        let items = parse_aregister(json).expect("the bridge shape should decode");
+        assert_eq!(
+            items[0].other_accounts,
+            vec!["expenses:food, assets:cash".to_string()]
+        );
+        assert_eq!(items[0].amount_display(), "—");
+    }
+
+    #[test]
+    fn aregister_rejects_output_that_is_not_json() {
+        assert!(matches!(parse_aregister(""), Err(JournalError::Empty)));
+        assert!(matches!(
+            parse_aregister("<html>not json</html>"),
+            Err(JournalError::Decode(_))
+        ));
     }
 
     #[test]

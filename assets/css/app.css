@@ -1,9 +1,14 @@
 /* hledger-anywhere — visual theme.
  *
- * The look deliberately follows Golden Layout's default dark theme: near-black
- * panel bodies, a slightly lighter tab strip, 1px hairline borders, thin gutters
- * and a blue accent. Everything is driven by the custom properties below, so
+ * The look follows Gruvbox: warm, low-contrast backgrounds with a muted teal
+ * accent. Dark is the default; a `data-theme="light"` attribute on <html>
+ * switches to the light palette — index.html sets it before the wasm bundle
+ * mounts (no flash of the wrong theme) and src/settings.rs keeps it in sync
+ * afterwards. Everything is driven by the custom properties below, so
  * restyling the whole application is a single edit.
+ *
+ * The dark palette uses Gruvbox's "bright" accent set and the light palette its
+ * "faded" set, so the same accent name always stays legible on its background.
  *
  * Layout mechanism (see src/layout/view.rs for the reasoning): a split is a flex
  * container, each pane is a `.gl-cell` whose `flex-grow` *is* its share of the
@@ -11,19 +16,54 @@
  * measures pixels except the drag handler.
  */
 
+/* -------------------------------------------------- Gruvbox dark (default) -- */
+
 :root {
-  /* Golden Layout-ish palette */
-  --gl-bg: #2b2b2b;
-  --gl-panel-bg: #1e1e1e;
-  --gl-header-bg: #333333;
-  --gl-tabbar-bg: #3a3a3a;
-  --gl-tab-hover-bg: #454545;
-  --gl-border: #111111;
-  --gl-gutter: #1a1a1a;
-  --gl-gutter-hover: #0099ff;
-  --gl-text: #dddddd;
-  --gl-text-dim: #999999;
-  --gl-accent: #0099ff;
+  /* Tells the browser to draw native controls (selects, scrollbars) for dark. */
+  color-scheme: dark;
+
+  --gl-bg: #282828;
+  --gl-panel-bg: #1d2021;
+  --gl-header-bg: #3c3836;
+  --gl-tabbar-bg: #504945;
+  --gl-tab-hover-bg: #665c54;
+  --gl-border: #1d2021;
+  --gl-gutter: #1d2021;
+  --gl-gutter-hover: #83a598;
+  --gl-text: #ebdbb2;
+  --gl-text-dim: #a89984;
+  --gl-accent: #458588;
+  --gl-accent-hover: #83a598;
+  --gl-on-accent: #fbf1c7;
+
+  /* Surfaces other than the pane background itself. */
+  --gl-btn-bg: #3d3d3d;
+  --gl-btn-active-bg: #2f2f2f;
+  --gl-popover-bg: #383838;
+  --gl-input-bg: #262626;
+  --gl-inset-bg: rgba(0, 0, 0, 0.33);
+  --gl-row-hover: rgba(255, 255, 255, 0.03);
+  --gl-row-border: rgba(255, 255, 255, 0.04);
+  --gl-shadow: rgba(0, 0, 0, 0.55);
+
+  /* State */
+  --gl-error: #fb4934;
+  --gl-success: #b8bb26;
+  --gl-warn: #fabd2f;
+  --gl-warn-bg: #3a2f1a;
+
+  --gl-selection-bg: #458588;
+  --gl-selection-text: #fbf1c7;
+
+  /* Chart series, in the order charts should reach for them. */
+  --gl-series-1: #fb4934;
+  --gl-series-2: #b8bb26;
+  --gl-series-3: #fabd2f;
+  --gl-series-4: #83a598;
+  --gl-series-5: #d3869b;
+  --gl-series-6: #8ec07c;
+  --gl-series-7: #fe8019;
+  --gl-series-8: #458588;
 
   --gl-header-height: 34px;
   --gl-tabbar-height: 27px;
@@ -32,6 +72,58 @@
 
   --gl-font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --gl-font-mono: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ------------------------------------------------------------ Gruvbox light -- */
+
+/* Only the colours change; sizes, radii and fonts are inherited from `:root`. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --gl-bg: #fbf1c7;
+  --gl-panel-bg: #fbf1c7;
+  --gl-header-bg: #ebdbb2;
+  --gl-tabbar-bg: #d5c4a1;
+  --gl-tab-hover-bg: #bdae93;
+  --gl-border: #d5c4a1;
+  --gl-gutter: #d5c4a1;
+  --gl-gutter-hover: #458588;
+  --gl-text: #3c3836;
+  --gl-text-dim: #7c6f64;
+  --gl-accent: #076678;
+  --gl-accent-hover: #458588;
+  --gl-on-accent: #fbf1c7;
+
+  --gl-btn-bg: #ebdbb2;
+  --gl-btn-active-bg: #d5c4a1;
+  --gl-popover-bg: #f9f5d7;
+  --gl-input-bg: #f9f5d7;
+  --gl-inset-bg: rgba(0, 0, 0, 0.07);
+  --gl-row-hover: rgba(0, 0, 0, 0.04);
+  --gl-row-border: rgba(0, 0, 0, 0.08);
+  --gl-shadow: rgba(0, 0, 0, 0.18);
+
+  --gl-error: #9d0006;
+  --gl-success: #79740e;
+  --gl-warn: #b57614;
+  --gl-warn-bg: #f7e7bf;
+
+  --gl-selection-bg: #83a598;
+  --gl-selection-text: #282828;
+
+  --gl-series-1: #9d0006;
+  --gl-series-2: #79740e;
+  --gl-series-3: #b57614;
+  --gl-series-4: #076678;
+  --gl-series-5: #8f3f71;
+  --gl-series-6: #427b58;
+  --gl-series-7: #af3a03;
+  --gl-series-8: #458588;
+}
+
+::selection {
+  background: var(--gl-selection-bg);
+  color: var(--gl-selection-text);
 }
 
 html,
@@ -86,7 +178,7 @@ body {
 
 .gl-btn {
   padding: 4px 10px;
-  background: #3d3d3d;
+  background: var(--gl-btn-bg);
   color: var(--gl-text);
   border: 1px solid var(--gl-border);
   border-radius: var(--gl-radius);
@@ -99,7 +191,7 @@ body {
 }
 
 .gl-btn:active {
-  background: #2f2f2f;
+  background: var(--gl-btn-active-bg);
 }
 
 .gl-btn:focus-visible {
@@ -114,10 +206,10 @@ body {
   z-index: 100;
   min-width: 300px;
   padding: 4px;
-  background: #383838;
+  background: var(--gl-popover-bg);
   border: 1px solid var(--gl-border);
   border-radius: var(--gl-radius);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 6px 20px var(--gl-shadow);
 }
 
 .gl-dropdown-item {
@@ -137,6 +229,7 @@ body {
 
 .gl-dropdown-item:hover {
   background: var(--gl-accent);
+  color: var(--gl-on-accent);
 }
 
 .gl-dropdown-icon {
@@ -146,7 +239,7 @@ body {
 }
 
 .gl-dropdown-item:hover .gl-dropdown-icon {
-  color: #fff;
+  color: var(--gl-on-accent);
 }
 
 .gl-dropdown-text {
@@ -164,7 +257,75 @@ body {
 }
 
 .gl-dropdown-item:hover .gl-dropdown-summary {
-  color: #eaf6ff;
+  color: var(--gl-on-accent);
+}
+
+/* ----------------------------------------------------------- settings -- */
+
+/* The Settings popover is a `.gl-dropdown` sibling but laid out as a stack of
+ * labelled controls, so it gets its own rules rather than reusing the menu's. */
+.gl-settings {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 220px;
+  padding: 8px;
+  background: var(--gl-popover-bg);
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  box-shadow: 0 6px 20px var(--gl-shadow);
+}
+
+.gl-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gl-settings-label {
+  color: var(--gl-text-dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gl-settings-choices {
+  display: flex;
+  gap: 4px;
+}
+
+.gl-choice {
+  padding: 3px 8px;
+  background: var(--gl-btn-bg);
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  color: var(--gl-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.gl-choice:hover {
+  background: var(--gl-tab-hover-bg);
+}
+
+.gl-choice-active,
+.gl-choice-active:hover {
+  background: var(--gl-accent);
+  color: var(--gl-on-accent);
+}
+
+.gl-settings-select {
+  width: 100%;
+  padding: 3px 6px;
+  background: var(--gl-input-bg);
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  color: var(--gl-text);
+  font: var(--gl-font-mono);
 }
 
 /* --------------------------------------------------------- layout tree -- */
@@ -350,8 +511,8 @@ body {
 }
 
 .gl-tab-close:hover {
-  background: #b03030;
-  color: #fff;
+  background: var(--gl-error);
+  color: var(--gl-on-accent);
   opacity: 1;
 }
 
@@ -412,7 +573,7 @@ body {
 
 .panel code {
   padding: 1px 4px;
-  background: #00000055;
+  background: var(--gl-inset-bg);
   border-radius: 2px;
   font: var(--gl-font-mono);
   color: var(--gl-text);
@@ -446,7 +607,7 @@ body {
 
 .panel code {
   padding: 1px 4px;
-  background: #00000055;
+  background: var(--gl-inset-bg);
   border-radius: 2px;
   font: var(--gl-font-mono);
   color: var(--gl-text);
@@ -454,11 +615,11 @@ body {
 
 /* A failed report must never look like "no data". */
 .panel-error {
-  border-left: 2px solid #d05050;
+  border-left: 2px solid var(--gl-error);
 }
 
 .panel-error p {
-  color: #f0b0b0;
+  color: var(--gl-error);
   white-space: pre-wrap;
   font: var(--gl-font-mono);
 }
@@ -469,10 +630,10 @@ body {
 
 .panel-remedy {
   padding: 8px 10px;
-  background: #3a2f1a;
-  border-left: 2px solid #d0a050;
+  background: var(--gl-warn-bg);
+  border-left: 2px solid var(--gl-warn);
   border-radius: var(--gl-radius);
-  color: #f0dcb0;
+  color: var(--gl-warn);
 }
 
 .panel-toolbar {
@@ -507,7 +668,7 @@ body {
 .panel-argv {
   margin-bottom: 8px;
   padding: 4px 6px;
-  background: #00000044;
+  background: var(--gl-inset-bg);
   border-radius: var(--gl-radius);
   color: var(--gl-text-dim);
   font: var(--gl-font-mono);
@@ -534,7 +695,7 @@ body {
   flex: 1;
   min-width: 0;
   padding: 3px 6px;
-  background: #262626;
+  background: var(--gl-input-bg);
   color: var(--gl-text);
   border: 1px solid var(--gl-border);
   border-radius: var(--gl-radius);
@@ -557,7 +718,7 @@ body {
 }
 
 .panel-list li:hover {
-  background: #ffffff08;
+  background: var(--gl-row-hover);
 }
 
 .panel-list-main {
@@ -591,12 +752,12 @@ body {
 
 .panel-table td {
   padding: 3px 8px;
-  border-bottom: 1px solid #ffffff0a;
+  border-bottom: 1px solid var(--gl-row-border);
   vertical-align: top;
 }
 
 .panel-table tbody tr:hover {
-  background: #ffffff08;
+  background: var(--gl-row-hover);
 }
 
 .panel-table tfoot td {
@@ -648,7 +809,7 @@ body {
 }
 
 .account-tree li:hover {
-  background: #ffffff08;
+  background: var(--gl-row-hover);
 }
 
 /* -------------------------------------------------------------- console -- */
@@ -660,13 +821,13 @@ body {
 .console-entry {
   margin-bottom: 8px;
   padding: 6px 8px;
-  background: #1a1a1a;
-  border-left: 2px solid #3f7f3f;
+  background: var(--gl-inset-bg);
+  border-left: 2px solid var(--gl-success);
   border-radius: var(--gl-radius);
 }
 
 .console-entry-fail {
-  border-left-color: #d05050;
+  border-left-color: var(--gl-error);
 }
 
 .console-entry-head {
@@ -676,11 +837,11 @@ body {
 }
 
 .console-status-ok {
-  color: #6fbf6f;
+  color: var(--gl-success);
 }
 
 .console-status-fail {
-  color: #e07070;
+  color: var(--gl-error);
 }
 
 .console-argv {
@@ -710,7 +871,7 @@ body {
   margin: 5px 0 0;
   padding: 6px;
   overflow: auto;
-  background: #111;
+  background: var(--gl-inset-bg);
   border: 1px solid var(--gl-border);
   border-radius: var(--gl-radius);
   color: var(--gl-text-dim);
@@ -719,7 +880,7 @@ body {
 }
 
 .console-pre-err {
-  color: #f0b0b0;
+  color: var(--gl-error);
 }
 
 /* ------------------------------------------------------- drop indicator -- */
@@ -731,15 +892,15 @@ body {
   position: fixed;
   z-index: 50;
   pointer-events: none;
-  background: rgba(0, 153, 255, 0.16);
+  background: color-mix(in srgb, var(--gl-accent) 16%, transparent);
   border: 1px solid var(--gl-accent);
   border-radius: var(--gl-radius);
-  box-shadow: inset 0 0 12px rgba(0, 153, 255, 0.25);
+  box-shadow: inset 0 0 12px color-mix(in srgb, var(--gl-accent) 25%, transparent);
 }
 
 /* An edge drop splits, so it is shown more emphatically than a merge. */
 .gl-drop-indicator-split {
-  background: rgba(0, 153, 255, 0.26);
+  background: color-mix(in srgb, var(--gl-accent) 26%, transparent);
 }
 
 /* A reorder: a thin insertion bar between tabs, the way Golden Layout shows
@@ -748,7 +909,7 @@ body {
   background: var(--gl-accent);
   border: 0;
   border-radius: 1px;
-  box-shadow: 0 0 6px rgba(0, 153, 255, 0.8);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--gl-accent) 80%, transparent);
 }
 
 /* ------------------------------------------------ drag proxy / tab chrome -- */
@@ -764,7 +925,7 @@ body {
   background: var(--gl-tabbar-bg);
   border: 1px solid var(--gl-accent);
   border-radius: var(--gl-radius);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 14px var(--gl-shadow);
   color: var(--gl-text);
   font-size: 12px;
   white-space: nowrap;
@@ -840,7 +1001,7 @@ html.gl-dragging .gl-splitter {
   padding: 2px 7px;
   max-width: 340px;
   overflow: hidden;
-  background: #262626;
+  background: var(--gl-input-bg);
   border: 1px solid var(--gl-border);
   border-radius: 10px;
   color: var(--gl-text-dim);
@@ -850,18 +1011,18 @@ html.gl-dragging .gl-splitter {
 }
 
 .engine-badge-ready {
-  border-color: #3f7f3f;
-  color: #9fdf9f;
+  border-color: var(--gl-success);
+  color: var(--gl-success);
 }
 
 .header-chip-ready {
-  border-color: #3f7f3f;
+  border-color: var(--gl-success);
 }
 
 .engine-badge-error,
 .header-chip-error {
-  border-color: #a04040;
-  color: #f0b0b0;
+  border-color: var(--gl-error);
+  color: var(--gl-error);
 }
 
 /* The Console toolbar packs a badge and buttons; keep the badge from stretching. */

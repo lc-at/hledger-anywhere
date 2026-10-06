@@ -37,8 +37,23 @@ const DEFAULT_WASM_PATH = '/wasm/hledger.wasm';
  * A minimal, deterministic environment. hledger looks for a config file under
  * $HOME and takes a pager path only on a terminal; both are disabled here so a
  * report cannot depend on ambient state that does not exist under WASI.
+ *
+ * PATH is present, and empty apart from the root, because the real hledger CLI
+ * *looks up* PATH rather than defaulting when it is missing — it scans for
+ * add-on `hledger-*` executables — and the WASI shim turns a missing variable
+ * into a hard failure ("env var \"PATH\" not found"). Pointing it at `/`, which
+ * holds only the mounted journal files, means the lookup succeeds and finds no
+ * add-ons, which is exactly right in a browser. The interim bridge never read
+ * the environment at all, so this only surfaced once the real CLI was in use.
  */
-const DEFAULT_ENV = ['HOME=/', 'TMPDIR=/tmp', 'LC_ALL=C.UTF-8', 'TERM=dumb'];
+const DEFAULT_ENV = [
+  'HOME=/',
+  'TMPDIR=/tmp',
+  'LC_ALL=C.UTF-8',
+  'TERM=dumb',
+  'PATH=/',
+  'PWD=/',
+];
 
 const encoder = new TextEncoder();
 

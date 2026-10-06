@@ -84,6 +84,28 @@ else
     say "==> reusing vendor/hledger ($(git -C "$SRC" describe --tags --always 2>/dev/null || echo unknown))"
 fi
 
+# --- 2b. wasm adaptations to the vendored source ---------------------------
+# GHC's wasm backend has no *threaded* RTS: the toolchain ships
+# libHSrts-1.0.3.a (plus _p and _debug variants) but no _thr. hledger's
+# executable stanza asks for `-threaded`, which makes the linker look for
+# libHSrts-1.0.3_thr and fail with "unable to find library".
+#
+# WASI has no threads to hand out in any case, so the threaded RTS is not
+# something this build could use: dropping the flag selects the RTS that
+# actually exists. The rest of the stanza — `-with-rtsopts=-T`, which only turns
+# on RTS statistics — is unaffected.
+#
+# Done with sed rather than by editing vendor/hledger, because vendor/ is a
+# pristine, gitignored clone of the upstream tag and should stay that way. It is
+# idempotent: once patched, the pattern no longer matches.
+CABAL_FILE="$SRC/hledger/hledger.cabal"
+if grep -q -- '-threaded -with-rtsopts=-T' "$CABAL_FILE"; then
+    say "==> dropping -threaded from the hledger executable (wasm has no threaded RTS)"
+    sed -i 's/ -threaded -with-rtsopts=-T/ -with-rtsopts=-T/' "$CABAL_FILE"
+else
+    say "==> hledger.cabal already free of -threaded"
+fi
+
 # --- 3. build --------------------------------------------------------------
 say "==> building hledger for wasm32-wasi (this takes a while)"
 cd "$root"
@@ -108,8 +130,17 @@ fi
 mkdir -p "$OUT_DIR"
 cp "$built" "$OUT"
 size=$(wc -c <"$OUT" | tr -d ' ')
-sha=$( (command -v sha256sum >/dev/null 2>&1 && sha256sum "$OUT") \
-    || (command -v shasum >/dev/null 2>&1 && shasum -a 256 "$OUT") ) | cut -d' ' -f1
+# Plain if/elif rather than `sha=$(A || B) | cut`: that form puts the assignment
+# on the left of a pipeline, so it lands in a subshell and the variable is still
+# unset afterwards — which `set -u` then reports as "parameter not set".
+if command -v sha256sum >/dev/null 2>&1; then
+    sha=$(sha256sum "$OUT" | cut -d' ' -f1)
+elif command -v shasum >/dev/null 2>&1; then
+    sha=$(shasum -a 256 "$OUT" | cut -d' ' -f1)
+else
+    warn "no sha256sum or shasum found; record the checksum by hand in wasm.lock"
+    sha=""
+fi
 
 say ""
 say "==> built $OUT"
