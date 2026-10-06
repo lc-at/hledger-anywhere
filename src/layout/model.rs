@@ -102,6 +102,15 @@ pub struct PaneRect {
     pub rect: Rect,
 }
 
+/// Height of a stack's tab bar, in CSS pixels.
+///
+/// Mirrors `--gl-tabbar-height` in the stylesheet. `hit_test` needs it because
+/// aiming at a stack's tabs has to mean "add this as a tab": a tab bar is only a
+/// thin strip at the top of a pane, and without this the pointer over it would
+/// resolve to the top edge and a drop there would split the pane — not what
+/// anyone means when they aim at somebody else's tabs.
+pub const TAB_BAR_HEIGHT: f64 = 27.0;
+
 /// Which pane, and which part of it, a viewport point is over.
 ///
 /// Deliberately takes pre-measured rectangles rather than looking anything up:
@@ -109,6 +118,11 @@ pub struct PaneRect {
 /// on every pointermove forces a synchronous reflow per frame — the difference
 /// between a drag that tracks the pointer and one that lags behind it. The rects
 /// are snapshotted once, when the drag starts.
+///
+/// Regions are computed against the pane *body*, not the whole pane, so the
+/// top edge is a real target rather than the few pixels between the tab bar and
+/// the top of the content. Without that, aiming at the tab bar and slipping a
+/// couple of pixels would turn "join these tabs" into "split above here".
 ///
 /// Returns `None` when the point is over no pane, or over the middle of the pane
 /// the drag started from — re-merging a tab into its own stack is nothing the
@@ -125,10 +139,18 @@ pub fn hit_test(
         .iter()
         .find(|pane| pane.rect.has_extent() && pane.rect.contains(x, y))?;
 
-    let region = region_at(
-        (x - hit.rect.x) / hit.rect.width,
-        (y - hit.rect.y) / hit.rect.height,
-    );
+    let body_top = hit.rect.y + TAB_BAR_HEIGHT;
+    let body_height = hit.rect.height - TAB_BAR_HEIGHT;
+
+    let region = if body_height <= 0.0 || y <= body_top {
+        // The tab bar itself, or a pane too short to have a body.
+        DropRegion::Center
+    } else {
+        region_at(
+            (x - hit.rect.x) / hit.rect.width,
+            (y - body_top) / body_height,
+        )
+    };
 
     if hit.panel == dragged && !region.is_split() {
         return None;
@@ -1393,6 +1415,42 @@ mod tests {
                 width: 100.0,
                 height: 80.0
             }
+        );
+    }
+
+    #[test]
+    fn aiming_at_a_stacks_tab_bar_means_join_it_not_split_above_it() {
+        let panes = [
+            pane(1, 0.0, 0.0, 200.0, 300.0),
+            pane(2, 200.0, 0.0, 200.0, 300.0),
+        ];
+
+        // Anywhere across the tab bar is a merge, including the far left column
+        // that would otherwise resolve to "split left".
+        assert_eq!(
+            hit_test(&panes, 205.0, 10.0, 1).map(|(panel, region, _)| (panel, region)),
+            Some((2, DropRegion::Center))
+        );
+        assert_eq!(
+            hit_test(&panes, 395.0, 25.0, 1).map(|(_, region, _)| region),
+            Some(DropRegion::Center)
+        );
+
+        // Immediately below the tab bar the top edge is a real, reachable
+        // target — it is not squeezed out by the strip above it.
+        assert_eq!(
+            hit_test(&panes, 300.0, 45.0, 1).map(|(_, region, _)| region),
+            Some(DropRegion::Top)
+        );
+    }
+
+    #[test]
+    fn a_pane_too_short_to_have_a_body_is_still_a_merge_target() {
+        // Degenerate, but it must not divide by a negative height.
+        let panes = [pane(4, 0.0, 0.0, 200.0, 20.0)];
+        assert_eq!(
+            hit_test(&panes, 100.0, 10.0, 1).map(|(_, region, _)| region),
+            Some(DropRegion::Center)
         );
     }
 

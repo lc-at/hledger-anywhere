@@ -202,15 +202,31 @@ Two design decisions are worth knowing before changing them:
   journal generation, refresh generation, and the exact report options — and
   ignores a request it has already satisfied. Anything that invalidates a result
   (loading a journal, refreshing, changing an option) changes the key.
+- **Nothing that follows the pointer is reactive.** Both gestures write straight
+  to the DOM inside the pointer event: the splitter sets two `flex-grow` values,
+  and the drop indicator is positioned with `style.setProperty`. Routing either
+  through a signal is the thing that makes a drag feel soft — the update lands in
+  a later task, so the feedback trails the input *by a frame even at a locked
+  60 fps*, and the user is always watching something slightly behind the thing
+  they are moving. For the same reason a splitter drag performs no reactive
+  write at all: the two panes it resizes are resolved once at pointer-down, and
+  the share delta is recomputed from the release position rather than
+  accumulated, so nothing can re-render mid-gesture.
 - **Docking measures once, not per frame.** A drag snapshots every pane's
   rectangle when it starts and then does pure arithmetic against that snapshot.
   Hit-testing by reading the DOM on each pointermove — `elementFromPoint` plus
   `getBoundingClientRect` — forces a synchronous reflow per frame, because the
-  indicator has just been moved; measured, that was one forced layout per move,
-  which is exactly the lag you feel when a drag cannot keep up with the pointer.
-  The preview is also only written when the target or region actually changes,
-  rather than on every move inside the same zone. `hit_test` and `region_at` are
-  pure and unit-tested.
+  indicator has just been moved; measured, that was one forced layout per move.
+  `hit_test` and `region_at` are pure and unit-tested.
+- **Aiming is generous and unambiguous.** The gutter is a 5px hairline that
+  hit-tests as a ~13px target, because a splitter you have to aim at reads as
+  unresponsive even when it tracks the pointer perfectly. Dropping on a stack's
+  *tab bar* means "join these tabs", resolved against the pane's body rather than
+  the whole pane — otherwise the top edge of the content would sit a couple of
+  pixels below the tab bar and turn an intended merge into an unintended split.
+- **A pane's contents are contained.** `contain: layout paint` on each pane stops
+  a resize from invalidating the layout of everything below it, which matters
+  once a transaction table has thousands of rows.
 - **A drag cannot get stuck.** Pointer capture is the normal way to follow a
   gesture past the element it started on, but it is not absolute: releasing
   outside the window or over browser chrome can take the capture with it and

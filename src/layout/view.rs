@@ -29,7 +29,7 @@ use crate::layout::model::{
     Child, Dir, DropRegion, MIN_SIZE, Node, PaneRect, PanelId, PanelInstance, Rect, hit_test,
 };
 use crate::panels;
-use crate::state::{AppState, DragState, DropPreview, TabDrag};
+use crate::state::{AppState, DROP_INDICATOR_ID, DragState, TabDrag};
 
 /// The whole layout area: the tree, or a prompt when nothing is open.
 #[component]
@@ -44,12 +44,9 @@ pub fn LayoutView() -> impl IntoView {
                 Some(node) => render_node(state, node, Vec::new()),
                 None => render_empty(state),
             }}
-            // Outside the tree, so updating it on every pointermove re-renders
-            // only this node rather than the whole layout.
-            {move || match state.drop_preview.get() {
-                Some(preview) => drop_indicator(preview),
-                None => ().into_any(),
-            }}
+            // One persistent indicator, positioned directly during a drag rather
+            // than re-rendered. See `show_drop_indicator`.
+            <div class="gl-drop-indicator" id=DROP_INDICATOR_ID style="display:none"></div>
         </div>
     }
 }
@@ -163,27 +160,17 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
                     // Measured once, here, rather than per move: see
                     // `AppState::pane_rects`.
                     state.pane_rects.set(collect_pane_rects());
+                    state.cache_indicator();
                     if let Some(element) = event_element(&ev) {
                         mark_dragging(&element);
                     }
                 }
 
-                // Pure arithmetic against the snapshot — no DOM reads, so no
-                // forced reflow on the hot path.
-                let next = hit_test(&state.pane_rects.get_untracked(), x, y, drag.panel).map(
-                    |(target, region, rect)| DropPreview {
-                        target,
-                        region,
-                        rect,
-                    },
-                );
-
-                // Only react when the answer actually changes. Writing on every
-                // move would rebuild the indicator node dozens of times a second
-                // while the pointer is still inside the same zone.
-                if state.drop_preview.get_untracked() != next {
-                    state.drop_preview.set(next);
-                }
+                // Pure arithmetic against the snapshot — no DOM reads — and the
+                // result is written straight to the indicator, in this same
+                // event, so it moves with the pointer instead of a task later.
+                let target = hit_test(&state.pane_rects.get_untracked(), x, y, drag.panel);
+                show_drop_indicator(state, target);
             };
 
             let on_up = move |ev: PointerEvent| {
@@ -194,15 +181,23 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
                     return;
                 }
 
-                let preview = state.drop_preview.get_untracked();
+                // The target is recomputed from where the pointer actually was
+                // released, rather than read back from whatever the indicator
+                // was last told to show.
+                let target = hit_test(
+                    &state.pane_rects.get_untracked(),
+                    ev.client_x() as f64,
+                    ev.client_y() as f64,
+                    drag.panel,
+                );
                 state.end_tab_drag();
 
                 if drag.active {
                     // A drag is not a click: activating the tab as well would be
                     // surprising, and would fight the move.
-                    if let Some(preview) = preview {
+                    if let Some((target, region, _)) = target {
                         state.layout.update(|layout| {
-                            layout.move_panel(drag.panel, preview.target, preview.region);
+                            layout.move_panel(drag.panel, target, region);
                         });
                     }
                     return;
@@ -264,8 +259,13 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
 }
 
 /// How far a tab must move before the gesture counts as a drag rather than a
-/// click. Small enough to feel immediate, large enough to survive a shaky click.
-const DRAG_THRESHOLD_PX: f64 = 5.0;
+/// click.
+///
+/// Small, because the threshold is dead time: nothing at all happens until it is
+/// crossed, and a gesture that does not begin immediately reads as unresponsive.
+/// Three pixels is still enough to survive a shaky click — and a click that never
+/// crosses it is handled as a tab activation on pointer-up either way.
+const DRAG_THRESHOLD_PX: f64 = 3.0;
 
 /// Measure every pane once, at the start of a drag.
 ///
@@ -354,13 +354,28 @@ fn install_drag_guards(state: AppState) {
     }
 }
 
-/// The translucent rectangle showing where the dragged tab will land.
+/// Position the drop indicator, synchronously, in the same event as the pointer.
 ///
 /// A centre drop highlights the whole pane (it will become a tab there); an edge
-/// drop highlights that half.
-fn drop_indicator(preview: DropPreview) -> AnyView {
-    let rect = preview.rect;
-    let (x, y, width, height) = match preview.region {
+/// drop highlights that half, in a slightly stronger shade, so the two outcomes
+/// are never confusable.
+///
+/// Written straight to the element rather than through a signal. A reactive
+/// update is applied in a later task, which puts the indicator a frame behind
+/// the pointer — and a drag where the feedback trails the input reads as
+/// sluggish even when it is running at a locked 60 fps.
+fn show_drop_indicator(state: AppState, target: Option<(PanelId, DropRegion, Rect)>) {
+    let Some(element) = state.indicator.get_untracked() else {
+        return;
+    };
+    let style = element.style();
+
+    let Some((_, region, rect)) = target else {
+        let _ = style.set_property("display", "none");
+        return;
+    };
+
+    let (x, y, width, height) = match region {
         DropRegion::Center => (rect.x, rect.y, rect.width, rect.height),
         DropRegion::Left => (rect.x, rect.y, rect.width / 2.0, rect.height),
         DropRegion::Right => (
@@ -378,15 +393,33 @@ fn drop_indicator(preview: DropPreview) -> AnyView {
         ),
     };
 
-    let style = format!("left:{x}px;top:{y}px;width:{width}px;height:{height}px;");
-    view! {
-        <div
-            class="gl-drop-indicator"
-            class:gl-drop-indicator-split=preview.region.is_split()
-            style=style
-        ></div>
-    }
-    .into_any()
+    let _ = style.set_property("left", &format!("{x}px"));
+    let _ = style.set_property("top", &format!("{y}px"));
+    let _ = style.set_property("width", &format!("{width}px"));
+    let _ = style.set_property("height", &format!("{height}px"));
+    let _ = element
+        .class_list()
+        .toggle_with_force("gl-drop-indicator-split", region.is_split());
+    let _ = style.set_property("display", "block");
+}
+
+/// Where the boundary between two panes should sit for a pointer at `position`,
+/// as `(leading, trailing)` shares of the split.
+///
+/// Used for both the live preview and the commit. Deriving it twice would be an
+/// easy way for the size the user saw to differ from the size that got written
+/// to the model.
+///
+/// The arithmetic is exact rather than approximate: a pair holding `pair_share`
+/// of the container occupies `pair_share × free_space` pixels, so converting a
+/// pixel delta into a share delta divides by that pixel extent. The boundary
+/// therefore tracks the pointer one-to-one instead of drifting.
+fn boundary_shares(drag: &DragState, position: f64) -> (f32, f32) {
+    let total = drag.pair_share as f64;
+    let min = (MIN_SIZE as f64).min(total / 2.0);
+    let leading = (drag.start_before as f64 + (position - drag.origin) / drag.pair_px * total)
+        .clamp(min, total - min);
+    (leading as f32, (total - leading) as f32)
 }
 
 /// A draggable gutter between two panes.
@@ -433,6 +466,15 @@ fn splitter(state: AppState, dir: Dir, split_path: Vec<usize>, boundary: usize) 
                 return;
             };
 
+            // Kept for the whole gesture so the move handler never has to look
+            // anything up. Both are `HtmlElement`s we already know exist.
+            if let (Ok(before), Ok(after)) = (
+                before.clone().dyn_into::<HtmlElement>(),
+                after.clone().dyn_into::<HtmlElement>(),
+            ) {
+                state.splitter_panes.set(Some((before, after)));
+            }
+
             // Stops text selection from starting and keeps the gesture on the
             // gutter even when the pointer leaves it.
             ev.prevent_default();
@@ -449,20 +491,19 @@ fn splitter(state: AppState, dir: Dir, split_path: Vec<usize>, boundary: usize) 
                 pair_px,
                 pair_share: start_before + start_after,
                 start_before,
-                delta: 0.0,
             }));
         }
     };
 
     let on_move = {
         move |ev: PointerEvent| {
-            let Some(mut drag) = state.drag.get_untracked() else {
+            let Some(drag) = state.drag.get_untracked() else {
                 return;
             };
             if drag.pointer_id != ev.pointer_id() {
                 return;
             }
-            let Some(gutter) = event_element(&ev) else {
+            let Some((before, after)) = state.splitter_panes.get_untracked() else {
                 return;
             };
 
@@ -471,22 +512,12 @@ fn splitter(state: AppState, dir: Dir, split_path: Vec<usize>, boundary: usize) 
             } else {
                 ev.client_x() as f64
             };
-            let total = drag.pair_share as f64;
-            let min = (MIN_SIZE as f64).min(total / 2.0);
-            let new_before =
-                (drag.start_before as f64 + (position - drag.origin) / drag.pair_px * total)
-                    .clamp(min, total - min);
-            drag.delta = (new_before - drag.start_before as f64) as f32;
-            state.drag.set(Some(drag));
+            let (leading, trailing) = boundary_shares(&drag, position);
 
-            // Preview only: no model write, so nothing re-renders mid-drag.
-            if let (Some(before), Some(after)) = (
-                gutter.previous_element_sibling(),
-                gutter.next_element_sibling(),
-            ) {
-                set_flex_grow(&before, new_before as f32);
-                set_flex_grow(&after, (total - new_before) as f32);
-            }
+            // Preview only. No model write and no signal write, so nothing
+            // re-renders and the gesture stays a pure DOM update.
+            set_flex_grow(&before, leading);
+            set_flex_grow(&after, trailing);
         }
     };
 
@@ -499,22 +530,30 @@ fn splitter(state: AppState, dir: Dir, split_path: Vec<usize>, boundary: usize) 
                 return;
             }
             state.drag.set(None);
-            if drag.delta != 0.0 {
-                // Committing re-renders the tree with the same sizes the preview
-                // is already showing, so the hand-off is invisible.
-                state.layout.update_untracked(|layout| {
-                    layout.resize_split(&split_path, boundary, drag.delta);
-                });
-                // Written without notifying: the drag preview has already put
-                // these exact sizes in the DOM, so re-rendering the tree would
-                // rebuild every pane to change nothing visible — and would
-                // re-run each panel's effect on the way. The model is still the
-                // source of truth for the next structural render, and storage is
-                // updated explicitly because no effect will fire.
-                state.persist_layout();
+            state.splitter_panes.set(None);
+
+            let position = if drag.vertical {
+                ev.client_y() as f64
+            } else {
+                ev.client_x() as f64
+            };
+            let (leading, _) = boundary_shares(&drag, position);
+            let delta = leading - drag.start_before;
+            if delta == 0.0 {
+                return;
             }
+
+            // Committed without notifying: the preview already put these exact
+            // sizes in the DOM, so re-rendering would rebuild every pane to
+            // change nothing visible — and re-run each panel's effect on the
+            // way. Storage is written explicitly because no effect will fire.
+            state.layout.update_untracked(|layout| {
+                layout.resize_split(&split_path, boundary, delta);
+            });
+            state.persist_layout();
         }
     };
+    // Not `Copy`: this closure captures the split path.
     let on_cancel = on_up.clone();
 
     view! {

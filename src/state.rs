@@ -18,18 +18,27 @@
 use std::collections::HashMap;
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
+use web_sys::HtmlElement;
 
 use crate::fsx;
 use crate::hledger::report::{Flavor, ReportSpec};
 use crate::hledger::{Engine, EngineError, HledgerOutput, HledgerRequest, JournalFile};
 use crate::journal::{self, MainJournal};
-use crate::layout::model::{DropRegion, Layout, PaneRect, PanelId, Rect};
+use crate::layout::model::{Layout, PaneRect, PanelId};
 use crate::panels;
 
 /// `localStorage` key for the persisted layout. Versioned so a future change to
 /// the layout schema cannot be silently misread as the current one.
 const STORAGE_KEY: &str = "hledger-anywhere.layout.v1";
+
+/// Id of the drop indicator element, which the drag positions directly.
+///
+/// Defined here rather than in the view because both the view (which renders it)
+/// and `end_tab_drag` (which must be able to find it to hide it, even if the
+/// cached handle was never populated) need the same name.
+pub const DROP_INDICATOR_ID: &str = "hledger-anywhere-drop-indicator";
 
 /// The demo journal, reused straight from the test fixtures so the two cannot
 /// drift apart.
@@ -56,8 +65,6 @@ pub struct DragState {
     pub pair_share: f32,
     /// The leading pane's share when the drag began.
     pub start_before: f32,
-    /// Share delta accumulated so far, committed to the model on pointer-up.
-    pub delta: f32,
 }
 
 /// Where the journal files came from.
@@ -170,8 +177,6 @@ pub struct AppState {
 
     /// A tab being dragged, if any.
     pub tab_drag: RwSignal<Option<TabDrag>>,
-    /// Where that tab would land, for the drop indicator.
-    pub drop_preview: RwSignal<Option<DropPreview>>,
     /// Every pane's rectangle, measured once when a drag starts.
     ///
     /// Measuring per pointermove would call `getBoundingClientRect` after the
@@ -179,6 +184,24 @@ pub struct AppState {
     /// reflow on every frame. The layout cannot change during a drag, so one
     /// snapshot is both correct and much faster. Nothing reads this reactively.
     pub pane_rects: RwSignal<Vec<PaneRect>>,
+    /// The drop indicator element, looked up once per drag and then positioned
+    /// directly.
+    ///
+    /// Held rather than re-rendered on purpose. Driving the indicator through a
+    /// signal means the update lands in a later task, so it trails the pointer by
+    /// a frame; the drag then feels soft even when it is running at a solid
+    /// 60 fps, because the thing the user is watching is always slightly behind
+    /// the thing they are moving. Writing to it synchronously is what makes it
+    /// feel attached to the pointer. Only ever read untracked.
+    pub indicator: RwSignal<Option<HtmlElement>>,
+    /// The two panes either side of the gutter being dragged, resolved once.
+    ///
+    /// Looking the siblings up at pointer-down means the move handler does no
+    /// DOM reading at all — only the `flex-grow` writes that actually move the
+    /// panes — and, because the share delta is recomputed from the release
+    /// position instead of being accumulated, it performs no reactive writes
+    /// either. Nothing can re-render during the gesture.
+    pub splitter_panes: RwSignal<Option<(HtmlElement, HtmlElement)>>,
 
     /// Bumped whenever the journal changes, so every panel knows to re-run.
     pub generation: RwSignal<u64>,
@@ -204,17 +227,6 @@ pub struct TabDrag {
     /// Set once the pointer has moved far enough to mean a drag rather than a
     /// click. Until then the gesture is still a candidate tab click.
     pub active: bool,
-}
-
-/// Where a dragged tab would land.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DropPreview {
-    /// A panel in the pane being hovered.
-    pub target: PanelId,
-    pub region: DropRegion,
-    /// That pane's rectangle as measured when the drag began, so drawing the
-    /// indicator never needs to measure anything.
-    pub rect: Rect,
 }
 
 impl AppState {
@@ -243,8 +255,8 @@ impl AppState {
             report_keys: RwSignal::new(HashMap::new()),
             log: RwSignal::new(Vec::new()),
             tab_drag: RwSignal::new(None),
-            drop_preview: RwSignal::new(None),
-            pane_rects: RwSignal::new(Vec::new()),
+            indicator: RwSignal::new(None),
+            splitter_panes: RwSignal::new(None),            pane_rects: RwSignal::new(Vec::new()),
             generation: RwSignal::new(0),
             refresh: RwSignal::new(0),
         };
@@ -276,8 +288,22 @@ impl AppState {
     /// screen after the pointer is gone.
     pub fn end_tab_drag(&self) {
         self.tab_drag.set(None);
-        self.drop_preview.set(None);
         self.pane_rects.set(Vec::new());
+
+        // Hide the indicator first, and by querying if the cached handle is
+        // missing: this is the one thing that must never be left on screen, so
+        // it does not rely on the drag having got as far as caching the element.
+        let cached = self.indicator.get_untracked();
+        let element = cached.or_else(|| {
+            web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id(DROP_INDICATOR_ID))
+                .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        });
+        if let Some(element) = element {
+            let _ = element.style().set_property("display", "none");
+        }
+        self.indicator.set(None);
 
         // The drag affordances are applied by class rather than by a reactive
         // flag, because re-rendering the tab mid-drag would replace the element
@@ -291,6 +317,18 @@ impl AppState {
         if let Some(root) = document.document_element() {
             let _ = root.class_list().remove_1("gl-dragging");
         }
+    }
+
+    /// Cache the drop indicator element for the duration of a drag.
+    pub fn cache_indicator(&self) {
+        if self.indicator.get_untracked().is_some() {
+            return;
+        }
+        let element = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.get_element_by_id(DROP_INDICATOR_ID))
+            .and_then(|element| element.dyn_into::<HtmlElement>().ok());
+        self.indicator.set(element);
     }
 
     /// Discard the current layout and rebuild the default one.

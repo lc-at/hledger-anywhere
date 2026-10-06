@@ -194,7 +194,15 @@ body {
 
 /* A pane. `flex-grow` is set inline from the model and *is* the pane's share.
  * `flex-basis: 0` makes the flex algorithm hand out exactly the space the
- * gutters leave over, so shares stay honest without measuring anything. */
+ * gutters leave over, so shares stay honest without measuring anything.
+ *
+ * `contain: layout paint` keeps a pane's contents from taking part in the page's
+ * layout. Resizing a splitter then only reflows the two panes that changed size
+ * instead of invalidating everything below them, which is what stops a drag over
+ * a long transaction table from going soft. `paint` is already implied by the
+ * `overflow: hidden` below; `layout` is the half that matters. `size` is
+ * deliberately NOT contained — these panes are flex items, so their size must
+ * stay governed by the flex algorithm rather than by their content. */
 .gl-cell {
   display: flex;
   flex-grow: 0;
@@ -203,15 +211,42 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  contain: layout paint;
 }
 
 /* A gutter. Never grows or shrinks, and never inherits a share. */
 .gl-splitter {
+  position: relative;
+  /* Above the panes, so the enlarged grab area below wins hit-testing even
+   * where it overlaps the pane that paints after this element. */
+  z-index: 1;
   flex: 0 0 var(--gl-gutter-size);
   background: var(--gl-gutter);
   /* Suppress text selection and touch scrolling for the whole gesture. */
   user-select: none;
   touch-action: none;
+}
+
+/* Widen the grab area without widening the visible gutter.
+ *
+ * A 5px target has to be aimed at, and a splitter you have to aim at reads as
+ * unresponsive even when it tracks the pointer perfectly. The pseudo-element is
+ * invisible and hit-tests as part of the splitter, so the gutter still looks
+ * like a 5px hairline while being ~16px easy to grab. */
+.gl-splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.gl-splitter-row::before {
+  left: -5px;
+  right: -5px;
+}
+
+.gl-splitter-col::before {
+  top: -5px;
+  bottom: -5px;
 }
 
 .gl-splitter-row {
@@ -725,10 +760,18 @@ body {
   opacity: 0.55;
 }
 
-html.gl-dragging,
-html.gl-dragging * {
-  cursor: grabbing !important;
-  user-select: none !important;
+/* A drag in progress. `cursor` and `user-select` both inherit, so setting them
+ * on the root is enough — and only the handful of elements that declare their
+ * own cursor need overriding. A universal `*` rule here would put every element
+ * in the document into style recalculation for the whole gesture. */
+html.gl-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+html.gl-dragging .gl-tab,
+html.gl-dragging .gl-splitter {
+  cursor: grabbing;
 }
 
 /* ---------------------------------------------------------------- badges -- */
