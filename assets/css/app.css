@@ -742,6 +742,65 @@ body {
   background: rgba(0, 153, 255, 0.26);
 }
 
+/* A reorder: a thin insertion bar between tabs, the way Golden Layout shows
+ * where a dragged tab will land. */
+.gl-drop-indicator-tab {
+  background: var(--gl-accent);
+  border: 0;
+  border-radius: 1px;
+  box-shadow: 0 0 6px rgba(0, 153, 255, 0.8);
+}
+
+/* ------------------------------------------------ drag proxy / tab chrome -- */
+
+/* The label that travels with the pointer while a tab is dragged. */
+.gl-drag-proxy {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  padding: 4px 10px;
+  max-width: 220px;
+  overflow: hidden;
+  background: var(--gl-tabbar-bg);
+  border: 1px solid var(--gl-accent);
+  border-radius: var(--gl-radius);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  color: var(--gl-text);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+}
+
+/* Pushes the maximise button to the trailing end of the tab bar. */
+.gl-tabbar-fill {
+  flex: 1 1 auto;
+}
+
+.gl-tab-maximise {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--gl-border);
+  color: var(--gl-text-dim);
+  cursor: pointer;
+}
+
+.gl-tab-maximise:hover {
+  background: var(--gl-tab-hover-bg);
+  color: var(--gl-text);
+}
+
+.gl-tab-maximise:focus-visible {
+  outline: 1px solid var(--gl-accent);
+  outline-offset: -2px;
+}
+
 /* ------------------------------------------------------------ drag state -- */
 
 /* Tabs read as draggable, and the whole viewport shows the grab cursor while a

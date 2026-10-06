@@ -26,9 +26,15 @@ backend. You point it at a directory of journal files and it runs the real
 - **A Golden-Layout-style shell**: nested row/column splits, tabbed stacks,
   draggable splitters, per-tab close, an add-panel menu, and a layout that
   persists to `localStorage`.
-- **Drag-and-drop docking**: drag a tab onto another pane, or onto one of its
-  edges to split against it. The pane under the pointer is highlighted, and an
-  edge drop shows which half the panel will take.
+- **Drag-and-drop docking, Golden Layout style**: drag a tab onto another pane to
+  join its tabs, or onto one of its edges to split against it. The target region
+  is highlighted, and a small label travels with the pointer so it is always
+  clear which panel is being carried.
+- **Tab reordering**: drag a tab along a tab bar, or onto another stack's, to
+  choose its position. A thin insertion bar shows exactly where it will land.
+- **Maximise and restore**: the button at the end of each tab bar fills the
+  layout with that stack and puts it back. The tree underneath is untouched, so
+  restoring is exact — no split or size can be lost.
 
 The demo above shows `expenses:misc:books $18.00`, which comes from a *different
 file* reached through an `include` directive — the clearest evidence that the
@@ -286,9 +292,11 @@ snapshot when checking what a panel says.
 ## Known limitations
 
 - Reports run against the interim bridge unless the full CLI has been built.
-- Panels can be docked by dragging their tab, but there is no floating, popout or
-  maximize, and a drop only targets the pane under the pointer — there are no
-  insertion guides between panes.
+- The layout covers docking, splitting, tab reordering, maximise and persisted
+  sizes. What Golden Layout also has and this does not: **floating and popout
+  panels**, a **tab overflow menu** (tabs scroll horizontally here instead), and
+  **drop zones at the outer edge of the workspace** (a drop only targets the pane
+  or tab under the pointer).
 - Directory loading uses the `<input webkitdirectory>` picker, so a re-pick is
   required to see file changes. The File System Access API and live watching are
   not wired up.

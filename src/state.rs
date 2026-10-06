@@ -26,7 +26,7 @@ use crate::fsx;
 use crate::hledger::report::{Flavor, ReportSpec};
 use crate::hledger::{Engine, EngineError, HledgerOutput, HledgerRequest, JournalFile};
 use crate::journal::{self, MainJournal};
-use crate::layout::model::{Layout, PaneRect, PanelId};
+use crate::layout::model::{DropGeometry, Layout, PanelId};
 use crate::panels;
 
 /// `localStorage` key for the persisted layout. Versioned so a future change to
@@ -39,6 +39,9 @@ const STORAGE_KEY: &str = "hledger-anywhere.layout.v1";
 /// and `end_tab_drag` (which must be able to find it to hide it, even if the
 /// cached handle was never populated) need the same name.
 pub const DROP_INDICATOR_ID: &str = "hledger-anywhere-drop-indicator";
+
+/// Id of the element that follows the cursor while a tab is dragged.
+pub const DRAG_PROXY_ID: &str = "hledger-anywhere-drag-proxy";
 
 /// The demo journal, reused straight from the test fixtures so the two cannot
 /// drift apart.
@@ -177,13 +180,13 @@ pub struct AppState {
 
     /// A tab being dragged, if any.
     pub tab_drag: RwSignal<Option<TabDrag>>,
-    /// Every pane's rectangle, measured once when a drag starts.
+    /// Every pane's and tab's rectangle, measured once when a drag starts.
     ///
     /// Measuring per pointermove would call `getBoundingClientRect` after the
     /// DOM had just been written to move the indicator, forcing a synchronous
     /// reflow on every frame. The layout cannot change during a drag, so one
     /// snapshot is both correct and much faster. Nothing reads this reactively.
-    pub pane_rects: RwSignal<Vec<PaneRect>>,
+    pub geometry: RwSignal<DropGeometry>,
     /// The drop indicator element, looked up once per drag and then positioned
     /// directly.
     ///
@@ -194,6 +197,13 @@ pub struct AppState {
     /// the thing they are moving. Writing to it synchronously is what makes it
     /// feel attached to the pointer. Only ever read untracked.
     pub indicator: RwSignal<Option<HtmlElement>>,
+    /// The element that follows the pointer while a tab is dragged.
+    ///
+    /// Golden Layout shows a proxy rather than only dimming the source tab: it
+    /// makes the thing being moved feel picked up, and it is the only feedback
+    /// that says "this is the panel you are carrying" once the cursor has left
+    /// the tab bar.
+    pub proxy: RwSignal<Option<HtmlElement>>,
     /// The two panes either side of the gutter being dragged, resolved once.
     ///
     /// Looking the siblings up at pointer-down means the move handler does no
@@ -256,7 +266,9 @@ impl AppState {
             log: RwSignal::new(Vec::new()),
             tab_drag: RwSignal::new(None),
             indicator: RwSignal::new(None),
-            splitter_panes: RwSignal::new(None),            pane_rects: RwSignal::new(Vec::new()),
+            proxy: RwSignal::new(None),
+            splitter_panes: RwSignal::new(None),
+            geometry: RwSignal::new(DropGeometry::default()),
             generation: RwSignal::new(0),
             refresh: RwSignal::new(0),
         };
@@ -288,29 +300,34 @@ impl AppState {
     /// screen after the pointer is gone.
     pub fn end_tab_drag(&self) {
         self.tab_drag.set(None);
-        self.pane_rects.set(Vec::new());
+        self.geometry.set(DropGeometry::default());
 
-        // Hide the indicator first, and by querying if the cached handle is
-        // missing: this is the one thing that must never be left on screen, so
-        // it does not rely on the drag having got as far as caching the element.
-        let cached = self.indicator.get_untracked();
-        let element = cached.or_else(|| {
-            web_sys::window()
-                .and_then(|window| window.document())
-                .and_then(|document| document.get_element_by_id(DROP_INDICATOR_ID))
-                .and_then(|element| element.dyn_into::<HtmlElement>().ok())
-        });
-        if let Some(element) = element {
-            let _ = element.style().set_property("display", "none");
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+
+        // Hide both follow-the-pointer elements, querying if the cached handle is
+        // missing: these are the two things that must never be left on screen, so
+        // they do not rely on the drag having got as far as caching them.
+        for (cached, id) in [
+            (self.indicator.get_untracked(), DROP_INDICATOR_ID),
+            (self.proxy.get_untracked(), DRAG_PROXY_ID),
+        ] {
+            let element = cached.or_else(|| {
+                document
+                    .get_element_by_id(id)
+                    .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+            });
+            if let Some(element) = element {
+                let _ = element.style().set_property("display", "none");
+            }
         }
         self.indicator.set(None);
+        self.proxy.set(None);
 
         // The drag affordances are applied by class rather than by a reactive
         // flag, because re-rendering the tab mid-drag would replace the element
         // holding the pointer capture and lose the rest of the gesture.
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            return;
-        };
         if let Ok(Some(tab)) = document.query_selector(".gl-tab-dragging") {
             let _ = tab.class_list().remove_1("gl-tab-dragging");
         }
@@ -319,16 +336,20 @@ impl AppState {
         }
     }
 
-    /// Cache the drop indicator element for the duration of a drag.
-    pub fn cache_indicator(&self) {
+    /// Cache the two follow-the-pointer elements for the duration of a drag.
+    pub fn cache_drag_elements(&self) {
         if self.indicator.get_untracked().is_some() {
             return;
         }
-        let element = web_sys::window()
-            .and_then(|window| window.document())
-            .and_then(|document| document.get_element_by_id(DROP_INDICATOR_ID))
-            .and_then(|element| element.dyn_into::<HtmlElement>().ok());
-        self.indicator.set(element);
+        let document = web_sys::window().and_then(|window| window.document());
+        let find = |id: &str| {
+            document
+                .clone()?
+                .get_element_by_id(id)
+                .and_then(|element| element.dyn_into::<HtmlElement>().ok())
+        };
+        self.indicator.set(find(DROP_INDICATOR_ID));
+        self.proxy.set(find(DRAG_PROXY_ID));
     }
 
     /// Discard the current layout and rebuild the default one.

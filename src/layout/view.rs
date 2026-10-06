@@ -26,10 +26,11 @@ use wasm_bindgen::closure::Closure;
 use web_sys::{Element, HtmlElement, PointerEvent};
 
 use crate::layout::model::{
-    Child, Dir, DropRegion, MIN_SIZE, Node, PaneRect, PanelId, PanelInstance, Rect, hit_test,
+    Child, Dir, DropGeometry, DropRegion, DropTarget, MIN_SIZE, Node, PaneRect, PanelId,
+    PanelInstance, Rect, TabRect, hit_test,
 };
 use crate::panels;
-use crate::state::{AppState, DROP_INDICATOR_ID, DragState, TabDrag};
+use crate::state::{AppState, DRAG_PROXY_ID, DROP_INDICATOR_ID, DragState, TabDrag};
 
 /// The whole layout area: the tree, or a prompt when nothing is open.
 #[component]
@@ -40,20 +41,32 @@ pub fn LayoutView() -> impl IntoView {
     install_drag_guards(state);
     view! {
         <div class="gl-root">
-            {move || match state.layout.get().root {
-                Some(node) => render_node(state, node, Vec::new()),
-                None => render_empty(state),
+            {move || {
+                let layout = state.layout.get();
+                // A maximised pane stands in for the whole tree while it is on.
+                // The tree underneath is untouched, so restoring is exact and
+                // costs nothing — the same way Golden Layout's maximise works.
+                match layout.maximised.and_then(|id| layout.stack_containing(id)) {
+                    Some(Node::Stack { panels, active }) => {
+                        render_stack(state, panels, active, true)
+                    }
+                    _ => match layout.root {
+                        Some(node) => render_node(state, node, Vec::new()),
+                        None => render_empty(state),
+                    },
+                }
             }}
-            // One persistent indicator, positioned directly during a drag rather
-            // than re-rendered. See `show_drop_indicator`.
+            // Both of these are positioned directly during a drag rather than
+            // re-rendered. See `show_drop_indicator`.
             <div class="gl-drop-indicator" id=DROP_INDICATOR_ID style="display:none"></div>
+            <div class="gl-drag-proxy" id=DRAG_PROXY_ID style="display:none"></div>
         </div>
     }
 }
 
 fn render_node(state: AppState, node: Node, path: Vec<usize>) -> AnyView {
     match node {
-        Node::Stack { panels, active } => render_stack(state, panels, active),
+        Node::Stack { panels, active } => render_stack(state, panels, active, false),
         Node::Split { dir, children } => render_split(state, dir, children, path),
     }
 }
@@ -92,7 +105,12 @@ fn render_split(state: AppState, dir: Dir, children: Vec<Child>, path: Vec<usize
     view! { <div class=class>{parts}</div> }.into_any()
 }
 
-fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -> AnyView {
+fn render_stack(
+    state: AppState,
+    instances: Vec<PanelInstance>,
+    active: usize,
+    maximised: bool,
+) -> AnyView {
     let active = active.min(instances.len().saturating_sub(1));
 
     // Identifies this pane when a tab is dragged over it. The *active* panel is
@@ -111,6 +129,7 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
             let selected = index == active;
             let title = panels::title_for(&instance.kind);
             let icon = panels::icon_for(&instance.kind);
+            let tab_panel = id.to_string();
 
             let on_down = move |ev: PointerEvent| {
                 // Left button only, and never from the close button.
@@ -158,19 +177,20 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
                     drag.active = true;
                     state.tab_drag.set(Some(drag));
                     // Measured once, here, rather than per move: see
-                    // `AppState::pane_rects`.
-                    state.pane_rects.set(collect_pane_rects());
-                    state.cache_indicator();
+                    // `AppState::geometry`.
+                    state.geometry.set(collect_drop_geometry());
+                    state.cache_drag_elements();
                     if let Some(element) = event_element(&ev) {
-                        mark_dragging(&element);
+                        mark_dragging(state, &element);
                     }
                 }
 
                 // Pure arithmetic against the snapshot — no DOM reads — and the
                 // result is written straight to the indicator, in this same
                 // event, so it moves with the pointer instead of a task later.
-                let target = hit_test(&state.pane_rects.get_untracked(), x, y, drag.panel);
+                let target = hit_test(&state.geometry.get_untracked(), x, y, drag.panel);
                 show_drop_indicator(state, target);
+                move_drag_proxy(state, x, y);
             };
 
             let on_up = move |ev: PointerEvent| {
@@ -185,7 +205,7 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
                 // released, rather than read back from whatever the indicator
                 // was last told to show.
                 let target = hit_test(
-                    &state.pane_rects.get_untracked(),
+                    &state.geometry.get_untracked(),
                     ev.client_x() as f64,
                     ev.client_y() as f64,
                     drag.panel,
@@ -195,10 +215,18 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
                 if drag.active {
                     // A drag is not a click: activating the tab as well would be
                     // surprising, and would fight the move.
-                    if let Some((target, region, _)) = target {
-                        state.layout.update(|layout| {
-                            layout.move_panel(drag.panel, target, region);
-                        });
+                    match target {
+                        Some(DropTarget::Pane { panel, region, .. }) => {
+                            state.layout.update(|layout| {
+                                layout.move_panel(drag.panel, panel, region);
+                            });
+                        }
+                        Some(DropTarget::Tab { panel, before, .. }) => {
+                            state.layout.update(|layout| {
+                                layout.reorder_panel(drag.panel, panel, before);
+                            });
+                        }
+                        None => {}
                     }
                     return;
                 }
@@ -214,6 +242,7 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
                 <div
                     class="gl-tab"
                     class:gl-tab-active=selected
+                    data-tab-panel=tab_panel
                     on:pointerdown=on_down
                     on:pointermove=on_move
                     on:pointerup=on_up
@@ -249,13 +278,67 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
         }
     });
 
+    let restore_title = if maximised { "Restore" } else { "Maximise" };
+    let on_maximise = {
+        let panel = pane_id.clone();
+        move |ev: web_sys::MouseEvent| {
+            ev.stop_propagation();
+            let Ok(panel) = panel.parse::<PanelId>() else {
+                return;
+            };
+            state.layout.update(|layout| {
+                layout.toggle_maximised(panel);
+            });
+        }
+    };
+
     view! {
         <div class="gl-stack" data-pane-id=pane_id>
-            <div class="gl-tabbar">{tabs}</div>
+            <div class="gl-tabbar">
+                {tabs}
+                <span class="gl-tabbar-fill"></span>
+                <button
+                    class="gl-tab-maximise"
+                    title=restore_title
+                    on:click=on_maximise
+                >
+                    {maximise_icon(maximised)}
+                </button>
+            </div>
             <div class="gl-body">{body}</div>
         </div>
     }
     .into_any()
+}
+
+/// The expand/restore glyph, drawn rather than typed.
+///
+/// Inline SVG so it renders identically everywhere: the obvious Unicode
+/// characters for this (⛶, ❐) are missing from enough fonts to be a lottery.
+fn maximise_icon(restore: bool) -> AnyView {
+    if restore {
+        view! {
+            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                <path
+                    d="M5 1v4H1M7 11V7h4M1 5l4-4M11 7l-4 4"
+                    fill="none"
+                    stroke="currentColor"
+                ></path>
+            </svg>
+        }
+        .into_any()
+    } else {
+        view! {
+            <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+                <path
+                    d="M1 5V1h4M11 7v4H7M1 1l4 4M11 11L7 7"
+                    fill="none"
+                    stroke="currentColor"
+                ></path>
+            </svg>
+        }
+        .into_any()
+    }
 }
 
 /// How far a tab must move before the gesture counts as a drag rather than a
@@ -267,53 +350,74 @@ fn render_stack(state: AppState, instances: Vec<PanelInstance>, active: usize) -
 /// crosses it is handled as a tab activation on pointer-up either way.
 const DRAG_THRESHOLD_PX: f64 = 3.0;
 
-/// Measure every pane once, at the start of a drag.
+/// Measure every pane and tab once, at the start of a drag.
 ///
 /// The only place a drag touches layout. Everything after it is arithmetic
 /// against these rectangles, which is what keeps a drag tracking the pointer
 /// instead of lagging a frame behind it.
-fn collect_pane_rects() -> Vec<PaneRect> {
+///
+/// Tabs are measured as well as panes because a tab is a drop target in its own
+/// right: that is what makes dragging along a tab bar reorder tabs rather than
+/// resolving to whatever region of the pane happens to be underneath.
+fn collect_drop_geometry() -> DropGeometry {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-        return Vec::new();
-    };
-    let Ok(nodes) = document.query_selector_all("[data-pane-id]") else {
-        return Vec::new();
+        return DropGeometry::default();
     };
 
-    let mut panes = Vec::with_capacity(nodes.length() as usize);
-    for index in 0..nodes.length() {
-        let Some(node) = nodes.item(index) else {
-            continue;
+    let rects = |selector: &str, attribute: &str| -> Vec<(PanelId, Rect)> {
+        let Ok(nodes) = document.query_selector_all(selector) else {
+            return Vec::new();
         };
-        let Ok(element) = node.dyn_into::<Element>() else {
-            continue;
-        };
-        let Some(panel) = element
-            .get_attribute("data-pane-id")
-            .and_then(|value| value.parse::<PanelId>().ok())
-        else {
-            continue;
-        };
-        let rect = element.get_bounding_client_rect();
-        panes.push(PaneRect {
-            panel,
-            rect: Rect {
-                x: rect.left(),
-                y: rect.top(),
-                width: rect.width(),
-                height: rect.height(),
-            },
-        });
+        let mut found = Vec::with_capacity(nodes.length() as usize);
+        for index in 0..nodes.length() {
+            let Some(node) = nodes.item(index) else {
+                continue;
+            };
+            let Ok(element) = node.dyn_into::<Element>() else {
+                continue;
+            };
+            let Some(panel) = element
+                .get_attribute(attribute)
+                .and_then(|value| value.parse::<PanelId>().ok())
+            else {
+                continue;
+            };
+            let rect = element.get_bounding_client_rect();
+            found.push((
+                panel,
+                Rect {
+                    x: rect.left(),
+                    y: rect.top(),
+                    width: rect.width(),
+                    height: rect.height(),
+                },
+            ));
+        }
+        found
+    };
+
+    DropGeometry {
+        panes: rects("[data-pane-id]", "data-pane-id")
+            .into_iter()
+            .map(|(panel, rect)| PaneRect { panel, rect })
+            .collect(),
+        tabs: rects(".gl-tab", "data-tab-panel")
+            .into_iter()
+            .map(|(panel, rect)| TabRect { panel, rect })
+            .collect(),
     }
-    panes
 }
 
-/// Show, in the DOM, that this is the tab being dragged.
+/// Show, in the DOM, that this is the tab being dragged, and pick it up.
 ///
-/// Applied as a class rather than through a reactive flag: re-rendering the tab
-/// would replace the element that holds the pointer capture and lose the rest of
-/// the gesture.
-fn mark_dragging(tab: &HtmlElement) {
+/// Applied as classes and to a proxy element rather than through a reactive
+/// flag: re-rendering the tab would replace the element that holds the pointer
+/// capture and lose the rest of the gesture.
+///
+/// The proxy is Golden Layout's drag proxy: a small label that travels with the
+/// pointer. Dimming the source tab alone stops being enough feedback the moment
+/// the cursor leaves the tab bar.
+fn mark_dragging(state: AppState, tab: &HtmlElement) {
     let _ = tab.class_list().add_1("gl-tab-dragging");
     if let Some(root) = web_sys::window()
         .and_then(|window| window.document())
@@ -321,6 +425,23 @@ fn mark_dragging(tab: &HtmlElement) {
     {
         let _ = root.class_list().add_1("gl-dragging");
     }
+
+    let Some(proxy) = state.proxy.get_untracked() else {
+        return;
+    };
+    let text_of = |selector: &str| {
+        tab.query_selector(selector)
+            .ok()
+            .flatten()
+            .and_then(|element| element.text_content())
+            .unwrap_or_default()
+    };
+    proxy.set_text_content(Some(&format!(
+        "{} {}",
+        text_of(".gl-tab-icon").trim(),
+        text_of(".gl-tab-title").trim()
+    )));
+    let _ = proxy.style().set_property("display", "block");
 }
 
 /// Catch a drag ending somewhere the tab will not hear about.
@@ -356,51 +477,85 @@ fn install_drag_guards(state: AppState) {
 
 /// Position the drop indicator, synchronously, in the same event as the pointer.
 ///
-/// A centre drop highlights the whole pane (it will become a tab there); an edge
-/// drop highlights that half, in a slightly stronger shade, so the two outcomes
-/// are never confusable.
+/// A pane target highlights the region it would take: the whole pane for a
+/// merge, or half of it for a split, in a slightly stronger shade, so the two
+/// outcomes are never confusable. A tab target is drawn instead as a thin
+/// insertion bar at the edge of the tab it would land beside — the same
+/// affordance Golden Layout uses for reordering.
 ///
 /// Written straight to the element rather than through a signal. A reactive
 /// update is applied in a later task, which puts the indicator a frame behind
 /// the pointer — and a drag where the feedback trails the input reads as
 /// sluggish even when it is running at a locked 60 fps.
-fn show_drop_indicator(state: AppState, target: Option<(PanelId, DropRegion, Rect)>) {
+fn show_drop_indicator(state: AppState, target: Option<DropTarget>) {
     let Some(element) = state.indicator.get_untracked() else {
         return;
     };
     let style = element.style();
+    let classes = element.class_list();
 
-    let Some((_, region, rect)) = target else {
+    let Some(target) = target else {
         let _ = style.set_property("display", "none");
         return;
     };
 
-    let (x, y, width, height) = match region {
-        DropRegion::Center => (rect.x, rect.y, rect.width, rect.height),
-        DropRegion::Left => (rect.x, rect.y, rect.width / 2.0, rect.height),
-        DropRegion::Right => (
-            rect.x + rect.width / 2.0,
-            rect.y,
-            rect.width / 2.0,
-            rect.height,
-        ),
-        DropRegion::Top => (rect.x, rect.y, rect.width, rect.height / 2.0),
-        DropRegion::Bottom => (
-            rect.x,
-            rect.y + rect.height / 2.0,
-            rect.width,
-            rect.height / 2.0,
-        ),
+    let (x, y, width, height, split) = match target {
+        DropTarget::Pane { region, rect, .. } => {
+            let (x, y, width, height) = match region {
+                DropRegion::Center => (rect.x, rect.y, rect.width, rect.height),
+                DropRegion::Left => (rect.x, rect.y, rect.width / 2.0, rect.height),
+                DropRegion::Right => (
+                    rect.x + rect.width / 2.0,
+                    rect.y,
+                    rect.width / 2.0,
+                    rect.height,
+                ),
+                DropRegion::Top => (rect.x, rect.y, rect.width, rect.height / 2.0),
+                DropRegion::Bottom => (
+                    rect.x,
+                    rect.y + rect.height / 2.0,
+                    rect.width,
+                    rect.height / 2.0,
+                ),
+            };
+            (x, y, width, height, region.is_split())
+        }
+        DropTarget::Tab { before, rect, .. } => {
+            // A 2px bar at the tab's leading or trailing edge, nudged so it sits
+            // in the gap rather than over the label.
+            const BAR: f64 = 2.0;
+            let edge = if before {
+                rect.x - BAR / 2.0
+            } else {
+                rect.x + rect.width - BAR / 2.0
+            };
+            (edge, rect.y, BAR, rect.height, false)
+        }
     };
 
     let _ = style.set_property("left", &format!("{x}px"));
     let _ = style.set_property("top", &format!("{y}px"));
     let _ = style.set_property("width", &format!("{width}px"));
     let _ = style.set_property("height", &format!("{height}px"));
-    let _ = element
-        .class_list()
-        .toggle_with_force("gl-drop-indicator-split", region.is_split());
+    let _ = classes.toggle_with_force("gl-drop-indicator-split", split);
+    let _ = classes.toggle_with_force(
+        "gl-drop-indicator-tab",
+        matches!(target, DropTarget::Tab { .. }),
+    );
     let _ = style.set_property("display", "block");
+}
+
+/// Move the drag proxy to follow the pointer.
+///
+/// Offset down and right of the cursor so it never sits under the pointer and
+/// obscure what is being aimed at.
+fn move_drag_proxy(state: AppState, x: f64, y: f64) {
+    let Some(proxy) = state.proxy.get_untracked() else {
+        return;
+    };
+    let style = proxy.style();
+    let _ = style.set_property("left", &format!("{}px", x + 14.0));
+    let _ = style.set_property("top", &format!("{}px", y + 14.0));
 }
 
 /// Where the boundary between two panes should sit for a pointer at `position`,

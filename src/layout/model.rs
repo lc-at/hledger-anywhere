@@ -111,7 +111,40 @@ pub struct PaneRect {
 /// anyone means when they aim at somebody else's tabs.
 pub const TAB_BAR_HEIGHT: f64 = 27.0;
 
-/// Which pane, and which part of it, a viewport point is over.
+/// A tab's position on screen, captured at the start of a drag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabRect {
+    /// The panel that tab shows.
+    pub panel: PanelId,
+    pub rect: Rect,
+}
+
+/// Everything a drag needs to know about where things are.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DropGeometry {
+    pub panes: Vec<PaneRect>,
+    pub tabs: Vec<TabRect>,
+}
+
+/// What a dragged panel would do if it were released at a point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DropTarget {
+    /// Merge into a pane, or split against it.
+    Pane {
+        panel: PanelId,
+        region: DropRegion,
+        rect: Rect,
+    },
+    /// Take a specific position in a tab bar. `before` is which side of the tab
+    /// under the pointer it would be inserted on.
+    Tab {
+        panel: PanelId,
+        before: bool,
+        rect: Rect,
+    },
+}
+
+/// Which pane or tab a viewport point is over, for a drag of `dragged`.
 ///
 /// Deliberately takes pre-measured rectangles rather than looking anything up:
 /// measuring during a drag means calling `getBoundingClientRect`, and doing that
@@ -119,23 +152,42 @@ pub const TAB_BAR_HEIGHT: f64 = 27.0;
 /// between a drag that tracks the pointer and one that lags behind it. The rects
 /// are snapshotted once, when the drag starts.
 ///
-/// Regions are computed against the pane *body*, not the whole pane, so the
+/// Tabs are tested before panes, because a tab sits *inside* its pane and must
+/// win: that is what makes dragging along a tab bar reorder tabs, the way Golden
+/// Layout does, instead of resolving to whatever pane region happens to be
+/// underneath.
+///
+/// Pane regions are computed against the pane *body*, not the whole pane, so the
 /// top edge is a real target rather than the few pixels between the tab bar and
 /// the top of the content. Without that, aiming at the tab bar and slipping a
 /// couple of pixels would turn "join these tabs" into "split above here".
 ///
-/// Returns `None` when the point is over no pane, or over the middle of the pane
+/// Returns `None` when the point is over nothing, or over the middle of the pane
 /// the drag started from — re-merging a tab into its own stack is nothing the
 /// user can want, and showing a drop target there would just be noise. The
 /// *edges* of that same pane are still valid, because that is how a stack gets
 /// split apart.
 pub fn hit_test(
-    panes: &[PaneRect],
+    geometry: &DropGeometry,
     x: f64,
     y: f64,
     dragged: PanelId,
-) -> Option<(PanelId, DropRegion, Rect)> {
-    let hit = panes
+) -> Option<DropTarget> {
+    // A tab wins over the pane behind it. Dropping onto the dragged tab itself
+    // is nothing, but either side of it is a reorder.
+    for tab in &geometry.tabs {
+        if tab.panel == dragged || !tab.rect.has_extent() || !tab.rect.contains(x, y) {
+            continue;
+        }
+        return Some(DropTarget::Tab {
+            panel: tab.panel,
+            before: x < tab.rect.x + tab.rect.width / 2.0,
+            rect: tab.rect,
+        });
+    }
+
+    let hit = geometry
+        .panes
         .iter()
         .find(|pane| pane.rect.has_extent() && pane.rect.contains(x, y))?;
 
@@ -156,7 +208,11 @@ pub fn hit_test(
         return None;
     }
 
-    Some((hit.panel, region, hit.rect))
+    Some(DropTarget::Pane {
+        panel: hit.panel,
+        region,
+        rect: hit.rect,
+    })
 }
 
 /// Which region of a pane a point falls in, given the point as a fraction of the
@@ -270,10 +326,19 @@ impl Node {
 /// `focused` is what makes "add panel" land where the user expects it: a new
 /// panel joins the focused panel's stack. It is `None` only when no panel is
 /// open.
+///
+/// `maximised` names the panel whose stack is temporarily filling the layout.
+/// It is stored as a panel id rather than a path so that it survives the tree
+/// being rebuilt, and it is a *view* state: the tree underneath is untouched, so
+/// restoring is exact and free. Golden Layout behaves the same way.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
     pub root: Option<Node>,
     pub focused: Option<PanelId>,
+    /// `serde(default)` so layouts persisted before this field existed still
+    /// load, rather than silently resetting to the default layout.
+    #[serde(default)]
+    pub maximised: Option<PanelId>,
     next_id: PanelId,
 }
 
@@ -290,6 +355,7 @@ impl Layout {
             root: None,
             focused: None,
             next_id: 1,
+            maximised: None,
         }
     }
 
@@ -453,6 +519,106 @@ impl Layout {
         if self.focused.is_none() {
             self.focused = self.first_panel_id();
         }
+
+        // A maximised panel that has since been closed must not leave the layout
+        // showing a pane that no longer exists.
+        if let Some(maximised) = self.maximised {
+            let still_open = self
+                .root
+                .as_ref()
+                .and_then(|root| root.stack_path_of(maximised))
+                .is_some();
+            if !still_open {
+                self.maximised = None;
+            }
+        }
+    }
+
+    /// Fill the layout with `id`'s stack, or restore the tree if it already is.
+    ///
+    /// Only the view state changes; the tree is left exactly as it was, so
+    /// restoring is exact and cannot lose a split or a size.
+    pub fn toggle_maximised(&mut self, id: PanelId) -> bool {
+        let exists = self
+            .root
+            .as_ref()
+            .and_then(|root| root.stack_path_of(id))
+            .is_some();
+        if !exists {
+            return false;
+        }
+        self.maximised = if self.maximised == Some(id) {
+            None
+        } else {
+            Some(id)
+        };
+        self.focused = Some(id);
+        true
+    }
+
+    /// The stack containing `id`, cloned, for rendering it on its own.
+    pub fn stack_containing(&self, id: PanelId) -> Option<Node> {
+        let path = self.root.as_ref()?.stack_path_of(id)?;
+        self.node_at(&path).cloned()
+    }
+
+    /// Move `id` to sit immediately before or after `target` as a tab.
+    ///
+    /// This is the gesture Golden Layout calls reordering: dragging a tab along a
+    /// tab bar (or onto another one) to change the order rather than the shape.
+    /// Dragging a tab within its own stack is otherwise a no-op, which reads as
+    /// broken.
+    pub fn reorder_panel(&mut self, id: PanelId, target: PanelId, before: bool) -> bool {
+        let mut candidate = self.clone();
+        if candidate.try_reorder_panel(id, target, before) {
+            *self = candidate;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn try_reorder_panel(&mut self, id: PanelId, target: PanelId, before: bool) -> bool {
+        if id == target {
+            return false;
+        }
+        let order_before: Vec<PanelId> = self.panels().iter().map(|panel| panel.id).collect();
+
+        let Some(source_path) = self.root.as_ref().and_then(|root| root.stack_path_of(id)) else {
+            return false;
+        };
+        let Some(instance) = self.take_panel(&source_path, id) else {
+            return false;
+        };
+        self.drop_empty_stack(&source_path);
+        self.renormalise();
+
+        // Re-resolved after the removal, which may have shifted or collapsed
+        // everything above it.
+        let Some(target_path) = self
+            .root
+            .as_ref()
+            .and_then(|root| root.stack_path_of(target))
+        else {
+            return false;
+        };
+        let Some(Node::Stack { panels, active }) = self.node_at_mut(&target_path) else {
+            return false;
+        };
+        let Some(index) = panels.iter().position(|panel| panel.id == target) else {
+            return false;
+        };
+
+        let insert_at = if before { index } else { index + 1 };
+        panels.insert(insert_at, instance);
+        *active = insert_at;
+        self.focused = Some(id);
+
+        // Whether the order actually changed is the honest test of "was this a
+        // reorder at all": dropping a tab back exactly where it was must not
+        // count as an edit, or the caller would treat a no-op as a move.
+        let order_after: Vec<PanelId> = self.panels().iter().map(|panel| panel.id).collect();
+        order_after != order_before
     }
 
     /// Add a panel of `kind`, as a new tab in stack `target`.
@@ -992,6 +1158,7 @@ mod tests {
             )),
             focused: Some(3),
             next_id: 4,
+            maximised: None,
         };
 
         let added = layout.add_panel("accounts", None);
@@ -1020,6 +1187,7 @@ mod tests {
             )),
             focused: Some(2),
             next_id: 3,
+            maximised: None,
         };
         let added = layout.add_panel("new", None);
         let path = layout.root.as_ref().unwrap().stack_path_of(2).unwrap();
@@ -1091,6 +1259,7 @@ mod tests {
             )),
             focused: Some(2),
             next_id: 4,
+            maximised: None,
         };
 
         assert!(layout.close_panel(2));
@@ -1128,6 +1297,7 @@ mod tests {
             )),
             focused: Some(2),
             next_id: 4,
+            maximised: None,
         };
         assert_normalized(&layout);
 
@@ -1191,6 +1361,7 @@ mod tests {
             )),
             focused: Some(1),
             next_id: 4,
+            maximised: None,
         }
     }
 
@@ -1239,6 +1410,7 @@ mod tests {
             )),
             focused: Some(1),
             next_id: 4,
+            maximised: None,
         };
         assert!(layout.resize_split(&[], 0, 0.5));
         let after = sizes(&layout, &[]);
@@ -1353,93 +1525,114 @@ mod tests {
     fn pane(panel: PanelId, x: f64, y: f64, width: f64, height: f64) -> PaneRect {
         PaneRect {
             panel,
-            rect: Rect {
-                x,
-                y,
-                width,
-                height,
-            },
+            rect: Rect { x, y, width, height },
+        }
+    }
+
+    fn tab(panel: PanelId, x: f64, y: f64, width: f64, height: f64) -> TabRect {
+        TabRect {
+            panel,
+            rect: Rect { x, y, width, height },
+        }
+    }
+
+    /// Geometry with panes only, which is all most of these tests need.
+    fn panes(panes: Vec<PaneRect>) -> DropGeometry {
+        DropGeometry {
+            panes,
+            tabs: Vec::new(),
+        }
+    }
+
+    /// The pane side of a hit, ignoring tabs.
+    fn pane_hit(
+        geometry: &DropGeometry,
+        x: f64,
+        y: f64,
+        dragged: PanelId,
+    ) -> Option<(PanelId, DropRegion)> {
+        match hit_test(geometry, x, y, dragged)? {
+            DropTarget::Pane { panel, region, .. } => Some((panel, region)),
+            DropTarget::Tab { .. } => None,
         }
     }
 
     #[test]
     fn hit_test_finds_the_pane_and_region_under_a_point() {
-        let panes = [
+        let geometry = panes(vec![
             pane(1, 0.0, 0.0, 100.0, 100.0),
             pane(2, 100.0, 0.0, 200.0, 100.0),
-        ];
+        ]);
         // The middle of pane 2 is a merge target.
         assert_eq!(
-            hit_test(&panes, 200.0, 50.0, 1).map(|(panel, region, _)| (panel, region)),
+            pane_hit(&geometry, 200.0, 50.0, 1),
             Some((2, DropRegion::Center))
         );
         // The left edge of pane 2 splits against it.
-        assert_eq!(
-            hit_test(&panes, 105.0, 50.0, 1).map(|(panel, region, _)| (panel, region)),
-            Some((2, DropRegion::Left))
-        );
+        assert_eq!(pane_hit(&geometry, 105.0, 50.0, 1), Some((2, DropRegion::Left)));
         // A point over no pane is not a target.
-        assert_eq!(hit_test(&panes, 500.0, 50.0, 1), None);
+        assert_eq!(hit_test(&geometry, 500.0, 50.0, 1), None);
     }
 
     #[test]
     fn hit_test_ignores_the_middle_of_the_source_pane_but_keeps_its_edges() {
-        let panes = [pane(7, 0.0, 0.0, 100.0, 100.0)];
+        let geometry = panes(vec![pane(7, 0.0, 0.0, 100.0, 100.0)]);
         // Re-merging a tab into the stack it came from is not something the user
         // can want, so it is not offered.
-        assert_eq!(hit_test(&panes, 50.0, 50.0, 7), None);
+        assert_eq!(hit_test(&geometry, 50.0, 50.0, 7), None);
         // Splitting that same stack apart is.
-        assert_eq!(
-            hit_test(&panes, 2.0, 50.0, 7).map(|(_, region, _)| region),
-            Some(DropRegion::Left)
-        );
+        assert_eq!(pane_hit(&geometry, 2.0, 50.0, 7), Some((7, DropRegion::Left)));
     }
 
     #[test]
     fn hit_test_skips_panes_with_no_extent() {
         // A collapsed or hidden pane must not swallow the hit from a real one.
-        let panes = [pane(1, 0.0, 0.0, 0.0, 0.0), pane(2, 0.0, 0.0, 100.0, 100.0)];
-        assert_eq!(hit_test(&panes, 50.0, 50.0, 9).map(|(panel, _, _)| panel), Some(2));
+        let geometry = panes(vec![pane(1, 0.0, 0.0, 0.0, 0.0), pane(2, 0.0, 0.0, 100.0, 100.0)]);
+        assert_eq!(pane_hit(&geometry, 50.0, 50.0, 9).map(|(panel, _)| panel), Some(2));
     }
 
     #[test]
     fn hit_test_returns_the_rect_so_the_indicator_needs_no_measurement() {
-        let panes = [pane(3, 10.0, 20.0, 100.0, 80.0)];
-        let (_, region, rect) = hit_test(&panes, 15.0, 60.0, 9).expect("should hit");
-        assert_eq!(region, DropRegion::Left);
-        assert_eq!(
-            rect,
-            Rect {
-                x: 10.0,
-                y: 20.0,
-                width: 100.0,
-                height: 80.0
+        let geometry = panes(vec![pane(3, 10.0, 20.0, 100.0, 80.0)]);
+        match hit_test(&geometry, 15.0, 60.0, 9).expect("should hit") {
+            DropTarget::Pane { region, rect, .. } => {
+                assert_eq!(region, DropRegion::Left);
+                assert_eq!(
+                    rect,
+                    Rect {
+                        x: 10.0,
+                        y: 20.0,
+                        width: 100.0,
+                        height: 80.0
+                    }
+                );
             }
-        );
+            other => panic!("expected a pane target, got {other:?}"),
+        }
     }
 
     #[test]
     fn aiming_at_a_stacks_tab_bar_means_join_it_not_split_above_it() {
-        let panes = [
+        let geometry = panes(vec![
             pane(1, 0.0, 0.0, 200.0, 300.0),
             pane(2, 200.0, 0.0, 200.0, 300.0),
-        ];
+        ]);
 
         // Anywhere across the tab bar is a merge, including the far left column
         // that would otherwise resolve to "split left".
         assert_eq!(
-            hit_test(&panes, 205.0, 10.0, 1).map(|(panel, region, _)| (panel, region)),
+            pane_hit(&geometry, 205.0, 10.0, 1),
             Some((2, DropRegion::Center))
         );
         assert_eq!(
-            hit_test(&panes, 395.0, 25.0, 1).map(|(_, region, _)| region),
+            pane_hit(&geometry, 395.0, 25.0, 1).map(|(_, region)| region),
             Some(DropRegion::Center)
         );
 
         // Immediately below the tab bar the top edge is a real, reachable
         // target — it is not squeezed out by the strip above it.
         assert_eq!(
-            hit_test(&panes, 300.0, 45.0, 1).map(|(_, region, _)| region),
+            pane_hit(&geometry, 300.0, 45.0, 1).map(|(_, region)| region),
             Some(DropRegion::Top)
         );
     }
@@ -1447,11 +1640,154 @@ mod tests {
     #[test]
     fn a_pane_too_short_to_have_a_body_is_still_a_merge_target() {
         // Degenerate, but it must not divide by a negative height.
-        let panes = [pane(4, 0.0, 0.0, 200.0, 20.0)];
+        let geometry = panes(vec![pane(4, 0.0, 0.0, 200.0, 20.0)]);
         assert_eq!(
-            hit_test(&panes, 100.0, 10.0, 1).map(|(_, region, _)| region),
+            pane_hit(&geometry, 100.0, 10.0, 1).map(|(_, region)| region),
             Some(DropRegion::Center)
         );
+    }
+
+    #[test]
+    fn a_tab_wins_over_the_pane_behind_it() {
+        // The tab sits inside pane 2, whose middle would otherwise be a merge.
+        let geometry = DropGeometry {
+            panes: vec![
+                pane(1, 0.0, 0.0, 200.0, 300.0),
+                pane(2, 200.0, 0.0, 200.0, 300.0),
+            ],
+            tabs: vec![tab(2, 210.0, 0.0, 80.0, 27.0)],
+        };
+
+        // The left half of a tab inserts before it, the right half after.
+        assert_eq!(
+            hit_test(&geometry, 220.0, 12.0, 1),
+            Some(DropTarget::Tab {
+                panel: 2,
+                before: true,
+                rect: Rect {
+                    x: 210.0,
+                    y: 0.0,
+                    width: 80.0,
+                    height: 27.0
+                },
+            })
+        );
+        assert!(matches!(
+            hit_test(&geometry, 280.0, 12.0, 1),
+            Some(DropTarget::Tab { before: false, .. })
+        ));
+
+        // There is nothing to order against when the tab *is* the dragged panel,
+        // and the pane behind it is its own stack's middle, which is never a
+        // target — so this point resolves to nothing at all.
+        assert_eq!(hit_test(&geometry, 220.0, 12.0, 2), None);
+    }
+
+    #[test]
+    fn maximising_is_a_view_state_that_leaves_the_tree_alone() {
+        let mut layout = three_across();
+        let original = layout.clone();
+
+        assert_eq!(layout.maximised, None);
+        assert!(layout.toggle_maximised(2));
+        assert_eq!(layout.maximised, Some(2));
+        assert_eq!(layout.root, original.root, "the tree must be untouched");
+        assert_eq!(layout.panels(), original.panels());
+
+        // Toggling again restores exactly, with nothing to rebuild.
+        assert!(layout.toggle_maximised(2));
+        assert_eq!(layout.maximised, None);
+        assert_eq!(layout.root, original.root);
+
+        // An unknown panel cannot be maximised.
+        assert!(!layout.toggle_maximised(999));
+        assert_eq!(layout.maximised, None);
+    }
+
+    #[test]
+    fn closing_a_maximised_panel_restores_the_tree() {
+        let mut layout = three_across();
+        assert!(layout.toggle_maximised(1));
+        assert!(layout.close_panel(1));
+        assert_eq!(
+            layout.maximised, None,
+            "a maximised panel that no longer exists must not persist"
+        );
+        assert_normalized(&layout);
+    }
+
+    #[test]
+    fn the_maximised_stack_can_be_rendered_on_its_own() {
+        let mut layout = three_across();
+        assert!(layout.toggle_maximised(2));
+        match layout.stack_containing(2) {
+            Some(Node::Stack { panels, .. }) => assert_eq!(panels[0].id, 2),
+            other => panic!("expected the maximised stack, got {other:?}"),
+        }
+        assert_eq!(layout.stack_containing(999), None);
+    }
+
+    #[test]
+    fn a_layout_saved_before_maximising_existed_still_loads() {
+        // Persisted layouts are user data, so adding a field must not reset them.
+        let json = r#"{"root":{"Stack":{"panels":[{"id":1,"kind":"journals"}],"active":0}},
+                       "focused":1,"next_id":2}"#;
+        let layout: Layout = serde_json::from_str(json).expect("should load");
+        assert_eq!(layout.maximised, None);
+        assert_eq!(layout.panels().len(), 1);
+    }
+
+    #[test]
+    fn reordering_moves_a_tab_within_its_stack() {
+        // Stack[1,2,3] — drag 3 in front of 1.
+        let mut layout = Layout {
+            root: Some(stack(&[1, 2, 3])),
+            focused: Some(1),
+            maximised: None,
+            next_id: 4,
+        };
+        assert!(layout.reorder_panel(3, 1, true));
+        match layout.root.as_ref().unwrap() {
+            Node::Stack { panels, active } => {
+                let ids: Vec<PanelId> = panels.iter().map(|panel| panel.id).collect();
+                assert_eq!(ids, vec![3, 1, 2]);
+                assert_eq!(panels[*active].id, 3, "the moved tab becomes visible");
+            }
+            other => panic!("expected a stack, got {other:?}"),
+        }
+        assert_normalized(&layout);
+    }
+
+    #[test]
+    fn reordering_onto_its_own_position_is_a_no_op() {
+        let mut layout = Layout {
+            root: Some(stack(&[1, 2, 3])),
+            focused: Some(1),
+            maximised: None,
+            next_id: 4,
+        };
+        let before = layout.clone();
+        // 2 is already immediately before 3.
+        assert!(!layout.reorder_panel(2, 3, true));
+        assert_eq!(layout, before);
+        // And a tab cannot be reordered against itself.
+        assert!(!layout.reorder_panel(2, 2, true));
+        assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn reordering_can_move_a_tab_into_another_stack() {
+        // Row[ Stack[1,2], Stack[3] ] — drag 1 in front of 3.
+        let mut layout = Layout {
+            root: Some(split(Dir::Row, vec![(0.5, stack(&[1, 2])), (0.5, stack(&[3]))])),
+            focused: Some(1),
+            maximised: None,
+            next_id: 4,
+        };
+        assert!(layout.reorder_panel(1, 3, true));
+        let order: Vec<PanelId> = layout.panels().iter().map(|panel| panel.id).collect();
+        assert_eq!(order, vec![2, 1, 3]);
+        assert_normalized(&layout);
     }
 
     #[test]
@@ -1461,6 +1797,7 @@ mod tests {
             root: Some(split(Dir::Row, vec![(0.5, stack(&[1])), (0.5, stack(&[2]))])),
             focused: Some(1),
             next_id: 3,
+            maximised: None,
         };
 
         assert!(layout.move_panel(1, 2, DropRegion::Center));
@@ -1484,6 +1821,7 @@ mod tests {
             root: Some(split(Dir::Row, vec![(0.6, stack(&[1])), (0.4, stack(&[2]))])),
             focused: Some(1),
             next_id: 3,
+            maximised: None,
         };
 
         assert!(layout.move_panel(1, 2, DropRegion::Left));
@@ -1517,6 +1855,7 @@ mod tests {
             )),
             focused: Some(1),
             next_id: 4,
+            maximised: None,
         };
 
         assert!(layout.move_panel(1, 2, DropRegion::Left));
@@ -1573,6 +1912,7 @@ mod tests {
             root: Some(split(Dir::Row, vec![(0.5, stack(&[1, 2])), (0.5, stack(&[3]))])),
             focused: Some(1),
             next_id: 4,
+            maximised: None,
         };
 
         assert!(layout.move_panel(1, 3, DropRegion::Center));
@@ -1601,6 +1941,7 @@ mod tests {
             root: Some(stack(&[1, 2])),
             focused: Some(1),
             next_id: 3,
+            maximised: None,
         };
         let before = layout.clone();
         assert!(!layout.move_panel(1, 2, DropRegion::Center));
@@ -1615,6 +1956,7 @@ mod tests {
             root: Some(stack(&[1, 2])),
             focused: Some(1),
             next_id: 3,
+            maximised: None,
         };
 
         assert!(layout.move_panel(1, 2, DropRegion::Right));
