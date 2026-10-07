@@ -1,11 +1,31 @@
 //! The application shell: header, and the layout area beneath it.
 
 use leptos::prelude::*;
+use wasm_bindgen::{closure::Closure, JsCast};
 
 use crate::layout::view::LayoutView;
 use crate::panels;
 use crate::settings::{self, Theme};
 use crate::state::{AppState, EngineStatus, SourceStatus};
+
+/// Close a header menu when the user clicks anywhere outside it.
+///
+/// A menu that only closes via its own button sits on top of the panels while
+/// the user tries to work in them, and the first click is wasted dismissing it.
+/// The menu container stops clicks from reaching the document, so anything that
+/// *does* reach it happened somewhere else and the menu should get out of the
+/// way.
+///
+/// The listener is leaked on purpose, exactly as the drag guards are: one per
+/// menu, for the life of the page, with no teardown to get wrong.
+fn close_on_outside_click(open: RwSignal<bool>) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let listener = Closure::<dyn FnMut()>::new(move || open.set(false));
+    let _ = document.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+    listener.forget();
+}
 
 #[component]
 pub fn App() -> impl IntoView {
@@ -55,6 +75,9 @@ pub fn App() -> impl IntoView {
 fn Header() -> impl IntoView {
     let state = expect_context::<AppState>();
 
+    // Once, for the life of the page: see `close_on_outside_click`.
+    Effect::new(move |_| close_on_outside_click(state.add_menu_open));
+
     let engine_class = move || match state.engine_status.get() {
         EngineStatus::Ready { .. } => "header-chip header-chip-ready",
         EngineStatus::Unavailable(_) | EngineStatus::Error(_) => "header-chip header-chip-error",
@@ -93,7 +116,7 @@ fn Header() -> impl IntoView {
 
             <span class="app-spacer"></span>
 
-            <div class="app-menu">
+            <div class="app-menu" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
                 <button
                     class="gl-btn"
                     on:click=move |_| state.add_menu_open.update(|open| *open = !*open)
@@ -143,6 +166,9 @@ fn SettingsMenu() -> impl IntoView {
     let state = expect_context::<AppState>();
     let open = RwSignal::new(false);
 
+    // Once, for the life of the page: see `close_on_outside_click`.
+    Effect::new(move |_| close_on_outside_click(open));
+
     let currency = move || {
         // The bridge accepts no report options at all, so choosing a currency
         // there would be saved and then silently ignored. Hide the control
@@ -181,7 +207,7 @@ fn SettingsMenu() -> impl IntoView {
     };
 
     view! {
-        <div class="app-menu">
+        <div class="app-menu" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
             <button
                 class="gl-btn"
                 on:click=move |_| open.update(|is_open| *is_open = !*is_open)
