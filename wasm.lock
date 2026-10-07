@@ -26,8 +26,19 @@
 # flavor if a build ever has to fall back to it.
 #
 # The artifact is not committed (see .gitignore: assets/wasm/*.wasm). Locally it
-# is taken from artifacts/hledger.wasm after a build; for CI, `url` must point at
-# a published copy of this exact binary, and `sha256` is enforced either way.
+# is taken from artifacts/hledger.wasm after a build; CI has no build output, so
+# it downloads the release asset below. `sha256` is enforced whichever way the
+# file arrives, so a wrong or stale upload is rejected rather than run.
+#
+# Publishing a new build (once per hledger version, not per commit):
+#
+#   sh scripts/build-hledger-wasm.sh          # writes artifacts/hledger.wasm
+#   gh release create wasm-v1 artifacts/hledger.wasm \
+#       --title "hledger 1.52.4 for wasm32-wasi" \
+#       --notes  "Pinned engine build; sha256 is recorded in wasm.lock."
+#
+# Then set `size`, `sha256` and `url` above/below to the printed values. If the
+# tag changes, the URL must change with it.
 #
 # NOTE: keys here are read by a small awk parser, so keep the flat
 # `key = "value"` form.
@@ -38,7 +49,4 @@ hledger_version = "1.52.4"
 ghc_version = "9.12"
 size = 13182157
 sha256 = "88882bee8b0e872b393539864a72d4a1717d0e05379ea25fb7004d960329507d"
-# No hosted copy yet: the fetch script falls back to artifacts/hledger.wasm (a
-# local build) and treats a missing artifact as non-fatal. Set this to a release
-# asset URL to let CI obtain the same binary.
-url = ""
+url = "https://github.com/lc-at/hledger-anywhere/releases/download/wasm-v1/hledger.wasm"

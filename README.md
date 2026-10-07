@@ -326,10 +326,14 @@ snapshot when checking what a panel says.
 ## Known limitations
 
 - Reports run on the real hledger CLI, built for wasm32-wasi. The artifact is not
-  committed (`assets/wasm/*.wasm`), so a clone must either build it
-  (`scripts/build-hledger-wasm.sh`, a long Haskell build) or point `wasm.lock`'s
-  `url` at a published copy — `sha256` is enforced either way. The interim
-  bridge artifact remains a supported flavor.
+  committed (`assets/wasm/*.wasm`), because it is a 13 MB binary that changes only
+  when hledger does. Locally it comes from `artifacts/hledger.wasm` after
+  `scripts/build-hledger-wasm.sh`; CI downloads the release asset named in
+  `wasm.lock`'s `url`. Publishing a new build is one command — see the header of
+  `wasm.lock`. `sha256` is enforced whichever way the file arrives, so a stale or
+  wrong upload is rejected rather than run, and the build fails loudly if no
+  artifact is available at all. The interim bridge artifact remains a supported
+  flavor.
 - The layout covers docking, splitting, tab reordering, maximise and persisted
   sizes. What Golden Layout also has and this does not: **floating and popout
   panels**, a **tab overflow menu** (tabs scroll horizontally here instead), and
