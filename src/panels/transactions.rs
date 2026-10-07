@@ -57,10 +57,10 @@ pub fn view(id: PanelId) -> AnyView {
         let mut spec = ReportSpec::json("print");
         // The bridge accepts no query arguments; asking anyway would silently
         // return the whole journal while the control claimed otherwise.
-        if state.flavor.get().supports_report_options() {
-            if let Some(Some(query)) = PERIODS.get(period.get()).map(|(_, query)| *query) {
-                spec = spec.arg(query);
-            }
+        if state.flavor.get().supports_report_options()
+            && let Some(Some(query)) = PERIODS.get(period.get()).map(|(_, query)| *query)
+        {
+            spec = spec.arg(query);
         }
         state.report_for(id, spec);
     });
