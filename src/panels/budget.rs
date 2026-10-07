@@ -17,7 +17,9 @@ use rust_decimal::Decimal;
 use crate::charts::scale;
 use crate::hledger::report::ReportSpec;
 use crate::journal::money::Amount;
-use crate::journal::reports::{parse_budget_report, pick_amount, BudgetReport};
+use crate::journal::reports::{
+    BudgetReport, default_commodity, parse_budget_report, pick_amount,
+};
 use crate::layout::model::PanelId;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
 use crate::state::AppState;
@@ -75,7 +77,20 @@ fn budget_view(state: AppState, report: &BudgetReport) -> AnyView {
         .settings
         .get_untracked()
         .main_currency
-        .or_else(|| first_commodity(report));
+        .or_else(|| {
+            default_commodity(
+                report
+                    .totals
+                    .cells
+                    .iter()
+                    .flat_map(|cell| cell.actual().iter().chain(cell.goal().iter()))
+                    .chain(report.rows.iter().flat_map(|row| {
+                        row.cells
+                            .iter()
+                            .flat_map(|cell| cell.actual().iter().chain(cell.goal().iter()))
+                    })),
+            )
+        });
     let labels = report.labels();
 
     let mut rows: Vec<AnyView> = Vec::new();
@@ -188,22 +203,4 @@ fn variance_text(value: Decimal, commodity: Option<&str>) -> String {
         Some(commodity) => format!("{} {commodity}", scale::format_tick(value)),
         None => scale::format_tick(value),
     }
-}
-
-/// The first commodity any actual or goal amount mentions.
-fn first_commodity(report: &BudgetReport) -> Option<String> {
-    let totals = report
-        .totals
-        .cells
-        .iter()
-        .flat_map(|cell| cell.actual().iter().chain(cell.goal().iter()));
-    let rows = report.rows.iter().flat_map(|row| {
-        row.cells
-            .iter()
-            .flat_map(|cell| cell.actual().iter().chain(cell.goal().iter()))
-    });
-    totals
-        .chain(rows)
-        .map(|amount| amount.commodity.clone())
-        .find(|commodity| !commodity.is_empty())
 }

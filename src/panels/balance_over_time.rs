@@ -15,17 +15,25 @@ use rust_decimal::Decimal;
 
 use crate::charts::{line_chart, scale};
 use crate::hledger::report::ReportSpec;
-use crate::journal::reports::{parse_periodic_report, row_values, PeriodicReport};
+use crate::journal::reports::{
+    PeriodicReport, default_commodity, parse_periodic_report, row_values,
+};
 use crate::layout::model::PanelId;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
 use crate::state::AppState;
 
-/// The period flags, as `(label, flag)`, in the order the control offers them.
+/// The period flags, as `(label, flag)`, coarsest first.
+///
+/// Ordered and defaulted this way because the cost of this report is rows ×
+/// periods, and periods is the half the user controls: on a real multi-year
+/// journal `--monthly` is around ten megabytes and several seconds, while
+/// `--yearly` is about a tenth of that and still reads as a trend. The finer
+/// intervals stay one click away, which is where a deliberate choice belongs.
 const INTERVALS: [(&str, &str); 4] = [
+    ("yearly", "--yearly"),
+    ("quarterly", "--quarterly"),
     ("monthly", "--monthly"),
     ("weekly", "--weekly"),
-    ("quarterly", "--quarterly"),
-    ("yearly", "--yearly"),
 ];
 
 pub fn view(id: PanelId) -> AnyView {
@@ -128,7 +136,16 @@ fn series_view(state: AppState, report: &PeriodicReport, account: &str) -> AnyVi
         .settings
         .get_untracked()
         .main_currency
-        .or_else(|| first_commodity(report));
+        .or_else(|| {
+            default_commodity(
+                report
+                    .totals
+                    .amounts
+                    .iter()
+                    .flatten()
+                    .chain(report.rows.iter().flat_map(|row| row.amounts.iter()).flatten()),
+            )
+        });
 
     let query = account.trim();
     let (values, note) = if query.is_empty() {
@@ -151,6 +168,14 @@ fn series_view(state: AppState, report: &PeriodicReport, account: &str) -> AnyVi
     }
 
     let chart = line_chart(&data);
+    // Name the commodity in the column heading. A mixed-commodity journal has to
+    // pick one series, and a chart that does not say which one is impossible to
+    // read — the figure can look "wrong" when it is simply denominated in
+    // something other than expected.
+    let balance_header = match &commodity {
+        Some(commodity) => format!("Balance ({commodity})"),
+        None => "Balance".to_string(),
+    };
     let rows = data
         .iter()
         .map(|(label, value)| {
@@ -176,7 +201,7 @@ fn series_view(state: AppState, report: &PeriodicReport, account: &str) -> AnyVi
             <thead>
                 <tr>
                     <th>"Period"</th>
-                    <th class="num">"Balance"</th>
+                    <th class="num">{balance_header}</th>
                 </tr>
             </thead>
             <tbody>{rows}</tbody>
@@ -191,14 +216,4 @@ fn value_text(value: Decimal, commodity: Option<&str>) -> String {
         Some(commodity) => format!("{} {commodity}", scale::format_tick(value)),
         None => scale::format_tick(value),
     }
-}
-
-/// The first commodity the report mentions anywhere.
-fn first_commodity(report: &PeriodicReport) -> Option<String> {
-    let totals = report.totals.amounts.iter().flatten();
-    let rows = report.rows.iter().flat_map(|row| row.amounts.iter()).flatten();
-    totals
-        .chain(rows)
-        .map(|amount| amount.commodity.clone())
-        .find(|commodity| !commodity.is_empty())
 }

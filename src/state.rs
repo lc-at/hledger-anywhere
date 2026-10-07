@@ -434,8 +434,12 @@ impl AppState {
         // stale report is still current for the new journal.
         self.report_keys.update(|keys| keys.clear());
         self.generation.update(|generation| *generation += 1);
-        // The main-currency control can only offer commodities that exist here.
-        self.load_commodities();
+        // A new journal has its own commodities, and fetching them is a whole
+        // engine invocation — about ten seconds on a real journal, because
+        // hledger re-parses the journal every time it runs. So the list is
+        // cleared here and filled in when the settings menu is first opened,
+        // which most sessions never do.
+        self.commodities.set(Vec::new());
         // Cache the snapshot so a later visit can reopen it without a picker.
         // Only when a journal was actually found: caching a directory that holds
         // no journal would offer to restore something unusable.
@@ -463,8 +467,9 @@ impl AppState {
         // stale report is still current for the new journal.
         self.report_keys.update(|keys| keys.clear());
         self.generation.update(|generation| *generation += 1);
-        // A different journal can use different commodities.
-        self.load_commodities();
+        // A different journal can use different commodities; see `publish_files`
+        // for why they are not fetched eagerly.
+        self.commodities.set(Vec::new());
     }
 
     /// Load the built-in demo journal, so the app is usable with one click.

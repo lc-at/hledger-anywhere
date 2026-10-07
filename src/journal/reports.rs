@@ -474,6 +474,67 @@ impl BudgetReport {
     }
 }
 
+/// How strongly a commodity name reads as money.
+///
+/// `2` for a true symbol (`$`, `€`, `¥`), which is unambiguous; `1` for an
+/// ISO-shaped three-letter code (`IDR`, `USD`, `XMR`); `0` otherwise.
+///
+/// The middle tier is a heuristic and cannot be more than one: without a list of
+/// ISO 4217 codes, a three-letter ETF ticker (`VTI`) is indistinguishable from a
+/// three-letter currency. It is still worth having, because the failure it
+/// guards against is real and common — a journal holding a stock alongside money
+/// mentions the stock far more often, and "the most frequent commodity" alone
+/// would then chart a share count.
+fn money_rank(commodity: &str) -> u8 {
+    let name = commodity.trim();
+    if name.is_empty() {
+        return 0;
+    }
+    if name.chars().all(|character| !character.is_alphanumeric()) {
+        return 2;
+    }
+    if name.chars().count() == 3 && name.chars().all(|character| character.is_ascii_uppercase()) {
+        return 1;
+    }
+    0
+}
+
+/// The commodity to show when the user has not chosen a main currency.
+///
+/// Deliberately *not* "the first one hledger mentions": in a journal that holds
+/// stocks or funds alongside money, the first commodity a report happens to list
+/// can easily be a ticker, and the panel then plots a share count that looks
+/// meaningless — a flat line at zero, against an axis scaled for something else.
+///
+/// So: the strongest money signal first, then whichever is used by the most
+/// amounts, then alphabetical for a stable answer. Anything that reads as money
+/// beats anything that does not, which is what stops a busy ticker from winning
+/// on volume alone; among equals, volume decides.
+pub fn default_commodity<'a, I>(amounts: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a Amount>,
+{
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for amount in amounts {
+        let name = amount.commodity.trim();
+        if name.is_empty() {
+            continue;
+        }
+        match counts.iter_mut().find(|(commodity, _)| commodity == name) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((name.to_string(), 1)),
+        }
+    }
+
+    counts.sort_by(|a, b| {
+        money_rank(&b.0)
+            .cmp(&money_rank(&a.0))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    counts.into_iter().next().map(|(commodity, _)| commodity)
+}
+
 /// The amount in `commodity`, or the first amount present when no commodity is
 /// requested or the requested one is absent from this particular cell.
 ///
@@ -805,5 +866,74 @@ mod tests {
         );
         assert_eq!(pick_amount(&mixed, None).unwrap().commodity, "$");
         assert!(pick_amount(&mixed, Some("GBP")).is_none());
+    }
+
+    // -- default commodity --------------------------------------------------
+
+    fn amount_named(commodity: &str) -> Amount {
+        Amount {
+            commodity: commodity.to_string(),
+            quantity: crate::journal::money::Quantity(Decimal::ONE),
+            style: None,
+            cost: None,
+            cost_basis: None,
+        }
+    }
+
+    #[test]
+    fn a_currency_beats_a_more_common_ticker() {
+        // The real case: a journal holding an Indonesian stock alongside rupiah,
+        // where the stock is mentioned far more often. "The first commodity the
+        // report mentions" picked the ticker, and the chart then plotted a share
+        // count that looked like a flat line at zero.
+        let mut amounts = vec![amount_named("BBCA"); 20];
+        amounts.push(amount_named("IDR"));
+
+        assert_eq!(default_commodity(amounts.iter()), Some("IDR".to_string()));
+    }
+
+    #[test]
+    fn the_most_used_currency_wins_among_currencies() {
+        let mut amounts = vec![amount_named("JPY"); 2];
+        amounts.push(amount_named("IDR"));
+        amounts.push(amount_named("IDR"));
+        amounts.push(amount_named("IDR"));
+
+        assert_eq!(default_commodity(amounts.iter()), Some("IDR".to_string()));
+    }
+
+    #[test]
+    fn ties_break_alphabetically_so_the_choice_is_stable() {
+        let amounts = [
+            amount_named("USD"),
+            amount_named("EUR"),
+            amount_named("AUD"),
+        ];
+        assert_eq!(default_commodity(amounts.iter()), Some("AUD".to_string()));
+    }
+
+    #[test]
+    fn a_symbol_counts_as_money() {
+        let mut amounts = vec![amount_named("VTI"); 9];
+        amounts.push(amount_named("$"));
+
+        assert_eq!(default_commodity(amounts.iter()), Some("$".to_string()));
+    }
+
+    #[test]
+    fn something_is_better_than_nothing_when_no_commodity_looks_like_money() {
+        // A fund-only view should still plot something rather than coming up
+        // empty merely because no name passed the money test.
+        let amounts = [amount_named("VTI"), amount_named("VTI"), amount_named("BND")];
+        assert_eq!(default_commodity(amounts.iter()), Some("VTI".to_string()));
+    }
+
+    #[test]
+    fn no_amounts_means_no_commodity() {
+        let empty: [Amount; 0] = [];
+        assert_eq!(default_commodity(empty.iter()), None);
+        // Blank commodity names are not candidates either.
+        let blank = [amount_named(""), amount_named("  ")];
+        assert_eq!(default_commodity(blank.iter()), None);
     }
 }

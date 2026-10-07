@@ -15,7 +15,7 @@ use rust_decimal::Decimal;
 use crate::charts::bar_chart;
 use crate::hledger::report::ReportSpec;
 use crate::journal::model::{parse_balance, BalanceReport, BalanceRow};
-use crate::journal::reports::pick_amount;
+use crate::journal::reports::{default_commodity, pick_amount};
 use crate::layout::model::PanelId;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
 use crate::state::AppState;
@@ -97,7 +97,15 @@ fn expenses_view(state: AppState, report: &BalanceReport) -> AnyView {
         .settings
         .get_untracked()
         .main_currency
-        .or_else(|| first_commodity(report));
+        .or_else(|| {
+            default_commodity(
+                report
+                    .rows
+                    .iter()
+                    .flat_map(|row| row.amounts.iter())
+                    .chain(report.totals.iter()),
+            )
+        });
 
     // The chart takes the biggest categories, by absolute value: an expenses
     // report can hold a long tail that would flatten every meaningful bar.
@@ -176,13 +184,4 @@ fn row_value(row: &BalanceRow, commodity: Option<&str>) -> Decimal {
     pick_amount(&row.amounts, commodity)
         .map(|amount| amount.quantity.0)
         .unwrap_or(Decimal::ZERO)
-}
-
-/// The first commodity the report mentions anywhere.
-fn first_commodity(report: &BalanceReport) -> Option<String> {
-    let rows = report.rows.iter().flat_map(|row| row.amounts.iter());
-    let totals = report.totals.iter();
-    rows.chain(totals)
-        .map(|amount| amount.commodity.clone())
-        .find(|commodity| !commodity.is_empty())
 }

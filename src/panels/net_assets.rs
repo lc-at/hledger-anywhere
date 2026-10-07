@@ -14,7 +14,8 @@ use leptos::prelude::*;
 
 use crate::hledger::report::ReportSpec;
 use crate::journal::reports::{
-    pick_amount, parse_compound_periodic_report, CompoundPeriodicReport, CompoundSubreport,
+    CompoundPeriodicReport, CompoundSubreport, default_commodity, parse_compound_periodic_report,
+    pick_amount,
 };
 use crate::layout::model::PanelId;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
@@ -184,25 +185,27 @@ fn cell_text(amounts: &[crate::journal::money::Amount], commodity: Option<&str>)
 }
 
 /// The commodity to show a figure in: the user's main currency when one is set,
-/// otherwise the first commodity the report actually mentions.
+/// otherwise the report's most-used money-like commodity.
 fn preference(state: AppState, report: &CompoundPeriodicReport) -> Option<String> {
     state
         .settings
         .get_untracked()
         .main_currency
-        .or_else(|| first_commodity(report))
-}
-
-fn first_commodity(report: &CompoundPeriodicReport) -> Option<String> {
-    let totals = report.totals.amounts.iter().flatten();
-    let rows = report
-        .subreports
-        .iter()
-        .flat_map(|subreport| subreport.report.rows.iter())
-        .flat_map(|row| row.amounts.iter())
-        .flatten();
-    totals
-        .chain(rows)
-        .map(|amount| amount.commodity.clone())
-        .find(|commodity| !commodity.is_empty())
+        .or_else(|| {
+            default_commodity(
+                report
+                    .totals
+                    .amounts
+                    .iter()
+                    .flatten()
+                    .chain(
+                        report
+                            .subreports
+                            .iter()
+                            .flat_map(|subreport| subreport.report.rows.iter())
+                            .flat_map(|row| row.amounts.iter())
+                            .flatten(),
+                    ),
+            )
+        })
 }

@@ -210,7 +210,16 @@ fn SettingsMenu() -> impl IntoView {
         <div class="app-menu" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
             <button
                 class="gl-btn"
-                on:click=move |_| open.update(|is_open| *is_open = !*is_open)
+                on:click=move |_| {
+                    let opening = !open.get_untracked();
+                    open.set(opening);
+                    // The commodity list costs a whole engine invocation, which
+                    // is several seconds on a real journal. Fetch it the first
+                    // time this menu is opened rather than on every load.
+                    if opening && state.commodities.get_untracked().is_empty() {
+                        state.load_commodities();
+                    }
+                }
             >
                 "⚙ Settings"
             </button>
