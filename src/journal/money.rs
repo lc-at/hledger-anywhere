@@ -214,6 +214,84 @@ impl Amount {
     }
 }
 
+/// Consolidate a mixed amount the way hledger's own reports do.
+///
+/// hledger's `-O json` emits one entry per contribution, so a single balance row
+/// can carry twenty amounts across six commodities — several of them for the
+/// *same* commodity. Its text output shows one figure per commodity instead.
+/// Joining the raw entries is what produced balances reading
+/// `39,516,604.73 IDR, 694,825.00 IDR, 936,388.00 IDR`: three spellings of one
+/// number, presented as if they were three numbers.
+///
+/// Commodities come back alphabetically, which is the order hledger prints them
+/// in, so a column does not reshuffle between runs.
+pub fn sum_by_commodity(amounts: &[Amount]) -> Vec<Amount> {
+    let mut groups: Vec<(String, Decimal, Option<AmountStyle>)> = Vec::new();
+
+    for amount in amounts {
+        match groups
+            .iter_mut()
+            .find(|(commodity, _, _)| *commodity == amount.commodity)
+        {
+            Some((_, total, style)) => {
+                *total += amount.quantity.0;
+                // Keep the most precise style seen. Rounding a total to a
+                // coarser precision than its own parts would hide real digits.
+                if let Some(candidate) = &amount.style {
+                    let more_precise = style
+                        .as_ref()
+                        .is_none_or(|current| candidate.precision > current.precision);
+                    if more_precise {
+                        *style = Some(candidate.clone());
+                    }
+                }
+            }
+            None => groups.push((
+                amount.commodity.clone(),
+                amount.quantity.0,
+                amount.style.clone(),
+            )),
+        }
+    }
+
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
+    groups
+        .into_iter()
+        .map(|(commodity, total, style)| Amount {
+            commodity,
+            quantity: Quantity(total),
+            style,
+            // A consolidated figure is a sum, not a transacted amount, so it
+            // carries no cost annotation of its own.
+            cost: None,
+            cost_basis: None,
+        })
+        .collect()
+}
+
+/// A mixed amount as one line of text: consolidated per commodity, like
+/// hledger's own reports.
+///
+/// Commodities that come to nothing are dropped, but a mixed amount that is
+/// *entirely* zero keeps one figure so it still reads as `0 IDR` rather than
+/// vanishing. An empty mixed amount is the app's long-standing em dash.
+pub fn mixed_display(amounts: &[Amount]) -> String {
+    if amounts.is_empty() {
+        return "—".to_string();
+    }
+
+    let mut consolidated = sum_by_commodity(amounts);
+    if consolidated.iter().any(|amount| !amount.quantity.0.is_zero()) {
+        consolidated.retain(|amount| !amount.quantity.0.is_zero());
+    }
+
+    consolidated
+        .iter()
+        .map(Amount::display)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Insert `separator` every `sizes` digits from the right.
 ///
 /// hledger's grouping is a list of group sizes; the last size repeats, which is
@@ -429,5 +507,105 @@ mod tests {
         // A degenerate size of zero falls back to grouping by three rather than
         // looping forever.
         assert_eq!(group_digits("1234", &[0], ","), "1,234");
+    }
+
+    // -- mixed-amount consolidation ----------------------------------------
+
+    /// An amount with an explicit display style, as hledger sends it.
+    ///
+    /// `IDR 500.00` is written the way the journal writes it: symbol on the
+    /// right, spaced from the number, grouped by threes.
+    fn styled(commodity: &str, value: &str, precision: u32) -> Amount {
+        Amount {
+            commodity: commodity.to_string(),
+            quantity: Quantity(value.parse().expect("test value is a decimal")),
+            style: Some(AmountStyle {
+                commodity_side: "R".to_string(),
+                commodity_spaced: true,
+                precision,
+                digit_groups: Some((",".to_string(), vec![3])),
+                ..AmountStyle::default()
+            }),
+            cost: None,
+            cost_basis: None,
+        }
+    }
+
+    #[test]
+    fn one_commodity_reported_many_times_collapses_to_one_figure() {
+        // The shape a real journal produced: hledger's JSON emits one entry per
+        // contribution, all in the same commodity, which read as three separate
+        // balances ("39,516,604.73 IDR, 694,825.00 IDR, 936,388.00 IDR").
+        let amounts = [
+            styled("IDR", "39516604.73", 2),
+            styled("IDR", "694825.00", 2),
+            styled("IDR", "936388.00", 2),
+        ];
+
+        assert_eq!(mixed_display(&amounts), "41,147,817.73 IDR");
+        assert_eq!(sum_by_commodity(&amounts).len(), 1);
+    }
+
+    #[test]
+    fn consolidation_is_per_commodity_and_alphabetical() {
+        // Deliberately out of order, and interleaved, so both the grouping and
+        // the ordering are actually exercised.
+        let amounts = [
+            styled("USD", "10.00", 2),
+            styled("IDR", "1000.00", 2),
+            styled("USD", "5.00", 2),
+            styled("EUR", "1.00", 2),
+        ];
+
+        assert_eq!(mixed_display(&amounts), "1.00 EUR, 1,000.00 IDR, 15.00 USD");
+    }
+
+    #[test]
+    fn negation_across_entries_cancels() {
+        // Sums must respect sign, or a row that nets to nothing would look like
+        // it had a balance.
+        let amounts = [styled("IDR", "500.00", 2), styled("IDR", "-500.00", 2)];
+        assert_eq!(mixed_display(&amounts), "0.00 IDR");
+    }
+
+    #[test]
+    fn commodities_that_come_to_nothing_are_dropped() {
+        let amounts = [
+            styled("IDR", "500.00", 2),
+            styled("EUR", "100.00", 2),
+            styled("EUR", "-100.00", 2),
+        ];
+
+        assert_eq!(
+            mixed_display(&amounts),
+            "500.00 IDR",
+            "a zero commodity is noise next to a real balance"
+        );
+    }
+
+    #[test]
+    fn the_most_precise_style_of_a_group_is_kept() {
+        // Taking the first style would round 0.125 BTC away entirely.
+        let amounts = [styled("BTC", "0.125", 3), styled("BTC", "1", 0)];
+        assert_eq!(mixed_display(&amounts), "1.125 BTC");
+    }
+
+    #[test]
+    fn an_empty_mixed_amount_is_a_dash() {
+        assert_eq!(mixed_display(&[]), "—");
+        assert!(sum_by_commodity(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_consolidated_amount_carries_no_cost_annotation() {
+        // A summed figure is not a transacted amount, so an `@` price from one
+        // of its parts must not survive onto the total.
+        let mut costed = styled("IDR", "100.00", 2);
+        costed.cost = Some(AmountCost::UnitCost(Box::new(styled("USD", "0.0001", 4))));
+        let consolidated = sum_by_commodity(&[costed, styled("IDR", "100.00", 2)]);
+
+        assert_eq!(consolidated.len(), 1);
+        assert!(consolidated[0].cost.is_none());
+        assert_eq!(consolidated[0].quantity.0.to_string(), "200.00");
     }
 }

@@ -25,7 +25,7 @@
 use serde::{Deserialize, Deserializer};
 use thiserror::Error;
 
-use super::money::Amount;
+use super::money::{self, Amount};
 
 /// Anything that can go wrong turning engine output into a report.
 #[derive(Debug, Error)]
@@ -90,12 +90,11 @@ pub struct Posting {
 
 impl Posting {
     /// All of this posting's amounts as one display string.
+    ///
+    /// Consolidated per commodity, because hledger's JSON emits one entry per
+    /// contribution rather than one per commodity.
     pub fn amounts_display(&self) -> String {
-        self.amounts
-            .iter()
-            .map(Amount::display)
-            .collect::<Vec<_>>()
-            .join(", ")
+        money::mixed_display(&self.amounts)
     }
 
     /// A single character marker for this posting's own status.
@@ -187,15 +186,11 @@ impl<'de> Deserialize<'de> for BalanceRow {
 
 impl BalanceRow {
     /// The row's amounts as one display string, or a dash when it has none.
+    ///
+    /// Consolidated per commodity: a balance row can carry many raw entries for
+    /// one commodity, and showing them all reads as several different numbers.
     pub fn amounts_display(&self) -> String {
-        if self.amounts.is_empty() {
-            return "—".to_string();
-        }
-        self.amounts
-            .iter()
-            .map(Amount::display)
-            .collect::<Vec<_>>()
-            .join(", ")
+        money::mixed_display(&self.amounts)
     }
 }
 
@@ -268,14 +263,7 @@ impl<'de> Deserialize<'de> for BalanceReport {
 
 impl BalanceReport {
     pub fn totals_display(&self) -> String {
-        if self.totals.is_empty() {
-            return "—".to_string();
-        }
-        self.totals
-            .iter()
-            .map(Amount::display)
-            .collect::<Vec<_>>()
-            .join(", ")
+        money::mixed_display(&self.totals)
     }
 }
 
@@ -377,16 +365,10 @@ impl AccountTransaction {
     }
 }
 
-/// Render a mixed amount the way hledger joins its commodities.
+/// Render a mixed amount the way hledger's reports do: one figure per
+/// commodity, consolidated.
 fn display_amounts(amounts: &[Amount]) -> String {
-    if amounts.is_empty() {
-        return "—".to_string();
-    }
-    amounts
-        .iter()
-        .map(Amount::display)
-        .collect::<Vec<_>>()
-        .join(", ")
+    money::mixed_display(amounts)
 }
 
 /// Decode the output of `print -O json`.
