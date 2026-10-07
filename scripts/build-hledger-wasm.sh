@@ -129,6 +129,43 @@ fi
 
 mkdir -p "$OUT_DIR"
 cp "$built" "$OUT"
+
+# --- 3b. shrink the artifact ----------------------------------------------
+# GHC's wasm output is far larger than it needs to be. Binaryen's `-Oz` takes the
+# module down by about 60% (32 MB -> 13 MB) without changing behaviour, and that
+# matters twice over: it is what every visitor's browser downloads, and it is what
+# would have to be stored if the artifact is ever committed instead of fetched.
+#
+# Optional, because binaryen is not guaranteed to be present: without it the
+# build still produces a correct, just larger, artifact — and says so.
+WASM_OPT=$(command -v wasm-opt 2>/dev/null || true)
+if [ -z "$WASM_OPT" ]; then
+    for candidate in \
+        "${GHC_WASM_PREFIX:-/nonexistent}/binaryen/bin/wasm-opt" \
+        "$root/.tools/ghc-wasm/binaryen/bin/wasm-opt"
+    do
+        if [ -x "$candidate" ]; then
+            WASM_OPT="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -n "$WASM_OPT" ]; then
+    say "==> shrinking with $("$WASM_OPT" --version 2>/dev/null || echo wasm-opt)"
+    if "$WASM_OPT" -Oz "$OUT" -o "$OUT.min" 2>/dev/null; then
+        before=$(wc -c <"$OUT" | tr -d ' ')
+        mv "$OUT.min" "$OUT"
+        after=$(wc -c <"$OUT" | tr -d ' ')
+        say "    $before -> $after bytes"
+    else
+        rm -f "$OUT.min"
+        warn "wasm-opt failed; keeping the unoptimized artifact"
+    fi
+else
+    warn "wasm-opt not found; keeping the unoptimized artifact (about 3x larger)"
+fi
+
 size=$(wc -c <"$OUT" | tr -d ' ')
 # Plain if/elif rather than `sha=$(A || B) | cut`: that form puts the assignment
 # on the left of a pipeline, so it lands in a subshell and the variable is still
