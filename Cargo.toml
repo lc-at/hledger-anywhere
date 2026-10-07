@@ -40,6 +40,12 @@ features = [
     "NodeList",
     "Performance",
     "Storage",
+    # The uPlot line chart (src/charts/uplot.rs) keeps itself sized and themed
+    # with observers, and reads its colours from CSS custom properties.
+    "ResizeObserver",
+    "MutationObserver",
+    "MutationObserverInit",
+    "Node",
 ]
 
 # Pure logic, no wasm: journal parsing, money, analytics, report argv,

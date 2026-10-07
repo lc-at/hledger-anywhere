@@ -39,6 +39,15 @@
     <link data-trunk rel="rust" data-wasm-opt="z" />
 
     <link rel="stylesheet" href="/css/app.css" />
+
+    <!--
+      uPlot: the vendored stylesheet plus the module that publishes the ESM
+      build as window.uPlot for src/charts/uplot.rs. Both are copied from
+      assets/js by Trunk. Module scripts are deferred, and the wasm bootstrap
+      suspends on its own top-level await, so this runs before Rust mounts.
+    -->
+    <link rel="stylesheet" href="/js/vendor/uplot/uPlot.min.css" />
+    <script type="module" src="/js/vendor/uplot/uplot-global.js"></script>
   </head>
   <body>
     <!--
