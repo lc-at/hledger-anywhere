@@ -19,6 +19,10 @@ pub fn view(id: PanelId) -> AnyView {
         // Re-run when the journal changes or the user asks for a refresh.
         let _ = state.generation.get();
         let _ = state.refresh.get();
+        // Let the focused pane load first; see `AppState::may_load`.
+        if !state.may_load(id) {
+            return;
+        }
         state.report_for(id, ReportSpec::text("accounts"));
     });
 

@@ -46,6 +46,10 @@ pub fn view(id: PanelId) -> AnyView {
     Effect::new(move |_| {
         let _ = state.generation.get();
         let _ = state.refresh.get();
+        // Let the focused pane load first; see `AppState::may_load`.
+        if !state.may_load(id) {
+            return;
+        }
 
         // `--historical` is what makes the columns running balances. The bridge
         // ignores every option, so on that flavor the flags are not even asked

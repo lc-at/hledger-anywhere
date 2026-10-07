@@ -19,18 +19,88 @@ use crate::state::AppState;
 /// transactions; without a cap the first paint would block for seconds.
 const PAGE_SIZE: usize = 50;
 
+/// How much of the journal to fetch, and the hledger query that selects it.
+///
+/// This is a *fetch* bound, not a display bound, and it matters more than it
+/// looks: `print -O json` has no "first N" option, so the whole selection is
+/// decoded whether or not it is displayed. On a real journal holding ten
+/// thousand transactions the full report is around 29 MB and takes over half a
+/// minute, against about 4 MB and a fifth of that for a single year — and the
+/// engine re-parses the entire journal for every invocation, so this is the
+/// difference between a usable panel and one that appears to hang.
+///
+/// A year is the default because it is a period people actually think in, and
+/// because "everything" stays available for when it is wanted.
+const PERIODS: [(&str, Option<&str>); 4] = [
+    ("this year", Some("date:thisyear")),
+    ("last year", Some("date:lastyear")),
+    ("this month", Some("date:thismonth")),
+    ("all", None),
+];
+
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     let limit = RwSignal::new(PAGE_SIZE);
+    let period = RwSignal::new(0usize);
 
     Effect::new(move |_| {
         let _ = state.generation.get();
         let _ = state.refresh.get();
-        state.report_for(id, ReportSpec::json("print"));
+        // Keep the page reset when the selection changes, or widening the period
+        // would leave the "show more" counter somewhere unrelated.
+        let _ = period.get();
+        // Let the focused pane load first; see `AppState::may_load`.
+        if !state.may_load(id) {
+            return;
+        }
+
+        let mut spec = ReportSpec::json("print");
+        // The bridge accepts no query arguments; asking anyway would silently
+        // return the whole journal while the control claimed otherwise.
+        if state.flavor.get().supports_report_options() {
+            if let Some(Some(query)) = PERIODS.get(period.get()).map(|(_, query)| *query) {
+                spec = spec.arg(query);
+            }
+        }
+        state.report_for(id, spec);
     });
+
+    let controls = move || {
+        if !state.flavor.get().supports_report_options() {
+            return ().into_any();
+        }
+        view! {
+            <div class="panel-controls">
+                <label>
+                    "period"
+                    <select on:change=move |event| {
+                        if let Ok(index) = event_target_value(&event).parse::<usize>() {
+                            limit.set(PAGE_SIZE);
+                            period.set(index);
+                        }
+                    }>
+                        {PERIODS
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (label, _))| {
+                                let selected = index == period.get();
+                                view! {
+                                    <option value=index.to_string() selected=selected>
+                                        {*label}
+                                    </option>
+                                }
+                            })
+                            .collect_view()}
+                    </select>
+                </label>
+            </div>
+        }
+        .into_any()
+    };
 
     view! {
         <div class="panel panel-transactions">
+            {controls}
             {report_view(state, id, move |output| {
                 match journal::model::parse_transactions(&output.stdout) {
                     Ok(transactions) if transactions.is_empty() => {
@@ -133,13 +203,19 @@ pub fn view(id: PanelId) -> AnyView {
                         }
 
                         let body = rows.into_iter().collect_view();
+                        // Name the selection, so a count is never mistaken for
+                        // the whole journal.
+                        let scope = PERIODS
+                            .get(period.get())
+                            .map(|(label, _)| *label)
+                            .unwrap_or("all");
 
                         view! {
                             <div class="panel-count">
                                 {if shown < total {
-                                    format!("showing {shown} of {total} transaction(s)")
+                                    format!("showing {shown} of {total} transaction(s) — {scope}")
                                 } else {
-                                    format!("{total} transaction(s)")
+                                    format!("{total} transaction(s) — {scope}")
                                 }}
                             </div>
                             <table class="panel-table">

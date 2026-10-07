@@ -55,6 +55,12 @@ const DEMO_EXTRA_PATH: &str = "extra.journal";
 /// How many engine invocations the Console panel keeps.
 const MAX_LOG_ENTRIES: usize = 200;
 
+/// How long the focused pane's report gets to itself before the others start.
+///
+/// Long enough that its request is already in flight on the single engine, short
+/// enough that the rest of the layout is not visibly waiting.
+const HEAD_START_MS: i32 = 1200;
+
 /// A splitter drag in progress.
 #[derive(Clone, Copy, Debug)]
 pub struct DragState {
@@ -240,6 +246,15 @@ pub struct AppState {
     pub generation: RwSignal<u64>,
     /// Bumped by the header's Refresh, to re-run reports without reloading.
     pub refresh: RwSignal<u64>,
+    /// Whether the first report of the current load has finished.
+    ///
+    /// hledger has no daemon: every invocation re-parses the whole journal, which
+    /// on a large journal is ten seconds or more, and the engine runs one request
+    /// at a time. Without this, the panel the user is actually looking at queues
+    /// behind every other panel in the layout — which on a real journal is the
+    /// difference between a pane that fills in ten seconds and one that fills in
+    /// a minute. Panels other than the focused one wait for this to flip.
+    pub first_report_settled: RwSignal<bool>,
 }
 
 /// Identifies one report request, so an identical one can be skipped.
@@ -297,6 +312,7 @@ impl AppState {
             geometry: RwSignal::new(DropGeometry::default()),
             generation: RwSignal::new(0),
             refresh: RwSignal::new(0),
+            first_report_settled: RwSignal::new(false),
         };
 
         // One place persists, so every mutation is covered no matter what caused
@@ -397,6 +413,8 @@ impl AppState {
     /// Re-run every panel's report without reloading the journal.
     pub fn refresh_all(&self) {
         self.refresh.update(|count| *count += 1);
+        // Every panel is about to re-run, so the focused one goes first again.
+        self.begin_load();
     }
 
     // -- journal sources ----------------------------------------------------
@@ -434,6 +452,8 @@ impl AppState {
         // stale report is still current for the new journal.
         self.report_keys.update(|keys| keys.clear());
         self.generation.update(|generation| *generation += 1);
+        // A new journal means the focused pane must be prioritised again.
+        self.begin_load();
         // A new journal has its own commodities, and fetching them is a whole
         // engine invocation — about ten seconds on a real journal, because
         // hledger re-parses the journal every time it runs. So the list is
@@ -467,6 +487,7 @@ impl AppState {
         // stale report is still current for the new journal.
         self.report_keys.update(|keys| keys.clear());
         self.generation.update(|generation| *generation += 1);
+        self.begin_load();
         // A different journal can use different commodities; see `publish_files`
         // for why they are not fetched eagerly.
         self.commodities.set(Vec::new());
@@ -782,6 +803,8 @@ impl AppState {
             self.reports.update(|reports| {
                 reports.insert(id, ReportState::Idle);
             });
+            // Nothing to wait for, so do not hold the other panels back.
+            self.first_report_settled.set(true);
             return;
         }
 
@@ -805,7 +828,57 @@ impl AppState {
             state.reports.update(|reports| {
                 reports.insert(id, next);
             });
+            // Set on failure as well as success: a report that cannot run must
+            // not leave the rest of the layout waiting forever.
+            state.first_report_settled.set(true);
         });
+    }
+
+    /// Whether this panel should run its report yet.
+    ///
+    /// The focused pane goes first and everything else waits for it, because the
+    /// engine runs one invocation at a time and each one re-parses the whole
+    /// journal. Reading `first_report_settled` here is what re-runs a waiting
+    /// panel's effect once the first report lands.
+    pub fn may_load(&self, id: PanelId) -> bool {
+        if self.first_report_settled.get() {
+            return true;
+        }
+        // With no focused panel there is nothing to prioritise, and waiting would
+        // mean waiting forever.
+        self.layout.get().focused.is_none_or(|focused| focused == id)
+    }
+
+    /// Let the queued panels go after a short head start.
+    ///
+    /// The gate exists to *order* the reports, not to hold them back: a focused
+    /// pane need not run one at all — the Journals panel runs none — and waiting
+    /// for a report that will never come would freeze the whole layout. A head
+    /// start is enough for the focused request to be in flight, and then the rest
+    /// may queue behind it, which is all the ordering this can achieve anyway on
+    /// a single engine.
+    fn release_after_head_start(&self) {
+        let Some(window) = web_sys::window() else {
+            // No timers available: prefer a slow layout over a frozen one.
+            self.first_report_settled.set(true);
+            return;
+        };
+        let state = *self;
+        let callback: js_sys::Function =
+            wasm_bindgen::closure::Closure::once_into_js(move || {
+                state.first_report_settled.set(true);
+            })
+            .unchecked_into();
+        // `once_into_js` hands ownership to JS, which is what a timer needs: the
+        // closure is freed when it fires.
+        let _ = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&callback, HEAD_START_MS);
+    }
+
+    /// Start a fresh load: the focused pane gets a head start over the rest.
+    fn begin_load(&self) {
+        self.first_report_settled.set(false);
+        self.release_after_head_start();
     }
 
     /// The current report state for one panel.

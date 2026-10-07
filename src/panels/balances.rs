@@ -22,6 +22,10 @@ pub fn view(id: PanelId) -> AnyView {
     Effect::new(move |_| {
         let _ = state.generation.get();
         let _ = state.refresh.get();
+        // Let the focused pane load first; see `AppState::may_load`.
+        if !state.may_load(id) {
+            return;
+        }
 
         let mut spec = ReportSpec::json("balance");
         if state.flavor.get().supports_report_options() {

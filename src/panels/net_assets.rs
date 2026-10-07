@@ -39,6 +39,10 @@ pub fn view(id: PanelId) -> AnyView {
     Effect::new(move |_| {
         let _ = state.generation.get();
         let _ = state.refresh.get();
+        // Let the focused pane load first; see `AppState::may_load`.
+        if !state.may_load(id) {
+            return;
+        }
 
         // The bridge has no `balancesheetequity` command. Asking anyway would
         // record a failure that the panel deliberately never shows, so the
