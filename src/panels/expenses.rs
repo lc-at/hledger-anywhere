@@ -17,8 +17,27 @@ use crate::hledger::report::ReportSpec;
 use crate::journal::model::{parse_balance, BalanceReport, BalanceRow};
 use crate::journal::reports::{default_commodity, pick_amount};
 use crate::layout::model::PanelId;
+use crate::panels::table::{QueryField, sort_header};
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
+use crate::query::{self, SortDir};
 use crate::state::AppState;
+
+/// The columns this table can be ordered by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    Account,
+    Amount,
+}
+
+impl SortKey {
+    /// Which way a first click on this column sorts.
+    fn first_direction(self) -> SortDir {
+        match self {
+            SortKey::Account => SortDir::Ascending,
+            SortKey::Amount => SortDir::Descending,
+        }
+    }
+}
 
 /// How many rows the bar chart is allowed to draw.
 ///
@@ -30,10 +49,14 @@ const CHART_ROWS: usize = 12;
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     let depth = RwSignal::new("2".to_string());
+    let query = RwSignal::new(String::new());
+    let sort = RwSignal::new(None::<(SortKey, SortDir)>);
 
     Effect::new(move |_| {
         let _ = state.generation.get();
         let _ = state.refresh.get();
+        // Tracked, so committing a new query re-runs the report.
+        let requested_query = query.get();
         // Let the focused pane load first; see `AppState::may_load`.
         if !state.may_load(id) {
             return;
@@ -42,9 +65,15 @@ pub fn view(id: PanelId) -> AnyView {
         let mut spec = ReportSpec::json("balance").arg("expenses");
         if state.flavor.get().supports_report_options() {
             spec = spec.arg("--tree");
-            let requested = depth.get();
-            if !requested.is_empty() {
-                spec = spec.arg("--depth").arg(requested);
+            let requested_depth = depth.get();
+            if !requested_depth.is_empty() {
+                spec = spec.arg("--depth").arg(requested_depth);
+            }
+            // A query narrows the expense subtree, or bounds it in time
+            // (`date:thisyear`), which is what makes the chart answer "this
+            // year's spending" rather than the journal's whole history.
+            for argument in query::query_args(&requested_query) {
+                spec = spec.arg(argument);
             }
         }
         state.report_for(id, spec);
@@ -69,6 +98,10 @@ pub fn view(id: PanelId) -> AnyView {
                         <option value="4">"4"</option>
                     </select>
                 </label>
+                <QueryField
+                    applied=query
+                    placeholder="query, e.g. date:thisyear — Enter applies"
+                />
             </div>
         }
         .into_any()
@@ -80,7 +113,7 @@ pub fn view(id: PanelId) -> AnyView {
             {argv_line(state, id)}
             {report_view(state, id, move |output| {
                 match parse_balance(&output.stdout) {
-                    Ok(report) => expenses_view(state, &report),
+                    Ok(report) => expenses_view(state, &report, sort),
                     Err(error) => {
                         error_panel(&format!("Could not decode the expenses report: {error}"))
                     }
@@ -92,10 +125,28 @@ pub fn view(id: PanelId) -> AnyView {
 }
 
 /// The chart, then the full table.
-fn expenses_view(state: AppState, report: &BalanceReport) -> AnyView {
+fn expenses_view(
+    state: AppState,
+    report: &BalanceReport,
+    sort: RwSignal<Option<(SortKey, SortDir)>>,
+) -> AnyView {
     if report.rows.is_empty() {
         return message_panel("This journal has no expenses to report.");
     }
+
+    let toggle = move |key: SortKey| {
+        sort.update(|current| {
+            *current = match *current {
+                Some((active, direction)) if active == key => Some((key, direction.flipped())),
+                _ => Some((key, key.first_direction())),
+            };
+        });
+    };
+    let direction_of = move |key: SortKey| {
+        sort.get()
+            .filter(|(active, _)| *active == key)
+            .map(|(_, direction)| direction)
+    };
 
     let commodity = state
         .settings
@@ -136,8 +187,22 @@ fn expenses_view(state: AppState, report: &BalanceReport) -> AnyView {
         None => ().into_any(),
     };
 
-    let rows = report
-        .rows
+    // Sorted for reading; hledger's own order is the account tree, which is what
+    // the rows come back in and what the user wants by default.
+    let mut ordered: Vec<&BalanceRow> = report.rows.iter().collect();
+    if let Some((key, direction)) = sort.get() {
+        query::sort_by_cmp(
+            &mut ordered,
+            |left, right| match key {
+                SortKey::Account => left.full_name.cmp(&right.full_name),
+                SortKey::Amount => row_value(left, commodity.as_deref())
+                    .cmp(&row_value(right, commodity.as_deref())),
+            },
+            direction,
+        );
+    }
+
+    let rows = ordered
         .iter()
         .map(|row| {
             let style = format!("padding-left: {}px", 8 + row.depth * 16);
@@ -167,8 +232,18 @@ fn expenses_view(state: AppState, report: &BalanceReport) -> AnyView {
         <table class="panel-table">
             <thead>
                 <tr>
-                    <th>"Account"</th>
-                    <th class="num">"Amount"</th>
+                    {sort_header(
+                        "Account",
+                        false,
+                        direction_of(SortKey::Account),
+                        move || toggle(SortKey::Account),
+                    )}
+                    {sort_header(
+                        "Amount",
+                        true,
+                        direction_of(SortKey::Amount),
+                        move || toggle(SortKey::Amount),
+                    )}
                 </tr>
             </thead>
             <tbody>{rows}</tbody>

@@ -22,7 +22,9 @@ use crate::journal::reports::{
     pick_amount,
 };
 use crate::layout::model::PanelId;
+use crate::panels::table::QueryField;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
+use crate::query;
 use crate::state::AppState;
 
 /// One compound report, described as a panel.
@@ -85,10 +87,15 @@ pub fn cash_flow(id: PanelId) -> AnyView {
 fn view(id: PanelId, panel: &'static CompoundPanel) -> AnyView {
     let state = expect_context::<AppState>();
     let command = panel.command;
+    // A date range is the query these reports are most often narrowed by
+    // (`date:2024`, `date:thismonth`), but any hledger query works.
+    let query = RwSignal::new(String::new());
 
     Effect::new(move |_| {
         let _ = state.generation.get();
         let _ = state.refresh.get();
+        // Tracked, so committing a new query re-runs the report.
+        let requested = query.get();
         // Let the focused pane load first; see `AppState::may_load`.
         if !state.may_load(id) {
             return;
@@ -98,7 +105,11 @@ fn view(id: PanelId, panel: &'static CompoundPanel) -> AnyView {
         // failure that the panel deliberately never shows, so the request is
         // skipped on that flavor entirely.
         if state.flavor.get().supports_report_options() {
-            state.report_for(id, ReportSpec::json(command));
+            let mut spec = ReportSpec::json(command);
+            for argument in query::query_args(&requested) {
+                spec = spec.arg(argument);
+            }
+            state.report_for(id, spec);
         }
     });
 
@@ -106,6 +117,20 @@ fn view(id: PanelId, panel: &'static CompoundPanel) -> AnyView {
 
     view! {
         <div class=class>
+            {move || {
+                if !state.flavor.get().supports_report_options() {
+                    return ().into_any();
+                }
+                view! {
+                    <div class="panel-controls">
+                        <QueryField
+                            applied=query
+                            placeholder="query, e.g. date:2024 — Enter applies"
+                        />
+                    </div>
+                }
+                .into_any()
+            }}
             {argv_line(state, id)}
             {move || {
                 if !state.flavor.get().supports_report_options() {

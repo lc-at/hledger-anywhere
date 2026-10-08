@@ -21,7 +21,9 @@ use crate::journal::reports::{
     BudgetReport, default_commodity, parse_budget_report, pick_amount,
 };
 use crate::layout::model::PanelId;
+use crate::panels::table::QueryField;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
+use crate::query;
 use crate::state::AppState;
 
 /// Shown instead of a report when the engine cannot run a budget report.
@@ -31,24 +33,47 @@ const NEEDS_ENGINE: &str = "Budgets need the full hledger engine: the interim hl
 
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
+    let query = RwSignal::new(String::new());
 
     Effect::new(move |_| {
         let _ = state.generation.get();
         let _ = state.refresh.get();
+        // Tracked, so committing a new query re-runs the report.
+        let requested = query.get();
         // Let the focused pane load first; see `AppState::may_load`.
         if !state.may_load(id) {
             return;
         }
         if state.flavor.get().supports_report_options() {
-            state.report_for(
-                id,
-                ReportSpec::json("balance").arg("--budget").arg("--monthly"),
-            );
+            let mut spec = ReportSpec::json("balance").arg("--budget").arg("--monthly");
+            // A query bounds the comparison in time or narrows it to part of the
+            // account tree, which is how a yearly budget is read month by month
+            // in one place rather than by scrolling a whole span.
+            for argument in query::query_args(&requested) {
+                spec = spec.arg(argument);
+            }
+            state.report_for(id, spec);
         }
     });
 
+    let controls = move || {
+        if !state.flavor.get().supports_report_options() {
+            return ().into_any();
+        }
+        view! {
+            <div class="panel-controls">
+                <QueryField
+                    applied=query
+                    placeholder="query, e.g. date:2024 — Enter applies"
+                />
+            </div>
+        }
+        .into_any()
+    };
+
     view! {
         <div class="panel panel-budget">
+            {controls}
             {argv_line(state, id)}
             {move || {
                 if !state.flavor.get().supports_report_options() {
