@@ -282,8 +282,7 @@ impl AppState {
     pub fn new() -> Self {
         // Never trust the stored layout blindly: it can outlive a panel kind, so
         // unknown panels are dropped before anything renders them.
-        let mut layout =
-            load_persisted().unwrap_or_else(|| Layout::default_with(&panels::default_kinds()));
+        let mut layout = load_persisted().unwrap_or_else(default_layout);
         layout.retain_kinds(&panels::kinds());
 
         let layout_signal = RwSignal::new(layout);
@@ -396,8 +395,7 @@ impl AppState {
 
     /// Discard the current layout and rebuild the default one.
     pub fn reset_layout(&self) {
-        self.layout
-            .set(Layout::default_with(&panels::default_kinds()));
+        self.layout.set(default_layout());
     }
 
     /// Add a panel as a tab in the focused stack, then close the menu.
@@ -909,6 +907,38 @@ fn load_persisted() -> Option<Layout> {
     let storage = web_sys::window()?.local_storage().ok()??;
     let raw = storage.get_item(STORAGE_KEY).ok()??;
     serde_json::from_str(&raw).ok()
+}
+
+/// Below this many CSS pixels, a side-by-side layout stops being readable.
+///
+/// The same breakpoint the header switches at, and for the same reason: split
+/// three ways, a 390px phone gives every panel about a third of a report.
+const NARROW_VIEWPORT: f64 = 700.0;
+
+/// The layout to start from, shaped for the screen it is starting on.
+///
+/// A phone gets one panel at a time as tabs; anything wider gets the reports
+/// side by side. This is only the *default*: a layout the user has arranged and
+/// saved is theirs, whatever shape it is.
+fn default_layout() -> Layout {
+    let kinds = panels::default_kinds();
+    if viewport_is_narrow() {
+        Layout::default_stacked(&kinds)
+    } else {
+        Layout::default_with(&kinds)
+    }
+}
+
+/// Whether the viewport is too narrow for panes to sit side by side.
+///
+/// An unknown width is treated as wide, because the browser always knows one and
+/// a wrong guess toward the multi-column layout is a wrong guess the user can
+/// still drag their way out of.
+fn viewport_is_narrow() -> bool {
+    web_sys::window()
+        .and_then(|window| window.inner_width().ok())
+        .and_then(|width| width.as_f64())
+        .is_some_and(|width| width < NARROW_VIEWPORT)
 }
 
 fn save_persisted(layout: &Layout) {

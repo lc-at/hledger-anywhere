@@ -359,7 +359,33 @@ impl Layout {
         }
     }
 
-    /// The starting layout: reports along the top, console across the bottom.
+    /// The starting layout for a narrow screen: one stack of tabs.
+    ///
+    /// Splitting a phone's width three ways gives every panel about a third of
+    /// 390px, which is not a report — it is three columns of clipped figures. A
+    /// phone has room for one panel at a time, so that is what it gets: the same
+    /// panels, as tabs, each full width. Splitting them up by hand still works
+    /// for anyone who wants it.
+    pub fn default_stacked(kinds: &[&str]) -> Self {
+        let mut layout = Layout::empty();
+        let mut panels = Vec::new();
+        for kind in kinds {
+            let id = layout.next_id;
+            layout.next_id += 1;
+            panels.push(PanelInstance {
+                id,
+                kind: (*kind).to_string(),
+            });
+        }
+        // The first panel takes focus, which is the one that has to be usable
+        // before anything else is: on a first visit that is the file loader.
+        layout.focused = panels.first().map(|panel| panel.id);
+        layout.root = (!panels.is_empty()).then_some(Node::Stack { panels, active: 0 });
+        layout
+    }
+
+    /// The starting layout for a screen with room for it: reports across the top,
+    /// console along the bottom.
     ///
     /// `kinds` supplies the panel kinds in the order they should be placed; it
     /// is a slice rather than a fixed list so the default can follow the
@@ -1133,6 +1159,23 @@ mod tests {
             vec!["journals", "accounts", "balances", "transactions", "console"]
         );
         assert_eq!(layout.focused, Some(1));
+    }
+
+    #[test]
+    fn a_stacked_default_is_one_stack_of_tabs() {
+        let layout = Layout::default_stacked(&["journals", "accounts", "balances"]);
+        let Some(Node::Stack { panels, active }) = layout.root.as_ref() else {
+            panic!("a stacked default should be a single stack");
+        };
+        assert_eq!(panels.len(), 3);
+        assert_eq!(*active, 0);
+        // Focus lands on the first panel: on a first visit that is the loader.
+        assert_eq!(layout.focused, Some(panels[0].id));
+        assert_normalized(&layout);
+
+        // No panels, no root — same contract as the wide default.
+        assert_eq!(Layout::default_stacked(&[]).root, None);
+        assert_eq!(Layout::default_stacked(&[]).focused, None);
     }
 
     #[test]

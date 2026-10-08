@@ -1139,3 +1139,27 @@ html.gl-dragging .gl-splitter {
   font-weight: 600;
 }
 
+/* -- a side-by-side layout on a narrow screen ------------------------------- */
+
+@media (max-width: 700px) {
+  /* A row split puts panes side by side. Split three ways, a phone gives every
+   * panel about a third of its width, which is not a report — it is columns of
+   * clipped figures. Stacking them gives each one the full width, sharing the
+   * height by the same shares that used to be widths.
+   *
+   * This is a fallback: a phone builds a single stack to begin with (see
+   * `default_layout` in state.rs). It bites for a layout arranged on a wider
+   * screen and then reopened here. */
+  .gl-row {
+    flex-direction: column;
+  }
+
+  /* A row's gutters resize *widths*, which no longer means anything once its
+   * panes are stacked. Hiding them also hands their width back to the panels.
+   * Only a row's own splitters, so a column split nested inside one keeps the
+   * gutter that still works. */
+  .gl-row > .gl-splitter {
+    display: none;
+  }
+}
+
