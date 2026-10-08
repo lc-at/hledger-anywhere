@@ -19,7 +19,17 @@ backend. You point it at a directory of journal files and it runs the real
   include-root when the choice is genuinely ambiguous. Any loaded file can be
   chosen manually.
 - **Reports**: an account tree, a balance report with `--tree`/`--flat` and
-  `--depth` controls, and the full transaction list.
+  `--depth` controls, the full transaction list, and a running-balance register.
+- **A hledger query field on every report panel.** Anything hledger's query
+  language can express — `date:thismonth`, `payee:"coffee shop"`, `exp:food`,
+  `not:...` — is reachable without waiting for a purpose-built view. It applies
+  on Enter rather than per keystroke, because each applied query is a whole
+  engine invocation and a large journal takes seconds to re-parse.
+- **Sortable columns** on the report tables, on the header itself, with the
+  direction chosen per column: accounts A–Z, amounts biggest-first, dates
+  newest-first. The Register is deliberately unsorted — its total column is the
+  sum of every row before it, so re-ordering would falsify it rather than
+  re-order it.
 - **A Console panel** that records every engine invocation — argv, exit code,
   duration, output sizes and raw output. This is the surface that makes a
   surprising number traceable to the exact command that produced it.
@@ -35,12 +45,20 @@ backend. You point it at a directory of journal files and it runs the real
 - **Maximise and restore**: the button at the end of each tab bar fills the
   layout with that stack and puts it back. The tree underneath is untouched, so
   restoring is exact — no split or size can be lost.
-- **Analytics**: a net-assets panel (`balancesheetequity`), a balance-over-time
-  chart (`balance --historical --monthly|--weekly|--quarterly|--yearly`), an
-  expenses breakdown chart (`balance expenses --tree`) and a budget table
-  (`balance --budget --monthly`, showing actual against goal with the variance).
-  The charts are hand-rolled SVG, so there is no charting dependency and they
-  theme themselves from the same custom properties as everything else.
+- **Analytics**, from hledger's own reports rather than reimplemented ones: a
+  balance sheet with its net-assets figure (`balancesheetequity`), an income
+  statement (`incomestatement`), a cash flow statement (`cashflow`), a
+  balance-over-time chart (`balance --historical`), an expenses breakdown chart
+  (`balance expenses --tree`) and a budget table (`balance --budget --monthly`,
+  actual against goal with the variance). The three statements share one
+  renderer, because a compound report is a compound report. The time-series chart
+  is drawn with [uPlot](https://github.com/leeoniya/uPlot), vendored under
+  `assets/js/vendor/uplot/` with its version and SHA-256 recorded in a README
+  beside it — this project has no npm step, so the library is pinned like the
+  engine is.
+- **Phone-shaped by default**: a narrow screen gets one panel at a time as tabs
+  rather than three columns of clipped figures, and a layout arranged on a wider
+  screen opens stacked instead of squeezed.
 - **An interactive terminal**: a scrollback and a command line that runs any
   hledger command against the loaded journal, with `Tab` completion for commands,
   flags, account names and file paths, and a persisted history.
