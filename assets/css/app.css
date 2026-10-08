@@ -1,14 +1,14 @@
 /* hledger-anywhere — visual theme.
  *
- * The look follows Gruvbox: warm, low-contrast backgrounds with a muted teal
- * accent. Dark is the default; a `data-theme="light"` attribute on <html>
- * switches to the light palette — index.html sets it before the wasm bundle
- * mounts (no flash of the wrong theme) and src/settings.rs keeps it in sync
- * afterwards. Everything is driven by the custom properties below, so
+ * The look follows a Bloomberg Terminal: near-black, amber-on-black, monospace.
+ * There is deliberately no light mode and no theme picker — the palette is a
+ * decision, not a preference, and it exists so the numbers are the loudest thing
+ * on the screen. Everything is driven by the custom properties below, so
  * restyling the whole application is a single edit.
  *
- * The dark palette uses Gruvbox's "bright" accent set and the light palette its
- * "faded" set, so the same accent name always stays legible on its background.
+ * Amber is the one colour with a job: it marks what is interactive, selected, or
+ * the active chart series. Green and red are reserved for "up" and "down" /
+ * "good" and "bad". Everything else is a grey scale.
  *
  * Layout mechanism (see src/layout/view.rs for the reasoning): a split is a flex
  * container, each pane is a `.gl-cell` whose `flex-grow` *is* its share of the
@@ -16,110 +16,65 @@
  * measures pixels except the drag handler.
  */
 
-/* -------------------------------------------------- Gruvbox dark (default) -- */
-
 :root {
   /* Tells the browser to draw native controls (selects, scrollbars) for dark. */
   color-scheme: dark;
 
-  --gl-bg: #282828;
-  --gl-panel-bg: #1d2021;
-  --gl-header-bg: #3c3836;
-  --gl-tabbar-bg: #504945;
-  --gl-tab-hover-bg: #665c54;
-  --gl-border: #1d2021;
-  --gl-gutter: #1d2021;
-  --gl-gutter-hover: #83a598;
-  --gl-text: #ebdbb2;
-  --gl-text-dim: #a89984;
-  --gl-accent: #458588;
-  --gl-accent-hover: #83a598;
-  --gl-on-accent: #fbf1c7;
+  --gl-bg: #000000;
+  --gl-panel-bg: #0c0c0c;
+  --gl-header-bg: #121212;
+  --gl-tabbar-bg: #181818;
+  --gl-tab-hover-bg: #242424;
+  --gl-border: #1e1e1e;
+  --gl-gutter: #0a0a0a;
+  --gl-gutter-hover: #ff7f00;
+  --gl-text: #d8d8d8;
+  --gl-text-dim: #8a8a8a;
+  --gl-accent: #ff7f00;
+  --gl-accent-hover: #ffa040;
+  --gl-on-accent: #000000;
 
   /* Surfaces other than the pane background itself. */
-  --gl-btn-bg: #3d3d3d;
-  --gl-btn-active-bg: #2f2f2f;
-  --gl-popover-bg: #383838;
-  --gl-input-bg: #262626;
-  --gl-inset-bg: rgba(0, 0, 0, 0.33);
-  --gl-row-hover: rgba(255, 255, 255, 0.03);
-  --gl-row-border: rgba(255, 255, 255, 0.04);
-  --gl-shadow: rgba(0, 0, 0, 0.55);
+  --gl-btn-bg: #181818;
+  --gl-btn-active-bg: #282828;
+  --gl-popover-bg: #121212;
+  --gl-input-bg: #0e0e0e;
+  --gl-inset-bg: rgba(0, 0, 0, 0.5);
+  --gl-row-hover: rgba(255, 127, 0, 0.07);
+  --gl-row-border: rgba(255, 255, 255, 0.05);
+  --gl-shadow: rgba(0, 0, 0, 0.7);
 
   /* State */
-  --gl-error: #fb4934;
-  --gl-success: #b8bb26;
-  --gl-warn: #fabd2f;
-  --gl-warn-bg: #3a2f1a;
+  --gl-error: #ff5f56;
+  --gl-success: #2ecc71;
+  --gl-warn: #ffb000;
+  --gl-warn-bg: #261a00;
 
-  --gl-selection-bg: #458588;
-  --gl-selection-text: #fbf1c7;
+  --gl-selection-bg: #ff7f00;
+  --gl-selection-text: #000000;
 
   /* Chart series, in the order charts should reach for them. */
-  --gl-series-1: #fb4934;
-  --gl-series-2: #b8bb26;
-  --gl-series-3: #fabd2f;
-  --gl-series-4: #83a598;
-  --gl-series-5: #d3869b;
-  --gl-series-6: #8ec07c;
-  --gl-series-7: #fe8019;
-  --gl-series-8: #458588;
+  --gl-series-1: #ff7f00;
+  --gl-series-2: #2ecc71;
+  --gl-series-3: #ff5f56;
+  --gl-series-4: #31c4ff;
+  --gl-series-5: #4f8cff;
+  --gl-series-6: #ff5fd7;
+  --gl-series-7: #ffd700;
+  --gl-series-8: #b0b0b0;
 
   --gl-header-height: 34px;
   --gl-tabbar-height: 27px;
   --gl-gutter-size: 5px;
   --gl-radius: 2px;
 
-  --gl-font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --gl-font-mono: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Monospace everywhere is the terminal's signature. */
+  --gl-font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --gl-font-mono: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
 }
 
-/* ------------------------------------------------------------ Gruvbox light -- */
-
-/* Only the colours change; sizes, radii and fonts are inherited from `:root`. */
-:root[data-theme="light"] {
-  color-scheme: light;
-
-  --gl-bg: #fbf1c7;
-  --gl-panel-bg: #fbf1c7;
-  --gl-header-bg: #ebdbb2;
-  --gl-tabbar-bg: #d5c4a1;
-  --gl-tab-hover-bg: #bdae93;
-  --gl-border: #d5c4a1;
-  --gl-gutter: #d5c4a1;
-  --gl-gutter-hover: #458588;
-  --gl-text: #3c3836;
-  --gl-text-dim: #7c6f64;
-  --gl-accent: #076678;
-  --gl-accent-hover: #458588;
-  --gl-on-accent: #fbf1c7;
-
-  --gl-btn-bg: #ebdbb2;
-  --gl-btn-active-bg: #d5c4a1;
-  --gl-popover-bg: #f9f5d7;
-  --gl-input-bg: #f9f5d7;
-  --gl-inset-bg: rgba(0, 0, 0, 0.07);
-  --gl-row-hover: rgba(0, 0, 0, 0.04);
-  --gl-row-border: rgba(0, 0, 0, 0.08);
-  --gl-shadow: rgba(0, 0, 0, 0.18);
-
-  --gl-error: #9d0006;
-  --gl-success: #79740e;
-  --gl-warn: #b57614;
-  --gl-warn-bg: #f7e7bf;
-
-  --gl-selection-bg: #83a598;
-  --gl-selection-text: #282828;
-
-  --gl-series-1: #9d0006;
-  --gl-series-2: #79740e;
-  --gl-series-3: #b57614;
-  --gl-series-4: #076678;
-  --gl-series-5: #8f3f71;
-  --gl-series-6: #427b58;
-  --gl-series-7: #af3a03;
-  --gl-series-8: #458588;
-}
 
 ::selection {
   background: var(--gl-selection-bg);
@@ -291,31 +246,6 @@ body {
   font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-}
-
-.gl-settings-choices {
-  display: flex;
-  gap: 4px;
-}
-
-.gl-choice {
-  padding: 3px 8px;
-  background: var(--gl-btn-bg);
-  border: 1px solid var(--gl-border);
-  border-radius: var(--gl-radius);
-  color: var(--gl-text);
-  font: inherit;
-  cursor: pointer;
-}
-
-.gl-choice:hover {
-  background: var(--gl-tab-hover-bg);
-}
-
-.gl-choice-active,
-.gl-choice-active:hover {
-  background: var(--gl-accent);
-  color: var(--gl-on-accent);
 }
 
 .gl-settings-select {

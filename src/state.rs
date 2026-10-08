@@ -28,7 +28,7 @@ use crate::hledger::{Engine, EngineError, HledgerOutput, HledgerRequest, Journal
 use crate::journal::{self, MainJournal};
 use crate::layout::model::{DropGeometry, Layout, PanelId};
 use crate::panels;
-use crate::settings::{self, Settings, Theme};
+use crate::settings::{self, Settings};
 use crate::storage::{JournalStore, SessionMeta};
 
 /// `localStorage` key for the persisted layout. Versioned so a future change to
@@ -634,13 +634,6 @@ impl AppState {
     }
 
     // -- settings -----------------------------------------------------------
-
-    /// Change the theme, persist it, and repaint.
-    pub fn set_theme(&self, theme: Theme) {
-        self.settings.update(|settings| settings.theme = theme);
-        settings::save(&self.settings.get_untracked());
-        settings::apply_theme(theme);
-    }
 
     /// Change the main currency, persist it, and re-run the reports.
     ///

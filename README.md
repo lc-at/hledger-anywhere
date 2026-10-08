@@ -44,9 +44,10 @@ backend. You point it at a directory of journal files and it runs the real
 - **An interactive terminal**: a scrollback and a command line that runs any
   hledger command against the loaded journal, with `Tab` completion for commands,
   flags, account names and file paths, and a persisted history.
-- **Gruvbox, dark or light**: the whole interface is driven by one palette of CSS
-  custom properties, with a theme choice of System, Dark or Light that is
-  remembered across reloads.
+- **A Bloomberg-Terminal look**: near-black with an amber accent, monospace
+  throughout, and no theme picker — the palette is a decision, not a preference.
+  Everything is driven by one block of CSS custom properties, so restyling is a
+  single edit.
 - **A main-currency setting**: pick one of the commodities the journal actually
   uses and every amount report is re-denominated through hledger's
   `--value=end,COMM --infer-market-prices`.
