@@ -6,18 +6,57 @@
 //! when the engine cannot honour them, rather than being shown and ignored.
 
 use leptos::prelude::*;
+use rust_decimal::Decimal;
 
 use crate::hledger::report::ReportSpec;
 use crate::journal;
+use crate::journal::model::BalanceRow;
 use crate::layout::model::PanelId;
+use crate::panels::table::{QueryField, sort_header};
 use crate::panels::{error_panel, message_panel, report_view};
+use crate::query::{self, SortDir};
 use crate::state::AppState;
+
+/// The columns this table can be ordered by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortKey {
+    Account,
+    Amount,
+}
+
+impl SortKey {
+    /// Which way a first click on this column sorts.
+    ///
+    /// Accounts read naturally A–Z; amounts are almost always looked at
+    /// biggest-first, so asking for that twice would be a wasted click.
+    fn first_direction(self) -> SortDir {
+        match self {
+            SortKey::Account => SortDir::Ascending,
+            SortKey::Amount => SortDir::Descending,
+        }
+    }
+}
+
+/// The value a row sorts by.
+///
+/// A mixed-commodity row has no single value; this takes the row's first
+/// commodity, which is the one it displays first. Ordering rows is a reading aid
+/// rather than accounting, so an approximation across unlike commodities is fine
+/// as long as it is predictable.
+fn amount_key(row: &BalanceRow) -> Decimal {
+    row.amounts
+        .first()
+        .map(|amount| amount.quantity.0)
+        .unwrap_or_default()
+}
 
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
 
     let tree = RwSignal::new(true);
     let depth = RwSignal::new(String::new());
+    let sort = RwSignal::new(None::<(SortKey, SortDir)>);
+    let query = RwSignal::new(String::new());
 
     Effect::new(move |_| {
         let _ = state.generation.get();
@@ -34,9 +73,30 @@ pub fn view(id: PanelId) -> AnyView {
             if !requested.is_empty() {
                 spec = spec.arg("--depth").arg(requested);
             }
+            // A normal hledger query, so `date:thismonth`, `exp:food`, `not:...`
+            // all work. Committed on Enter, not per keystroke: see `QueryField`.
+            for argument in query::query_args(&query.get()) {
+                spec = spec.arg(argument);
+            }
         }
         state.report_for(id, spec);
     });
+
+    let toggle = move |key: SortKey| {
+        sort.update(|current| {
+            *current = match *current {
+                Some((active, direction)) if active == key => {
+                    Some((key, direction.flipped()))
+                }
+                _ => Some((key, key.first_direction())),
+            };
+        });
+    };
+    let direction_of = move |key: SortKey| {
+        sort.get()
+            .filter(|(active, _)| *active == key)
+            .map(|(_, direction)| direction)
+    };
 
     let controls = move || {
         // With the interim bridge these options do nothing, so they are not
@@ -66,6 +126,10 @@ pub fn view(id: PanelId) -> AnyView {
                         <option value="4">"4"</option>
                     </select>
                 </label>
+                <QueryField
+                    applied=query
+                    placeholder="query, e.g. date:thismonth exp:food — Enter applies"
+                />
             </div>
         }
         .into_any()
@@ -74,22 +138,46 @@ pub fn view(id: PanelId) -> AnyView {
     view! {
         <div class="panel panel-balances">
             {controls}
-            {report_view(state, id, |output| {
+            {report_view(state, id, move |output| {
                 match journal::model::parse_balance(&output.stdout) {
                     Ok(report) if report.rows.is_empty() => {
                         message_panel("This journal has no balances to report.")
                     }
-                    Ok(report) => view! {
+                    Ok(report) => {
+                        // Sorted here rather than by hledger: the report's own
+                        // order is the account tree, which is what the rows come
+                        // back in and what the user wants by default.
+                        let mut rows: Vec<&BalanceRow> = report.rows.iter().collect();
+                        if let Some((key, direction)) = sort.get() {
+                            query::sort_by_cmp(
+                                &mut rows,
+                                |left, right| match key {
+                                    SortKey::Account => left.full_name.cmp(&right.full_name),
+                                    SortKey::Amount => amount_key(left).cmp(&amount_key(right)),
+                                },
+                                direction,
+                            );
+                        }
+                        view! {
                         <table class="panel-table">
                             <thead>
                                 <tr>
-                                    <th>"Account"</th>
-                                    <th class="num">"Balance"</th>
+                                    {sort_header(
+                                        "Account",
+                                        false,
+                                        direction_of(SortKey::Account),
+                                        move || toggle(SortKey::Account),
+                                    )}
+                                    {sort_header(
+                                        "Balance",
+                                        true,
+                                        direction_of(SortKey::Amount),
+                                        move || toggle(SortKey::Amount),
+                                    )}
                                 </tr>
                             </thead>
                             <tbody>
-                                {report
-                                    .rows
+                                {rows
                                     .iter()
                                     .map(|row| {
                                         let style = format!(
@@ -122,8 +210,9 @@ pub fn view(id: PanelId) -> AnyView {
                                 </tr>
                             </tfoot>
                         </table>
+                        }
+                        .into_any()
                     }
-                    .into_any(),
                     Err(error) => error_panel(&format!(
                         "Could not decode the balance report: {error}"
                     )),

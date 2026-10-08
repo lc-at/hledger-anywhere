@@ -25,6 +25,7 @@ mod console;
 mod expenses;
 mod journals;
 mod net_assets;
+mod table;
 mod terminal;
 mod transactions;
 

@@ -1128,3 +1128,55 @@ html.gl-dragging .gl-splitter {
   }
 }
 
+/* -- sortable headers and the query field ---------------------------------- */
+
+/* The whole header is the button, so the click target is the column label rather
+ * than a small arrow beside it. The arrow itself is only rendered on the sorted
+ * column, so its space is reserved here to stop the header shifting on click. */
+.panel-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.panel-sort:hover {
+  color: var(--gl-accent-hover);
+}
+
+.panel-sort-arrow {
+  min-width: 0.8em;
+  font-size: 9px;
+}
+
+/* A query is typed as hledger query syntax, so it reads better in the monospace
+ * face the amount columns use, and it should take the space that is going. */
+.panel-query {
+  flex: 1 1 18ch;
+  min-width: 12ch;
+}
+
+.panel-query input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  background: var(--gl-input-bg);
+  color: var(--gl-text);
+  border: 1px solid var(--gl-border);
+  border-radius: var(--gl-radius);
+  font: var(--gl-font-mono);
+}
+
+.panel-query input::placeholder {
+  color: var(--gl-text-dim);
+  opacity: 0.8;
+}
+

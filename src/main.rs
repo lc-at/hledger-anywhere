@@ -34,6 +34,7 @@ mod format;
 mod hledger;
 mod journal;
 mod layout;
+mod query;
 mod settings;
 
 #[cfg(target_arch = "wasm32")]
