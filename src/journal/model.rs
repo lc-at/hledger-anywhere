@@ -371,6 +371,61 @@ fn display_amounts(amounts: &[Amount]) -> String {
     money::mixed_display(amounts)
 }
 
+/// One line of `register -O json`: a posting, and the total after it.
+///
+/// hledger types this as a five-tuple
+/// `(Maybe Day, Maybe Period, Maybe String, Posting, MixedAmount)`. The period is
+/// an object whose only content is the interval the row belongs to, which this
+/// app derives from the report's own columns instead, so it is decoded and
+/// dropped rather than modelled.
+#[derive(Clone, Debug)]
+pub struct RegisterEntry {
+    /// The posting's date, absent only when the engine omitted it.
+    pub date: Option<String>,
+    /// The transaction description.
+    pub description: Option<String>,
+    /// The posting itself: account, amount, status, comment and tags.
+    pub posting: Posting,
+    /// The running total of everything reported so far, after this posting.
+    pub total: Vec<Amount>,
+}
+
+impl<'de> Deserialize<'de> for RegisterEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw(
+            Option<String>,
+            Option<serde_json::Value>,
+            Option<String>,
+            Posting,
+            Vec<Amount>,
+        );
+
+        let Raw(date, _period, description, posting, total) = Raw::deserialize(deserializer)?;
+        Ok(RegisterEntry {
+            date,
+            description,
+            posting,
+            total,
+        })
+    }
+}
+
+impl RegisterEntry {
+    /// The amount this posting moved, as one display string.
+    pub fn amount_display(&self) -> String {
+        self.posting.amounts_display()
+    }
+
+    /// The running total after this posting, as one display string.
+    pub fn total_display(&self) -> String {
+        display_amounts(&self.total)
+    }
+}
+
 /// Decode the output of `print -O json`.
 pub fn parse_transactions(json: &str) -> Result<Vec<Transaction>, JournalError> {
     if json.trim().is_empty() {
@@ -389,6 +444,14 @@ pub fn parse_balance(json: &str) -> Result<BalanceReport, JournalError> {
 
 /// Decode the output of `aregister -O json`.
 pub fn parse_aregister(json: &str) -> Result<Vec<AccountTransaction>, JournalError> {
+    if json.trim().is_empty() {
+        return Err(JournalError::Empty);
+    }
+    Ok(serde_json::from_str(json)?)
+}
+
+/// Decode the output of `register -O json`.
+pub fn parse_register(json: &str) -> Result<Vec<RegisterEntry>, JournalError> {
     if json.trim().is_empty() {
         return Err(JournalError::Empty);
     }
@@ -608,6 +671,66 @@ mod tests {
         assert_eq!(items[0].balance_display(), "$955.00");
         assert!(!items[1].is_split);
         assert_eq!(items[1].other_accounts, vec!["income:salary".to_string()]);
+    }
+
+    #[test]
+    fn decodes_a_register_with_running_totals() {
+        // The five-tuple is (date, period, description, posting, running total).
+        // The period is null here, which is the normal case for a plain register.
+        let json = r#"[
+          ["2024-01-01", null, "Opening",
+           {"paccount":"assets:bank","pamount":[
+             {"acommodity":"$","aquantity":{"decimalMantissa":100000,"decimalPlaces":2},
+              "astyle":{"ascommodityside":"L","ascommodityspaced":false,"asdecimalmark":".",
+                        "asdigitgroups":[",",[3]],"asprecision":2}}],
+            "pstatus":"Unmarked","pcomment":"","ptags":[],"ptype":"RegularPosting"},
+           [{"acommodity":"$","aquantity":{"decimalMantissa":100000,"decimalPlaces":2},
+             "astyle":{"ascommodityside":"L","ascommodityspaced":false,"asdecimalmark":".",
+                       "asdigitgroups":[",",[3]],"asprecision":2}}]],
+          ["2024-01-05", null, "Groceries",
+           {"paccount":"assets:bank","pamount":[
+             {"acommodity":"$","aquantity":{"decimalMantissa":-4500,"decimalPlaces":2},
+              "astyle":{"ascommodityside":"L","ascommodityspaced":false,"asdecimalmark":".",
+                        "asdigitgroups":[",",[3]],"asprecision":2}}],
+            "pstatus":"Unmarked","pcomment":"","ptags":[],"ptype":"RegularPosting"},
+           [{"acommodity":"$","aquantity":{"decimalMantissa":95500,"decimalPlaces":2},
+             "astyle":{"ascommodityside":"L","ascommodityspaced":false,"asdecimalmark":".",
+                       "asdigitgroups":[",",[3]],"asprecision":2}}]]
+        ]"#;
+
+        let rows = parse_register(json).expect("register should decode");
+        assert_eq!(rows.len(), 2);
+
+        assert_eq!(rows[0].date.as_deref(), Some("2024-01-01"));
+        assert_eq!(rows[0].description.as_deref(), Some("Opening"));
+        assert_eq!(rows[0].posting.account, "assets:bank");
+        assert_eq!(rows[0].amount_display(), "$1,000.00");
+        assert_eq!(rows[0].total_display(), "$1,000.00");
+
+        // The second row's total is the running figure, not its own amount.
+        //
+        // The sign sits *after* a left-hand symbol — `$-45.00`, not `-$45.00` —
+        // because that is what hledger itself prints (`$-1,000.00`) for a
+        // symbol-side style, while a right-hand symbol keeps the sign in front
+        // of the number (`-500.00 EUR`). The two conventions are hledger's.
+        assert_eq!(rows[1].amount_display(), "$-45.00");
+        assert_eq!(rows[1].total_display(), "$955.00");
+    }
+
+    #[test]
+    fn register_tolerates_a_null_date_and_a_period_object() {
+        // Rows can carry a period object (a `register --monthly` column) instead
+        // of a null, and it must not stop the row decoding.
+        let json = r#"[
+          [null, {"contents":["2024-01-01","2024-01-08"]}, null,
+           {"paccount":"a","pamount":[],"pcomment":"","ptags":[]},
+           []]
+        ]"#;
+        let rows = parse_register(json).expect("register should decode");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].date, None);
+        assert_eq!(rows[0].description, None);
+        assert_eq!(rows[0].total_display(), "—");
     }
 
     #[test]

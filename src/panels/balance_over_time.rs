@@ -15,11 +15,11 @@ use rust_decimal::Decimal;
 
 use crate::charts::{line_chart, scale};
 use crate::hledger::report::ReportSpec;
-use crate::journal::reports::{
-    PeriodicReport, default_commodity, parse_periodic_report, row_values,
-};
+use crate::journal::reports::{PeriodicReport, default_commodity, parse_periodic_report};
 use crate::layout::model::PanelId;
+use crate::panels::table::QueryField;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
+use crate::query;
 use crate::state::AppState;
 
 /// The period flags, as `(label, flag)`, coarsest first.
@@ -41,7 +41,12 @@ pub fn view(id: PanelId) -> AnyView {
     // An index into `INTERVALS` rather than the flag itself, so the control and
     // the argv cannot drift apart.
     let interval = RwSignal::new(0usize);
-    let account = RwSignal::new(String::new());
+    // Defaults to the net-worth view, not to the report's grand total. In a
+    // double-entry journal every account balances to zero, so the grand total is
+    // a flat line at zero — technically correct and completely useless as a
+    // default. Assets plus liabilities *is* net worth, which is what people open
+    // a balance-over-time chart to see.
+    let query = RwSignal::new("assets liabilities".to_string());
 
     Effect::new(move |_| {
         let _ = state.generation.get();
@@ -59,10 +64,10 @@ pub fn view(id: PanelId) -> AnyView {
             let flag = INTERVALS
                 .get(interval.get())
                 .map(|(_, flag)| *flag)
-                .unwrap_or("--monthly");
+                .unwrap_or("--yearly");
             spec = spec.arg("--historical").arg(flag);
-            for token in account.get().split_whitespace() {
-                spec = spec.arg(token);
+            for argument in query::query_args(&query.get()) {
+                spec = spec.arg(argument);
             }
         }
         state.report_for(id, spec);
@@ -90,15 +95,10 @@ pub fn view(id: PanelId) -> AnyView {
                             .collect_view()}
                     </select>
                 </label>
-                <label>
-                    "account"
-                    <input
-                        type="text"
-                        placeholder="e.g. assets"
-                        prop:value=move || account.get()
-                        on:input=move |event| account.set(event_target_value(&event))
-                    />
-                </label>
+                <QueryField
+                    applied=query
+                    placeholder="accounts to total, e.g. assets liabilities — Enter applies"
+                />
             </div>
         }
         .into_any()
@@ -123,7 +123,7 @@ pub fn view(id: PanelId) -> AnyView {
             {argv_line(state, id)}
             {report_view(state, id, move |output| {
                 match parse_periodic_report(&output.stdout) {
-                    Ok(report) => series_view(state, &report, &account.get_untracked()),
+                    Ok(report) => series_view(state, &report, &query.get_untracked()),
                     Err(error) => error_panel(&format!(
                         "Could not decode the periodic balance report: {error}"
                     )),
@@ -135,7 +135,14 @@ pub fn view(id: PanelId) -> AnyView {
 }
 
 /// The chart and the table behind it.
-fn series_view(state: AppState, report: &PeriodicReport, account: &str) -> AnyView {
+///
+/// The series is the *total of whatever the query selected*. For the default
+/// query that is assets plus liabilities, i.e. net worth; for a query naming one
+/// account it is that account's balance over time. It deliberately does not try
+/// to pick "the matching row": a query like `assets liabilities` selects a
+/// subtree with hundreds of rows, and their total is the meaningful figure, not
+/// any single row.
+fn series_view(state: AppState, report: &PeriodicReport, query: &str) -> AnyView {
     let commodity = state
         .settings
         .get_untracked()
@@ -151,19 +158,15 @@ fn series_view(state: AppState, report: &PeriodicReport, account: &str) -> AnyVi
             )
         });
 
-    let query = account.trim();
-    let (values, note) = if query.is_empty() {
-        (report.grand_total_values(commodity.as_deref()), None)
+    let values = report.grand_total_values(commodity.as_deref());
+
+    // Everything between here and the chart is about labelling what was plotted,
+    // so the header can say which accounts the figure covers.
+    let query = query.trim().to_string();
+    let caption = if query.is_empty() {
+        "everything (a balanced journal totals zero)".to_string()
     } else {
-        match report.row(query) {
-            Some(row) => (row_values(row, commodity.as_deref()), None),
-            None => (
-                report.grand_total_values(commodity.as_deref()),
-                Some(format!(
-                    "No account row matches `{query}`; showing the grand total."
-                )),
-            ),
-        }
+        query.clone()
     };
 
     let data: Vec<(String, Decimal)> = report.labels().into_iter().zip(values).collect();
@@ -193,13 +196,14 @@ fn series_view(state: AppState, report: &PeriodicReport, account: &str) -> AnyVi
         })
         .collect_view();
 
-    let note_view: AnyView = match note {
-        Some(text) => view! { <p class="panel-remedy">{text}</p> }.into_any(),
-        None => ().into_any(),
+    // Say what the line covers, so a figure is never mistaken for the whole
+    // journal when it is one subtree of it.
+    let caption_view = view! {
+        <div class="panel-count">{format!("showing {caption}")}</div>
     };
 
     view! {
-        {note_view}
+        {caption_view}
         {chart}
         <table class="panel-table">
             <thead>

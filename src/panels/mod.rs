@@ -25,6 +25,7 @@ mod console;
 mod expenses;
 mod journals;
 mod net_assets;
+mod register;
 mod table;
 mod terminal;
 mod transactions;
@@ -79,6 +80,13 @@ pub const PANELS: &[PanelDef] = &[
         view: transactions::view,
     },
     PanelDef {
+        kind: "register",
+        title: "Register",
+        icon: "≡",
+        summary: "An account's postings with the running total after each one",
+        view: register::view,
+    },
+    PanelDef {
         kind: "console",
         title: "Console",
         icon: "▤",
@@ -89,7 +97,7 @@ pub const PANELS: &[PanelDef] = &[
         kind: "balance_over_time",
         title: "Over Time",
         icon: "📈",
-        summary: "Balance over time as a line chart, by month, week, quarter or year",
+        summary: "Net worth by year, quarter, month or week; any account total",
         view: balance_over_time::view,
     },
     PanelDef {
