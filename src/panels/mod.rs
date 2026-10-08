@@ -21,10 +21,10 @@ mod accounts;
 mod balance_over_time;
 mod balances;
 mod budget;
+mod compound;
 mod console;
 mod expenses;
 mod journals;
-mod net_assets;
 mod register;
 mod table;
 mod terminal;
@@ -105,7 +105,21 @@ pub const PANELS: &[PanelDef] = &[
         title: "Net Assets",
         icon: "◈",
         summary: "Balance sheet: assets, liabilities, equity and the net figure",
-        view: net_assets::view,
+        view: compound::net_assets,
+    },
+    PanelDef {
+        kind: "income_statement",
+        title: "Profit & Loss",
+        icon: "⚖",
+        summary: "Income statement: revenue, expenses and the net income between them",
+        view: compound::income_statement,
+    },
+    PanelDef {
+        kind: "cash_flow",
+        title: "Cash Flow",
+        icon: "≋",
+        summary: "Cash flow statement: where cash came from and where it went",
+        view: compound::cash_flow,
     },
     PanelDef {
         kind: "expenses",

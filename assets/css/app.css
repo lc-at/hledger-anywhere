@@ -1110,3 +1110,32 @@ html.gl-dragging .gl-splitter {
   opacity: 0.8;
 }
 
+/* -- compound report headline ---------------------------------------------- */
+
+/* The one figure a balance sheet or income statement exists to show. It is the
+ * loudest thing in the panel, which is why it gets the accent and the space. */
+.panel-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 2px 0 10px;
+  padding: 6px 10px;
+  background: var(--gl-inset-bg);
+  border-left: 2px solid var(--gl-accent);
+  border-radius: var(--gl-radius);
+}
+
+.panel-figure-label {
+  color: var(--gl-text-dim);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.panel-figure-value {
+  color: var(--gl-accent);
+  font: var(--gl-font-mono);
+  font-size: 17px;
+  font-weight: 600;
+}
+
