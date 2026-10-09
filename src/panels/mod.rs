@@ -215,6 +215,66 @@ pub(crate) fn error_panel(text: &str) -> AnyView {
     .into_any()
 }
 
+/// What to say when a report bounded by a period or a query came back empty.
+///
+/// "No transactions" and "no transactions *in this month*" are different claims,
+/// and only one of them is usually true: a journal whose data ends in a past year
+/// — a demo, or an archive someone still reads — returns nothing for "this year"
+/// while holding thousands of postings. So the empty state names the bound that
+/// emptied it and offers the way out, because a report that correctly returns
+/// nothing is otherwise indistinguishable from a broken one.
+///
+/// `label` names the period and `all_index` is the period to switch to when the
+/// user takes the way out; both panels that bound a report by a period keep their
+/// own list, so neither is assumed here.
+pub(crate) fn empty_report_view(
+    label: &str,
+    bounded: bool,
+    query: &str,
+    period: RwSignal<usize>,
+    query_signal: RwSignal<String>,
+    all_index: usize,
+) -> AnyView {
+    let query = query.trim().to_string();
+
+    // Both bounds can be set, and either can be the reason.
+    let scope = match (bounded, query.is_empty()) {
+        (true, true) => format!(" in “{label}”"),
+        (false, false) => format!(" matching “{query}”"),
+        (true, false) => format!(" in “{label}” matching “{query}”"),
+        (false, true) => String::new(),
+    };
+    if scope.is_empty() {
+        return message_panel("This journal has no matching postings.");
+    }
+
+    view! {
+        <p class="panel-remedy">{format!("No postings{scope}.")}</p>
+        <p class="panel-count">
+            "The journal may simply have no data in that period."
+        </p>
+        <div class="panel-controls">
+            <Show when=move || bounded>
+                <button
+                    class="gl-btn"
+                    on:click=move |_| period.set(all_index)
+                >
+                    "Show everything"
+                </button>
+            </Show>
+            <Show when=move || !query.is_empty()>
+                <button
+                    class="gl-btn"
+                    on:click=move |_| query_signal.set(String::new())
+                >
+                    "Clear the query"
+                </button>
+            </Show>
+        </div>
+    }
+    .into_any()
+}
+
 /// Render the state machine every report panel shares.
 ///
 /// Keeping this in one place is what stops a panel from quietly rendering an

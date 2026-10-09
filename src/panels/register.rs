@@ -18,7 +18,7 @@ use crate::journal;
 use crate::journal::model::RegisterEntry;
 use crate::layout::model::PanelId;
 use crate::panels::table::QueryField;
-use crate::panels::{argv_line, error_panel, message_panel, report_view};
+use crate::panels::{argv_line, empty_report_view, error_panel, report_view};
 use crate::query;
 use crate::state::AppState;
 
@@ -28,9 +28,32 @@ use crate::state::AppState;
 /// thousands of rows; without a cap the first paint would block for seconds.
 const PAGE_SIZE: usize = 100;
 
+/// The windows a register can be bounded to, in display order.
+///
+/// Every one of them runs with `--historical` (see `view`), which is what makes
+/// the running total the account's real balance rather than the sum accumulated
+/// since the window opened.
+///
+/// The default is a month because of what a register costs. The engine re-parses
+/// the journal for every invocation, and each row carries its own running
+/// balance, so the JSON is heavy: measured on a real journal, a year is about
+/// 22 MB and twenty seconds, against half a megabyte for a month. Bounding it is
+/// not a limit on what can be asked for — "all" is right there — it is a default
+/// chosen so that opening the panel is not a minute of waiting.
+const PERIODS: [(&str, Option<&str>); 4] = [
+    ("this month", Some("date:thismonth")),
+    ("this quarter", Some("date:thisquarter")),
+    ("this year", Some("date:thisyear")),
+    ("all", None),
+];
+
+/// The index of the entry in [`PERIODS`] with no date bound.
+const ALL_PERIODS: usize = 3;
+
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     let limit = RwSignal::new(PAGE_SIZE);
+    let period = RwSignal::new(0usize);
     // `assets` by default. The running total of an asset query is a *position*,
     // which is what a register is usually opened to watch; a bare `register`
     // totals every posting in the journal, which ends at zero and means little
@@ -42,6 +65,7 @@ pub fn view(id: PanelId) -> AnyView {
         let _ = state.refresh.get();
         // Tracked, so committing a new query re-runs the report.
         let requested = query.get();
+        let requested_period = period.get();
         // A new report starts paged, whatever the last one was scrolled to.
         limit.set(PAGE_SIZE);
 
@@ -54,6 +78,14 @@ pub fn view(id: PanelId) -> AnyView {
         // The bridge accepts no query arguments, so asking would return the whole
         // journal while the field claimed otherwise.
         if state.flavor.get().supports_report_options() {
+            // `--historical` is not optional. A date-bounded register without it
+            // restarts the running total at the window's first posting, so the
+            // column looks like a balance while reporting only the window's
+            // change — the one number a register exists to get right.
+            spec = spec.arg("--historical");
+            if let Some(Some(bound)) = PERIODS.get(requested_period).map(|(_, bound)| *bound) {
+                spec = spec.arg(bound);
+            }
             for argument in query::query_args(&requested) {
                 spec = spec.arg(argument);
             }
@@ -67,6 +99,25 @@ pub fn view(id: PanelId) -> AnyView {
         }
         view! {
             <div class="panel-controls">
+                <label>
+                    "period"
+                    <select
+                        prop:value=move || period.get().to_string()
+                        on:change=move |event| {
+                            if let Ok(index) = event_target_value(&event).parse::<usize>() {
+                                period.set(index);
+                            }
+                        }
+                    >
+                        {PERIODS
+                            .iter()
+                            .enumerate()
+                            .map(|(index, (label, _))| {
+                                view! { <option value=index.to_string()>{*label}</option> }
+                            })
+                            .collect_view()}
+                    </select>
+                </label>
                 <QueryField
                     applied=query
                     placeholder="account or query, e.g. assets:bank — Enter applies"
@@ -83,7 +134,17 @@ pub fn view(id: PanelId) -> AnyView {
             {report_view(state, id, move |output| {
                 match journal::model::parse_register(&output.stdout) {
                     Ok(entries) if entries.is_empty() => {
-                        message_panel("This query matches no postings.")
+                        let index = period.get().min(PERIODS.len() - 1);
+                        let (label, bound) = PERIODS[index];
+                        let text = query.get();
+                        empty_report_view(
+                            label,
+                            bound.is_some(),
+                            &text,
+                            period,
+                            query,
+                            ALL_PERIODS,
+                        )
                     }
                     Ok(entries) => register_table(entries, limit),
                     Err(error) => error_panel(&format!(
