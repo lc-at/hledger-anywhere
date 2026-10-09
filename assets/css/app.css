@@ -40,7 +40,7 @@
   --gl-popover-bg: #121212;
   --gl-input-bg: #0e0e0e;
   --gl-inset-bg: rgba(0, 0, 0, 0.5);
-  --gl-row-hover: rgba(255, 127, 0, 0.07);
+  --gl-row-hover: rgba(255, 127, 0, 0.05);
   --gl-row-border: rgba(255, 255, 255, 0.05);
   --gl-shadow: rgba(0, 0, 0, 0.7);
 
@@ -256,7 +256,10 @@ body {
 
 .gl-settings-select {
   width: 100%;
-  padding: 3px 6px;
+  /* The browser draws its own caret inside the box, over the last few pixels of
+   * the text: "(none — amounts as written)▾". */
+  padding: 3px 22px 3px 6px;
+  text-overflow: ellipsis;
   background: var(--gl-input-bg);
   border: 1px solid var(--gl-border);
   border-radius: var(--gl-radius);
@@ -429,6 +432,7 @@ body {
 }
 
 .gl-tab-close {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -447,6 +451,15 @@ body {
 
 .gl-tab:hover .gl-tab-close {
   opacity: 0.8;
+}
+
+/* A 16px glyph is a 16px target, and the × is the only way to close a panel.
+ * The invisible ring around it hit-tests as part of the button, so the glyph
+ * stays the size the tab bar was designed around while the target is 28px. */
+.gl-tab-close::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
 }
 
 .gl-tab-close:hover {
@@ -611,7 +624,16 @@ body {
   border-radius: var(--gl-radius);
   color: var(--gl-text-dim);
   font: var(--gl-font-mono);
-  word-break: break-all;
+  /* A command is read as one command. Breaking it mid-token turned it into a
+   * column of fragments — "hled / ger / -f / dat / a" — in a narrow pane; it
+   * stays on one line and scrolls instead. */
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.panel-argv::-webkit-scrollbar {
+  height: 0;
 }
 
 .panel-argv:empty {
@@ -881,17 +903,26 @@ body {
 }
 
 .gl-tab-maximise {
+  position: relative;
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 22px;
+  width: 26px;
   padding: 0;
   background: none;
   border: 0;
   border-left: 1px solid var(--gl-border);
   color: var(--gl-text-dim);
   cursor: pointer;
+}
+
+/* The glyph is 12px and the button 26px; this makes the target 34px without
+ * making the tab bar taller. */
+.gl-tab-maximise::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }
 
 .gl-tab-maximise:hover {
@@ -1271,6 +1302,38 @@ html.gl-dragging .gl-splitter {
 
   .gl-tab {
     flex: 0 0 auto;
+  }
+
+  /* Touch targets, not pointer targets. A finger covers what it is aiming at,
+   * and 28-34px is what the desktop sizes come out at; 44px is the size that
+   * stops a tap landing on the neighbour. The header can afford the height
+   * because it is a grid with the room for it. */
+  .app-header .gl-btn {
+    min-height: 44px;
+  }
+
+  .gl-tab {
+    min-height: 44px;
+  }
+
+  .gl-tab-close::after {
+    inset: -10px;
+  }
+
+  .gl-tab-maximise {
+    width: 40px;
+  }
+
+  .gl-tab-maximise::after {
+    inset: -6px;
+  }
+
+  /* Stacked panes are separated by horizontal gutters, and those are the ones a
+   * finger has to find: the band is widened further than the desktop hairline
+   * because there is no content directly above or below it to steal taps from. */
+  .gl-splitter-col::before {
+    top: -9px;
+    bottom: -9px;
   }
 
   /* A wide table scrolls sideways on a phone, and the first column is what says
