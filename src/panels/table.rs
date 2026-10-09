@@ -52,6 +52,15 @@ pub fn sort_header(
 pub fn QueryField(applied: RwSignal<String>, placeholder: &'static str) -> impl IntoView {
     let draft = RwSignal::new(applied.get_untracked());
 
+    // The committed value can change from outside the field — another panel can
+    // point this one at an account (see `AppState::drill_into`) — so the draft
+    // follows it. Without this the field would show the old query while the
+    // report ran the new one, and the next keystroke would put the stale text
+    // back. Typing does not loop: the draft is written here but never read.
+    Effect::new(move |_| {
+        draft.set(applied.get());
+    });
+
     let commit = move || {
         let next = draft.get_untracked();
         if next != applied.get_untracked() {

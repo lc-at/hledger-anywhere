@@ -208,6 +208,10 @@ fn expenses_view(
             let style = format!("padding-left: {}px", 8 + row.depth * 16);
             let name = row.display_name.clone();
             let full = row.full_name.clone();
+            let title = format!("{full} — open its register");
+            // The full name, not the display name: the drill is a query, and an
+            // elided name is not one.
+            let target = full.clone();
             let amounts = row.amounts_display();
             let zero = row
                 .amounts
@@ -215,7 +219,15 @@ fn expenses_view(
                 .all(|amount| amount.quantity.0.is_zero());
             view! {
                 <tr class:panel-row-zero=zero>
-                    <td style=style title=full>{name}</td>
+                    <td style=style>
+                        <button
+                            class="account-link"
+                            title=title
+                            on:click=move |_| state.drill_into(target.clone())
+                        >
+                            {name}
+                        </button>
+                    </td>
                     <td class="num">{amounts}</td>
                 </tr>
             }

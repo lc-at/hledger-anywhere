@@ -190,13 +190,28 @@ pub fn view(id: PanelId) -> AnyView {
                                         // account name is always available as a
                                         // tooltip.
                                         let full = row.full_name.clone();
+                                        let title = format!("{full} — open its register");
+                                        // The full name, not the display name:
+                                        // the drill is a query, and an elided
+                                        // name is not one.
+                                        let target = full.clone();
                                         let amounts = row.amounts_display();
                                         let zero = row.amounts.iter().all(|amount| {
                                             amount.quantity.0.is_zero()
                                         });
                                         view! {
                                             <tr class:panel-row-zero=zero>
-                                                <td style=style title=full>{name}</td>
+                                                <td style=style>
+                                                    <button
+                                                        class="account-link"
+                                                        title=title
+                                                        on:click=move |_| {
+                                                            state.drill_into(target.clone())
+                                                        }
+                                                    >
+                                                        {name}
+                                                    </button>
+                                                </td>
                                                 <td class="num">{amounts}</td>
                                             </tr>
                                         }

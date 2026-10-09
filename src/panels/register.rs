@@ -50,6 +50,16 @@ const PERIODS: [(&str, Option<&str>); 4] = [
 /// The index of the entry in [`PERIODS`] with no date bound.
 const ALL_PERIODS: usize = 3;
 
+/// The window a drilled register opens on.
+///
+/// A drill asks "what is this figure made of?", so the panel widens from its own
+/// month default — one specific account often has nothing in the current month,
+/// and a drill that shows an empty panel is a failed interaction. It does not
+/// widen to everything either: measured on a real journal, a whole account
+/// subtree unbounded is about twenty megabytes of JSON and half a minute, against
+/// a quarter of that for three months. The period control is one click away.
+const DRILLED_PERIOD: usize = 1;
+
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     let limit = RwSignal::new(PAGE_SIZE);
@@ -93,11 +103,26 @@ pub fn view(id: PanelId) -> AnyView {
         state.report_for(id, spec);
     });
 
+    // Another panel can point this register at an account; see `AppState::drill`.
+    // `seq` is what makes a second click on the same account take effect — it is a
+    // new request even when the account has not changed.
+    let consumed = RwSignal::new(0u64);
+    Effect::new(move |_| {
+        let Some(drill) = state.drill.get() else {
+            return;
+        };
+        if drill.panel != id || consumed.get_untracked() >= drill.seq {
+            return;
+        }
+        consumed.set(drill.seq);
+        period.set(DRILLED_PERIOD);
+        query.set(drill.account.clone());
+    });
+
     let controls = move || {
         if !state.flavor.get().supports_report_options() {
             return ().into_any();
-        }
-        view! {
+        }        view! {
             <div class="panel-controls">
                 <label>
                     "period"

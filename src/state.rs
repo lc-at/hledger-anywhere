@@ -261,6 +261,12 @@ pub struct AppState {
     /// Cleared when a new journal is loaded or every report is re-run; set by any
     /// panel whose report fails. See `report_for`.
     pub report_failure: RwSignal<Option<String>>,
+
+    /// A pending "show me this account" request from another panel.
+    ///
+    /// At most one at a time: it is a navigation, not a queue. See
+    /// [`AppState::drill_into`].
+    pub drill: RwSignal<Option<Drill>>,
 }
 
 /// Identifies one report request, so an identical one can be skipped.
@@ -269,6 +275,23 @@ pub struct ReportKey {
     pub generation: u64,
     pub refresh: u64,
     pub spec: ReportSpec,
+}
+
+/// A request from one panel to look at an account in a register.
+///
+/// Panels are otherwise independent: each builds its own report from the loaded
+/// journal and nothing connects them. This is the one thread between them, and it
+/// exists because the question a balance report raises — "what is this figure
+/// made of?" — is the question a register answers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Drill {
+    /// The register that should show it.
+    pub panel: PanelId,
+    /// The account, or any query, to look at.
+    pub account: String,
+    /// Bumped on every request, so clicking the same account twice targets the
+    /// register again rather than looking like nothing happened.
+    pub seq: u64,
 }
 
 /// A tab drag in progress.
@@ -319,6 +342,7 @@ impl AppState {
             refresh: RwSignal::new(0),
             first_report_settled: RwSignal::new(false),
             report_failure: RwSignal::new(None),
+            drill: RwSignal::new(None),
         };
 
         // One place persists, so every mutation is covered no matter what caused
@@ -413,6 +437,48 @@ impl AppState {
             layout.add_panel(kind, target);
         });
         self.add_menu_open.set(false);
+    }
+
+    /// Show `account` in a register, opening one if none is open.
+    ///
+    /// An open register is reused rather than adding one per click: drilling
+    /// through six accounts should not leave six panels behind. The panel is also
+    /// raised, because a request the user cannot see is indistinguishable from a
+    /// broken click — the register may be a tab behind something else.
+    pub fn drill_into(&self, account: impl Into<String>) {
+        let account = account.into();
+
+        let open = self
+            .layout
+            .get_untracked()
+            .panels()
+            .iter()
+            .find(|panel| panel.kind == "register")
+            .map(|panel| panel.id);
+
+        let panel = match open {
+            Some(id) => id,
+            None => {
+                let added = self
+                    .layout
+                    .try_update(|layout| layout.add_panel("register", layout.focused));
+                let Some(id) = added else {
+                    return;
+                };
+                id
+            }
+        };
+
+        self.layout.update(|layout| {
+            layout.activate(panel);
+        });
+
+        let seq = self.drill.get_untracked().map_or(1, |drill| drill.seq + 1);
+        self.drill.set(Some(Drill {
+            panel,
+            account,
+            seq,
+        }));
     }
 
     /// Re-run every panel's report without reloading the journal.

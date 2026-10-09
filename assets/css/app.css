@@ -1165,6 +1165,25 @@ html.gl-dragging .gl-splitter {
 }
 
 
+/* An account name that opens that account's register. It reads as text until it
+ * is hovered: it is a table cell first and a control second, and underlining every
+ * account name in a balance report would make the numbers harder to scan. */
+.account-link {
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.account-link:hover {
+  color: var(--gl-accent);
+  text-decoration: underline;
+}
+
 /* -- compound report headline ---------------------------------------------- */
 
 /* The one figure a balance sheet or income statement exists to show. It is the
