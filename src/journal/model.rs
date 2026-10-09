@@ -25,6 +25,8 @@
 use serde::{Deserialize, Deserializer};
 use thiserror::Error;
 
+use std::collections::HashMap;
+
 use super::money::{self, Amount};
 
 /// Anything that can go wrong turning engine output into a report.
@@ -426,6 +428,63 @@ impl RegisterEntry {
     }
 }
 
+/// One name from a pivoted register, and everything posted to it.
+#[derive(Clone, Debug)]
+pub struct PayeeTotal {
+    /// The pivot value: a payee, once `--pivot payee` has been used.
+    pub payee: String,
+    /// What was posted to it, one figure per commodity.
+    pub amounts: Vec<Amount>,
+    /// How many postings it took.
+    pub postings: usize,
+}
+
+impl PayeeTotal {
+    /// The summed amounts as one display string.
+    pub fn amounts_display(&self) -> String {
+        display_amounts(&self.amounts)
+    }
+}
+
+/// Sum a register's postings by the account they name.
+///
+/// After `--pivot payee` a posting's account *is* the payee, so this is what
+/// turns a register into a per-payee breakdown. It is the only way to get one:
+/// `balance --pivot payee` returns an empty report in this engine, while
+/// `register --pivot payee` works — so the grouping has to happen here rather
+/// than in the engine.
+///
+/// Names come back in the order they first appear, so the result is stable and
+/// the caller decides how to rank them. A posting with no payee is grouped under
+/// "(no payee)" rather than dropped: it is still spending.
+pub fn total_by_payee(entries: &[RegisterEntry]) -> Vec<PayeeTotal> {
+    let mut order: Vec<String> = Vec::new();
+    let mut grouped: HashMap<String, (Vec<Amount>, usize)> = HashMap::new();
+
+    for entry in entries {
+        let name = entry.posting.account.trim();
+        let name = if name.is_empty() { "(no payee)" } else { name };
+        let slot = grouped.entry(name.to_string()).or_insert_with(|| {
+            order.push(name.to_string());
+            (Vec::new(), 0)
+        });
+        slot.0.extend(entry.posting.amounts.iter().cloned());
+        slot.1 += 1;
+    }
+
+    order
+        .into_iter()
+        .filter_map(|payee| {
+            let (amounts, postings) = grouped.remove(&payee)?;
+            Some(PayeeTotal {
+                payee,
+                amounts: money::sum_by_commodity(&amounts),
+                postings,
+            })
+        })
+        .collect()
+}
+
 /// Decode the output of `print -O json`.
 pub fn parse_transactions(json: &str) -> Result<Vec<Transaction>, JournalError> {
     if json.trim().is_empty() {
@@ -783,5 +842,61 @@ mod tests {
         assert_eq!(transactions.len(), 1);
         assert!(transactions[0].postings.is_empty());
         assert_eq!(transactions[0].status_marker(), "", "unmarked by default");
+    }
+
+    #[test]
+    fn a_pivoted_register_totals_by_payee() {
+        // After `--pivot payee` a posting's account *is* the payee, so grouping
+        // by account is grouping by payee.
+        let json = r#"[
+          ["2024-01-01", null, "a",
+           {"paccount":"Grocery Store","pamount":[
+             {"acommodity":"$","aquantity":{"decimalMantissa":4000,"decimalPlaces":2}}],
+            "pcomment":"","ptags":[]}, []],
+          ["2024-01-02", null, "b",
+           {"paccount":"Grocery Store","pamount":[
+             {"acommodity":"$","aquantity":{"decimalMantissa":1500,"decimalPlaces":2}}],
+            "pcomment":"","ptags":[]}, []],
+          ["2024-01-03", null, "c",
+           {"paccount":"Shell","pamount":[
+             {"acommodity":"$","aquantity":{"decimalMantissa":6000,"decimalPlaces":2}}],
+            "pcomment":"","ptags":[]}, []]
+        ]"#;
+        let entries = parse_register(json).expect("register should decode");
+        let totals = total_by_payee(&entries);
+
+        assert_eq!(totals.len(), 2, "two payees");
+        // First-appearance order, so the caller decides how to rank them.
+        assert_eq!(totals[0].payee, "Grocery Store");
+        assert_eq!(totals[0].postings, 2);
+        // 40 + 15. The fixtures carry no `astyle`, which is where decimal
+        // places come from, so the sum is formatted with none.
+        assert_eq!(totals[0].amounts_display(), "$55");
+        assert_eq!(totals[1].payee, "Shell");
+        assert_eq!(totals[1].postings, 1);
+        assert_eq!(totals[1].amounts_display(), "$60");
+    }
+
+    #[test]
+    fn payee_totals_keep_commodities_apart_and_name_the_nameless() {
+        let json = r#"[
+          ["2024-01-01", null, null,
+           {"paccount":"","pamount":[
+             {"acommodity":"IDR","aquantity":{"decimalMantissa":1000,"decimalPlaces":0}}],
+            "pcomment":"","ptags":[]}, []],
+          ["2024-01-02", null, null,
+           {"paccount":"   ","pamount":[
+             {"acommodity":"EUR","aquantity":{"decimalMantissa":500,"decimalPlaces":2}}],
+            "pcomment":"","ptags":[]}, []]
+        ]"#;
+        let entries = parse_register(json).expect("register should decode");
+        let totals = total_by_payee(&entries);
+
+        // A posting with no payee is still spending, so it is named rather than
+        // dropped, and whitespace-only names count as nameless.
+        assert_eq!(totals.len(), 1);
+        assert_eq!(totals[0].payee, "(no payee)");
+        assert_eq!(totals[0].postings, 2);
+        assert_eq!(totals[0].amounts.len(), 2, "two commodities, not one sum");
     }
 }

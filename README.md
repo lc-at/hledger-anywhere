@@ -48,14 +48,21 @@ backend. You point it at a directory of journal files and it runs the real
 - **Analytics**, from hledger's own reports rather than reimplemented ones: a
   balance sheet with its net-assets figure (`balancesheetequity`), an income
   statement (`incomestatement`), a cash flow statement (`cashflow`), a
-  balance-over-time chart (`balance --historical`), an expenses breakdown chart
-  (`balance expenses --tree`) and a budget table (`balance --budget --monthly`,
-  actual against goal with the variance). The three statements share one
-  renderer, because a compound report is a compound report. The time-series chart
-  is drawn with [uPlot](https://github.com/leeoniya/uPlot), vendored under
+  balance-over-time chart (`balance --historical`), a running-balance register
+  (`register --historical`), an expenses breakdown chart (`balance expenses
+  --tree`), a **payee breakdown** and a budget table (`balance --budget
+  --monthly`, actual against goal with the variance). The three statements share
+  one renderer, because a compound report is a compound report. The time-series
+  chart is drawn with [uPlot](https://github.com/leeoniya/uPlot), vendored under
   `assets/js/vendor/uplot/` with its version and SHA-256 recorded in a README
   beside it — this project has no npm step, so the library is pinned like the
   engine is.
+
+  The payee breakdown is the one report hledger cannot produce for us:
+  `balance --pivot payee` returns an empty report in the shipped engine, while
+  `register --pivot payee` works. So the panel runs the register and totals it in
+  Rust, because once pivoted a posting's *account* is the payee. The grouping is
+  pure and tested on the host.
 - **Phone-shaped by default**: a narrow screen gets one panel at a time as tabs
   rather than three columns of clipped figures, and a layout arranged on a wider
   screen opens stacked instead of squeezed.
