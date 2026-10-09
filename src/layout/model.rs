@@ -524,6 +524,29 @@ impl Layout {
         out
     }
 
+    /// The tabs either side of `panel` within its own pane, as `(before, after)`.
+    ///
+    /// This is what reordering needs and what a pane's own boundaries are: at the
+    /// left end there is no tab before it, and the caller leaves that action out
+    /// rather than offering one that would do nothing. Crossing panes is
+    /// `move_panel`'s job, not this one's.
+    pub fn tab_neighbours(&self, panel: PanelId) -> (Option<PanelId>, Option<PanelId>) {
+        let Some(pane) = self
+            .panes()
+            .into_iter()
+            .find(|pane| pane.panels.iter().any(|held| held.id == panel))
+        else {
+            return (None, None);
+        };
+        let Some(index) = pane.panels.iter().position(|held| held.id == panel) else {
+            return (None, None);
+        };
+        (
+            index.checked_sub(1).map(|i| pane.panels[i].id),
+            pane.panels.get(index + 1).map(|held| held.id),
+        )
+    }
+
     /// The panel to split `panel` against, for the keyboard's split actions.
     ///
     /// A sibling tab if there is one, so the pane divides in two where the panel
@@ -1655,6 +1678,43 @@ mod tests {
         let only = single.panes()[0].named_by.id;
         assert_eq!(single.split_target(only), None);
         assert!(single.other_panes(only).is_empty());
+    }
+
+    #[test]
+    fn tab_neighbours_stop_at_the_ends_of_a_pane() {
+        let layout = Layout::default_stacked(&["a", "b", "c"]);
+        let panels = layout.panes()[0].panels.clone();
+        let (a, b, c) = (panels[0].id, panels[1].id, panels[2].id);
+
+        assert_eq!(layout.tab_neighbours(a), (None, Some(b)));
+        assert_eq!(layout.tab_neighbours(b), (Some(a), Some(c)));
+        assert_eq!(layout.tab_neighbours(c), (Some(b), None));
+
+        // A panel in a pane of its own has neither, and neither has one that is
+        // not in the layout at all.
+        let alone = Layout::default_stacked(&["only"]);
+        assert_eq!(alone.tab_neighbours(alone.panes()[0].named_by.id), (None, None));
+        assert_eq!(layout.tab_neighbours(9999), (None, None));
+    }
+
+    #[test]
+    fn reordering_against_a_neighbour_moves_one_place() {
+        let mut layout = Layout::default_stacked(&["a", "b", "c"]);
+        let panels = layout.panes()[0].panels.clone();
+        let (a, b, c) = (panels[0].id, panels[1].id, panels[2].id);
+
+        // The menu's "move tab right": sit immediately after the next tab.
+        assert!(layout.reorder_panel(a, b, false));
+        assert_eq!(
+            layout.panes()[0].panels.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![b, a, c]
+        );
+        // And "move tab left": immediately before the previous one.
+        assert!(layout.reorder_panel(c, a, true));
+        assert_eq!(
+            layout.panes()[0].panels.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![b, c, a]
+        );
     }
 
     #[test]

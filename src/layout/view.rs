@@ -427,10 +427,27 @@ fn PaneMoveMenu(panel: PanelId) -> impl IntoView {
         open.set(false);
     };
 
+    // Reordering swaps places with the tab next door, so it never crosses a pane:
+    // that is what `join` is for. `before` is the direction, not the position.
+    let reorder = move |target: PanelId, before: bool| {
+        state.layout.update(|layout| {
+            layout.reorder_panel(panel, target, before);
+        });
+        state.persist_layout();
+        open.set(false);
+    };
+
     // Read only while the menu is open, and from the layout as it is then: these
     // are destinations, and a list built once would go on offering panes that
     // have closed and missing the ones that have opened.
     let splittable = move || open.get() && state.layout.get().split_target(panel).is_some();
+    let neighbours = move || {
+        if open.get() {
+            state.layout.get().tab_neighbours(panel)
+        } else {
+            (None, None)
+        }
+    };
     let destinations = move || {
         if !open.get() {
             return Vec::new();
@@ -471,7 +488,8 @@ fn PaneMoveMenu(panel: PanelId) -> impl IntoView {
                     style=move || {
                         let (x, y) = anchor.get();
                         format!(
-                            "position: fixed; left: auto; right: calc(100vw - {x}px); top: {y}px;                              max-height: calc(100vh - {y}px - 8px);",
+                            "position: fixed; left: auto; right: calc(100vw - {x}px); \
+                             top: {y}px; max-height: calc(100vh - {y}px - 8px);",
                         )
                     }
                 >
@@ -492,6 +510,44 @@ fn PaneMoveMenu(panel: PanelId) -> impl IntoView {
                             <span class="gl-dropdown-icon">"⬓"</span>
                             <span>"Split below"</span>
                         </button>
+                    </Show>
+                    <Show
+                        when=move || {
+                            let (before, after) = neighbours();
+                            before.is_some() || after.is_some()
+                        }
+                    >
+                        <Show when=move || splittable()>
+                            <div class="gl-dropdown-sep" role="separator"></div>
+                        </Show>
+                        <Show when=move || neighbours().0.is_some()>
+                            <button
+                                class="gl-dropdown-item"
+                                role="menuitem"
+                                on:click=move |_| {
+                                    if let Some(target) = neighbours().0 {
+                                        reorder(target, true);
+                                    }
+                                }
+                            >
+                                <span class="gl-dropdown-icon">"←"</span>
+                                <span>"Move this tab left"</span>
+                            </button>
+                        </Show>
+                        <Show when=move || neighbours().1.is_some()>
+                            <button
+                                class="gl-dropdown-item"
+                                role="menuitem"
+                                on:click=move |_| {
+                                    if let Some(target) = neighbours().1 {
+                                        reorder(target, false);
+                                    }
+                                }
+                            >
+                                <span class="gl-dropdown-icon">"→"</span>
+                                <span>"Move this tab right"</span>
+                            </button>
+                        </Show>
                     </Show>
                     <Show when=move || !destinations().is_empty()>
                         <div class="gl-dropdown-sep" role="separator"></div>

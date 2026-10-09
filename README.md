@@ -85,8 +85,9 @@ backend. You point it at a directory of journal files and it runs the real
   focusable separators moved by the arrow key for their axis, Escape closes the
   header menus and returns focus to the button that opened them, and focus is
   visible. The panel move menu at the right of each tab bar is the keyboard's
-  route to the shape of the layout — the one thing a drag otherwise had to
-  itself.
+  route to the shape of the layout and to the order of the tabs in it: splitting,
+  docking and reordering all happen from it, so no part of the layout needs a
+  drag.
 - **Printable**: `@media print` drops the header, tab bars, gutters and every
   control, inverts the palette to ink on white — including the chart's series
   colours, which a canvas would otherwise keep — and flows the panels in reading
@@ -423,11 +424,11 @@ snapshot when checking what a panel says.
   artifact is available at all. The interim bridge artifact remains a supported
   flavor.
 - The layout covers docking, splitting, tab reordering, maximise and persisted
-  sizes, and both the splitters and the shape of the layout are reachable from the
-  keyboard: the button at the right of each tab bar offers "split to the right",
-  "split below" and a move into any other pane. **Tab reordering is still
-  pointer-only** — the panel move menu changes which pane a panel is in, not where
-  it sits among the tabs of one. What Golden Layout also has and this does not:
+  sizes, and every one of them is reachable from the keyboard: the button at the
+  right of each tab bar offers "split to the right", "split below", a move one
+  place along the tab bar in either direction, and a move into any other pane.
+  Nothing in the layout now needs a drag. What Golden Layout also has and this does
+  not:
   **floating and popout panels**, a **tab overflow menu** (tabs shrink to fit the
   bar, and only scroll once there are more than the bar can hold), and **drop
   zones at the outer edge of the workspace** (a drop only targets the pane or tab
