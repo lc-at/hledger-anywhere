@@ -102,6 +102,34 @@ pub fn view(_id: PanelId) -> AnyView {
 
             <p class=status_class>{status}</p>
 
+            {move || {
+                // Reports all failing means the journal the engine was handed is
+                // not one it can read, and this is the panel that speaks for the
+                // journal. On a phone it is the only panel on screen at first, so
+                // without this "1 file(s) loaded" would be the whole story.
+                let Some(message) = state.report_failure.get() else {
+                    return ().into_any();
+                };
+                if !matches!(state.source.get(), SourceStatus::Ready { .. }) {
+                    return ().into_any();
+                }
+                // hledger's parse errors are several lines of source excerpt; the
+                // first line carries the file, line and column, and the whole
+                // message stays available as a tooltip.
+                let summary = message
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("the engine could not run a report")
+                    .to_string();
+                view! {
+                    <p class="panel-error" title=message>
+                        {format!("Reports are failing: {summary}")}
+                    </p>
+                }
+                .into_any()
+            }}
+
             <div class="panel-field">
                 <label for="main-journal">"Main journal"</label>
                 <select

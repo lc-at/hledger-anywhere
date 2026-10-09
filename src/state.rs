@@ -255,6 +255,12 @@ pub struct AppState {
     /// difference between a pane that fills in ten seconds and one that fills in
     /// a minute. Panels other than the focused one wait for this to flip.
     pub first_report_settled: RwSignal<bool>,
+
+    /// The most recent report failure, for the panel that reports on the journal.
+    ///
+    /// Cleared when a new journal is loaded or every report is re-run; set by any
+    /// panel whose report fails. See `report_for`.
+    pub report_failure: RwSignal<Option<String>>,
 }
 
 /// Identifies one report request, so an identical one can be skipped.
@@ -312,6 +318,7 @@ impl AppState {
             generation: RwSignal::new(0),
             refresh: RwSignal::new(0),
             first_report_settled: RwSignal::new(false),
+            report_failure: RwSignal::new(None),
         };
 
         // One place persists, so every mutation is covered no matter what caused
@@ -816,6 +823,13 @@ impl AppState {
                     output: HledgerOutput::default(),
                 },
             };
+            if let ReportState::Failed { message, .. } = &next {
+                // Remember that *something* failed, for the panel that reports
+                // on the journal itself. On a phone the Journals panel is the
+                // only thing on screen, and "1 file(s) loaded" would otherwise
+                // be the whole story for a journal the engine cannot parse.
+                state.report_failure.set(Some(message.clone()));
+            }
             state.reports.update(|reports| {
                 reports.insert(id, next);
             });
@@ -869,6 +883,9 @@ impl AppState {
     /// Start a fresh load: the focused pane gets a head start over the rest.
     fn begin_load(&self) {
         self.first_report_settled.set(false);
+        // A new load is a clean slate: whatever failed before it is no longer
+        // what the user is looking at.
+        self.report_failure.set(None);
         self.release_after_head_start();
     }
 
