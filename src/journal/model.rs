@@ -428,6 +428,26 @@ impl RegisterEntry {
     }
 }
 
+/// Decode `hledger stats`, which is a two-column text table.
+///
+/// The report has no JSON form, but it needs no parsing beyond the first colon:
+/// every line is a label, some padding, and a value. Splitting on the *first*
+/// colon rather than the last is what keeps a value containing one — a Windows
+/// path, a time — whole.
+pub fn parse_stats(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let (label, value) = line.split_once(':')?;
+            let label = label.trim();
+            let value = value.trim();
+            if label.is_empty() || value.is_empty() {
+                return None;
+            }
+            Some((label.to_string(), value.to_string()))
+        })
+        .collect()
+}
+
 /// Shorten each account name against its nearest ancestor in the same list.
 ///
 /// `hledger accounts` prints full names in sorted order, so a list of them reads
@@ -877,6 +897,32 @@ mod tests {
         assert_eq!(transactions.len(), 1);
         assert!(transactions[0].postings.is_empty());
         assert_eq!(transactions[0].status_marker(), "", "unmarked by default");
+    }
+
+    #[test]
+    fn stats_lines_split_on_the_first_colon_only() {
+        let text = "Main file           : .../hledger.journal\n\
+                    Txns                : 6 (0.1 per day)\n\
+                    \n\
+                    not a stats line\n\
+                    Runtime stats       : 0.11 s elapsed, 54 txns/s\n";
+        let rows = parse_stats(text);
+        assert_eq!(
+            rows,
+            vec![
+                ("Main file".to_string(), ".../hledger.journal".to_string()),
+                ("Txns".to_string(), "6 (0.1 per day)".to_string()),
+                ("Runtime stats".to_string(), "0.11 s elapsed, 54 txns/s".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_value_may_contain_a_colon() {
+        assert_eq!(
+            parse_stats("Last txn            : 2024-04-02 12:30"),
+            vec![("Last txn".to_string(), "2024-04-02 12:30".to_string())]
+        );
     }
 
     #[test]

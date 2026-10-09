@@ -1234,6 +1234,19 @@ html.gl-dragging .gl-splitter {
   text-decoration: underline;
 }
 
+/* -- overview ------------------------------------------------------------- */
+
+/* A label and its value, with nothing to sort or total: a table because that is
+ * what aligns two columns, not because it is tabular data. */
+.overview-table .overview-label {
+  color: var(--gl-text-dim);
+  white-space: nowrap;
+}
+
+.overview-table .overview-value {
+  font: var(--gl-font-mono);
+}
+
 /* -- compound report headline ---------------------------------------------- */
 
 /* The one figure a balance sheet or income statement exists to show. It is the

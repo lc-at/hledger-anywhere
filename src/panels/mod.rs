@@ -25,6 +25,7 @@ mod compound;
 mod console;
 mod expenses;
 mod journals;
+mod overview;
 mod payees;
 mod register;
 mod table;
@@ -128,6 +129,13 @@ pub const PANELS: &[PanelDef] = &[
         icon: "🧾",
         summary: "Where the money went: expenses as a bar chart and a table",
         view: expenses::view,
+    },
+    PanelDef {
+        kind: "overview",
+        title: "Overview",
+        icon: "📊",
+        summary: "What the journal is: its span, counts, accounts and freshness",
+        view: overview::view,
     },
     PanelDef {
         kind: "payees",

@@ -20,6 +20,11 @@ backend. You point it at a directory of journal files and it runs the real
   chosen manually.
 - **Reports**: an account tree, a balance report with `--tree`/`--flat` and
   `--depth` controls, the full transaction list, and a running-balance register.
+- **An Overview panel** that describes the journal itself rather than the money in
+  it — the period it covers, its transaction and account counts, the commodities
+  it uses, and how long ago its newest entry was. It answers "what am I looking
+  at?", which is the question a reader has first, and it is the one report with no
+  JSON form: `stats` is a two-column text table, decoded on the first colon.
 - **A hledger query field on every report panel.** Anything hledger's query
   language can express — `date:thismonth`, `payee:"coffee shop"`, `exp:food`,
   `not:...` — is reachable without waiting for a purpose-built view. It applies
