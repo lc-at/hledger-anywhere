@@ -13,6 +13,7 @@
 
 use leptos::prelude::*;
 
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal;
 use crate::journal::model::RegisterEntry;
@@ -63,12 +64,16 @@ const DRILLED_PERIOD: usize = 1;
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     let limit = RwSignal::new(PAGE_SIZE);
-    let period = RwSignal::new(0usize);
+    let period = RwSignal::new(state.recalled_index(id, controls::PERIOD).unwrap_or(0));
     // `assets` by default. The running total of an asset query is a *position*,
     // which is what a register is usually opened to watch; a bare `register`
     // totals every posting in the journal, which ends at zero and means little
     // on the way there.
-    let query = RwSignal::new("assets".to_string());
+    let query = RwSignal::new(
+        state
+            .recalled_text(id, controls::QUERY)
+            .unwrap_or_else(|| "assets".to_string()),
+    );
 
     Effect::new(move |_| {
         let _ = state.generation.get();
@@ -138,6 +143,7 @@ pub fn view(id: PanelId) -> AnyView {
                         prop:value=move || period.get().to_string()
                         on:change=move |event| {
                             if let Ok(index) = event_target_value(&event).parse::<usize>() {
+                                state.remember(id, controls::PERIOD, index.into());
                                 period.set(index);
                             }
                         }
@@ -152,6 +158,7 @@ pub fn view(id: PanelId) -> AnyView {
                     </select>
                 </label>
                 <QueryField
+                panel=id
                     applied=query
                     placeholder="account or query, e.g. assets:bank — Enter applies"
                 />

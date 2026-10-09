@@ -28,6 +28,7 @@ use crate::hledger::{Engine, EngineError, HledgerOutput, HledgerRequest, Journal
 use crate::journal::{self, MainJournal};
 use crate::layout::model::{DropGeometry, Layout, PanelId};
 use crate::panels;
+use crate::controls::{self, Controls};
 use crate::settings::{self, Settings};
 use crate::storage::{JournalStore, SessionMeta};
 
@@ -269,6 +270,10 @@ pub struct AppState {
     /// a whole journal parse. See [`AppState::reaches_this_year`].
     pub journal_latest_year: RwSignal<Option<i32>>,
 
+    /// What each panel's controls were left at, so a reload does not throw away
+    /// a query somebody typed. See [`AppState::remember`].
+    pub controls: RwSignal<Controls>,
+
     /// A pending "show me this account" request from another panel.
     ///
     /// At most one at a time: it is a navigation, not a queue. See
@@ -350,6 +355,7 @@ impl AppState {
             first_report_settled: RwSignal::new(false),
             report_failure: RwSignal::new(None),
             journal_latest_year: RwSignal::new(None),
+            controls: RwSignal::new(controls::load()),
             drill: RwSignal::new(None),
         };
 
@@ -433,8 +439,17 @@ impl AppState {
     }
 
     /// Discard the current layout and rebuild the default one.
+    ///
+    /// The remembered controls go with it. Panel ids are only meaningful while
+    /// the layout that issued them is there, and a reset reissues them from one,
+    /// so keeping the old ones would attach a stale query to whatever panel
+    /// happened to land on that id.
     pub fn reset_layout(&self) {
         self.layout.set(default_layout());
+        self.controls.update(|controls| {
+            controls.retain(&[]);
+        });
+        controls::save(&self.controls.get_untracked());
     }
 
     /// Add a panel as a tab in the focused stack, then close the menu.
@@ -445,6 +460,46 @@ impl AppState {
             layout.add_panel(kind, target);
         });
         self.add_menu_open.set(false);
+    }
+
+    /// What this panel's text control was left at, if anything.
+    ///
+    /// Read untracked on purpose: a panel looking up its own remembered value
+    /// must not re-render every time some *other* panel's control changes.
+    pub fn recalled_text(&self, panel: PanelId, key: &str) -> Option<String> {
+        self.controls.get_untracked().text(panel, key)
+    }
+
+    /// The same, for a dropdown index.
+    pub fn recalled_index(&self, panel: PanelId, key: &str) -> Option<usize> {
+        self.controls.get_untracked().index(panel, key)
+    }
+
+    /// The same, for a tick box.
+    pub fn recalled_flag(&self, panel: PanelId, key: &str) -> Option<bool> {
+        self.controls.get_untracked().flag(panel, key)
+    }
+
+    /// Remember one control, and write the lot away.
+    ///
+    /// Written on every change rather than on unload: a browser that is closed
+    /// or crashes never runs an unload handler, and the point of this is that
+    /// the next visit finds the workspace as it was left.
+    pub fn remember(&self, panel: PanelId, key: &str, value: serde_json::Value) {
+        let live: Vec<PanelId> = self
+            .layout
+            .get_untracked()
+            .panels()
+            .iter()
+            .map(|panel| panel.id)
+            .collect();
+        self.controls.update(|controls| {
+            controls.set(panel, key, value);
+            // A panel that has been closed should not be remembered forever, and
+            // a layout reset reissues ids.
+            controls.retain(&live);
+        });
+        controls::save(&self.controls.get_untracked());
     }
 
     /// Whether the loaded journal has anything dated in the current year.

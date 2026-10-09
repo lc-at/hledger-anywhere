@@ -3,7 +3,10 @@
 use leptos::prelude::*;
 use web_sys::KeyboardEvent;
 
+use crate::controls;
+use crate::layout::model::PanelId;
 use crate::query::SortDir;
+use crate::state::AppState;
 
 /// A clickable column header.
 ///
@@ -49,7 +52,16 @@ pub fn sort_header(
 ///
 /// `applied` is the committed query the report runs with; the draft lives here.
 #[component]
-pub fn QueryField(applied: RwSignal<String>, placeholder: &'static str) -> impl IntoView {
+pub fn QueryField(
+    /// The panel this field belongs to, so the query can be remembered for next
+    /// time. Restoring it is the panel's job, at the point it creates the signal
+    /// the report runs from — restoring it here would run the report twice, once
+    /// against the default and once against what was remembered.
+    panel: PanelId,
+    applied: RwSignal<String>,
+    placeholder: &'static str,
+) -> impl IntoView {
+    let state = expect_context::<AppState>();
     let draft = RwSignal::new(applied.get_untracked());
 
     // The committed value can change from outside the field — another panel can
@@ -64,6 +76,7 @@ pub fn QueryField(applied: RwSignal<String>, placeholder: &'static str) -> impl 
     let commit = move || {
         let next = draft.get_untracked();
         if next != applied.get_untracked() {
+            state.remember(panel, controls::QUERY, next.clone().into());
             applied.set(next);
         }
     };

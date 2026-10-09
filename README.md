@@ -100,8 +100,9 @@ backend. You point it at a directory of journal files and it runs the real
 - **A main-currency setting**: pick one of the commodities the journal actually
   uses and every amount report is re-denominated through hledger's
   `--value=end,COMM --infer-market-prices`.
-- **Local persistence**: the layout, the settings and the terminal history live in
-  `localStorage`; the loaded journal itself is cached in IndexedDB, so a
+- **Local persistence**: the layout, the settings, the terminal history *and each
+  panel's own controls* live in `localStorage`; the loaded journal itself is cached
+  in IndexedDB, so a
   returning visit can reopen the last session without picking the directory
   again.
 
@@ -241,6 +242,14 @@ This is the extensibility story, and it is deliberately one step:
 
 1. Add a module under `src/panels/` with `pub fn view(id: PanelId) -> AnyView`.
 2. Add one entry to `PANELS` in `src/panels/mod.rs`.
+
+A panel comes back as it was left: its query, its period, its depth, its tree/flat
+choice. The layout already survives a reload, so panel *identity* survives — which
+makes it a short step to the panels themselves, and a query is the one thing in a
+panel that represents thought. Controls are keyed by panel id rather than by panel
+kind, because two Balances panels can be open at once and are deliberately
+independent. A layout reset clears them: ids are only meaningful while the layout
+that issued them is there.
 
 The layout tree, tab bar, add-panel menu, layout-persistence validation and the
 default layout all read from that table, so nothing else needs to learn about the

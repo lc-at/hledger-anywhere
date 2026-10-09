@@ -30,6 +30,7 @@ mod storage;
 // Declared unconditionally, but split internally: `charts::scale` is pure and
 // natively testable, while the Leptos view components it feeds are wasm-only.
 mod charts;
+mod controls;
 mod format;
 mod hledger;
 mod journal;

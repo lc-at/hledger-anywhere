@@ -6,6 +6,7 @@
 
 use leptos::prelude::*;
 
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal;
 use crate::layout::model::PanelId;
@@ -16,7 +17,7 @@ use crate::state::AppState;
 
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
-    let query = RwSignal::new(String::new());
+    let query = RwSignal::new(state.recalled_text(id, controls::QUERY).unwrap_or_default());
 
     Effect::new(move |_| {
         // Re-run when the journal changes or the user asks for a refresh.
@@ -46,7 +47,7 @@ pub fn view(id: PanelId) -> AnyView {
         }
         view! {
             <div class="panel-controls">
-                <QueryField applied=query placeholder="filter, e.g. assets — Enter applies" />
+                <QueryField panel=id applied=query placeholder="filter, e.g. assets — Enter applies" />
             </div>
         }
         .into_any()

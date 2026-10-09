@@ -15,6 +15,7 @@
 
 use leptos::prelude::*;
 
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal::money::Amount;
 use crate::journal::reports::{
@@ -89,7 +90,7 @@ fn view(id: PanelId, panel: &'static CompoundPanel) -> AnyView {
     let command = panel.command;
     // A date range is the query these reports are most often narrowed by
     // (`date:2024`, `date:thismonth`), but any hledger query works.
-    let query = RwSignal::new(String::new());
+    let query = RwSignal::new(state.recalled_text(id, controls::QUERY).unwrap_or_default());
 
     Effect::new(move |_| {
         let _ = state.generation.get();
@@ -124,6 +125,7 @@ fn view(id: PanelId, panel: &'static CompoundPanel) -> AnyView {
                 view! {
                     <div class="panel-controls">
                         <QueryField
+                panel=id
                             applied=query
                             placeholder="query, e.g. date:2024 — Enter applies"
                         />

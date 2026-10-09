@@ -15,6 +15,7 @@ use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use crate::charts::scale;
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal::money::Amount;
 use crate::journal::reports::{
@@ -33,7 +34,7 @@ const NEEDS_ENGINE: &str = "Budgets need the full hledger engine: the interim hl
 
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
-    let query = RwSignal::new(String::new());
+    let query = RwSignal::new(state.recalled_text(id, controls::QUERY).unwrap_or_default());
 
     Effect::new(move |_| {
         let _ = state.generation.get();
@@ -63,6 +64,7 @@ pub fn view(id: PanelId) -> AnyView {
         view! {
             <div class="panel-controls">
                 <QueryField
+                panel=id
                     applied=query
                     placeholder="query, e.g. date:2024 — Enter applies"
                 />

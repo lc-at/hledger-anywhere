@@ -8,6 +8,7 @@
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal;
 use crate::journal::model::BalanceRow;
@@ -53,10 +54,12 @@ fn amount_key(row: &BalanceRow) -> Decimal {
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
 
-    let tree = RwSignal::new(true);
-    let depth = RwSignal::new(String::new());
+    // Controls come back as they were left; the panel's own value is the
+    // default, not the rule. See `AppState::remember`.
+    let tree = RwSignal::new(state.recalled_flag(id, controls::TREE).unwrap_or(true));
+    let depth = RwSignal::new(state.recalled_text(id, controls::DEPTH).unwrap_or_default());
     let sort = RwSignal::new(None::<(SortKey, SortDir)>);
-    let query = RwSignal::new(String::new());
+    let query = RwSignal::new(state.recalled_text(id, controls::QUERY).unwrap_or_default());
 
     Effect::new(move |_| {
         let _ = state.generation.get();
@@ -110,14 +113,21 @@ pub fn view(id: PanelId) -> AnyView {
                     <input
                         type="checkbox"
                         prop:checked=move || tree.get()
-                        on:change=move |_| tree.update(|value| *value = !*value)
+                        on:change=move |_| {
+                            tree.update(|value| *value = !*value);
+                            state.remember(id, controls::TREE, tree.get_untracked().into());
+                        }
                     />
                     "tree"
                 </label>
                 <label>
                     "depth"
                     <select
-                        on:change=move |event| depth.set(event_target_value(&event))
+                        on:change=move |event| {
+                            let value = event_target_value(&event);
+                            state.remember(id, controls::DEPTH, value.clone().into());
+                            depth.set(value);
+                        }
                     >
                         <option value="">"all"</option>
                         <option value="1">"1"</option>
@@ -127,6 +137,7 @@ pub fn view(id: PanelId) -> AnyView {
                     </select>
                 </label>
                 <QueryField
+                panel=id
                     applied=query
                     placeholder="query, e.g. date:thismonth exp:food — Enter applies"
                 />

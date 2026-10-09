@@ -13,6 +13,7 @@ use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use crate::charts::{Bar, bar_chart, scale};
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal::model::{parse_balance, BalanceReport, BalanceRow};
 use crate::journal::money::Amount;
@@ -49,8 +50,9 @@ const CHART_ROWS: usize = 12;
 
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
-    let depth = RwSignal::new("2".to_string());
-    let query = RwSignal::new(String::new());
+    let depth =
+        RwSignal::new(state.recalled_text(id, controls::DEPTH).unwrap_or_else(|| "2".to_string()));
+    let query = RwSignal::new(state.recalled_text(id, controls::QUERY).unwrap_or_default());
     let sort = RwSignal::new(None::<(SortKey, SortDir)>);
 
     Effect::new(move |_| {
@@ -90,7 +92,11 @@ pub fn view(id: PanelId) -> AnyView {
                     "depth"
                     <select
                         prop:value=move || depth.get()
-                        on:change=move |event| depth.set(event_target_value(&event))
+                        on:change=move |event| {
+                            let value = event_target_value(&event);
+                            state.remember(id, controls::DEPTH, value.clone().into());
+                            depth.set(value);
+                        }
                     >
                         <option value="">"all"</option>
                         <option value="1">"1"</option>
@@ -100,6 +106,7 @@ pub fn view(id: PanelId) -> AnyView {
                     </select>
                 </label>
                 <QueryField
+                panel=id
                     applied=query
                     placeholder="query, e.g. date:thisyear — Enter applies"
                 />

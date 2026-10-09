@@ -8,6 +8,7 @@
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal;
 use crate::journal::model::Transaction;
@@ -91,9 +92,9 @@ const ALL_PERIODS: usize = 3;
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     let limit = RwSignal::new(PAGE_SIZE);
-    let period = RwSignal::new(0usize);
+    let period = RwSignal::new(state.recalled_index(id, controls::PERIOD).unwrap_or(0));
     let sort = RwSignal::new(None::<(SortKey, SortDir)>);
-    let query = RwSignal::new(String::new());
+    let query = RwSignal::new(state.recalled_text(id, controls::QUERY).unwrap_or_default());
 
     let toggle = move |key: SortKey| {
         sort.update(|current| {
@@ -149,6 +150,7 @@ pub fn view(id: PanelId) -> AnyView {
                     <select on:change=move |event| {
                         if let Ok(index) = event_target_value(&event).parse::<usize>() {
                             limit.set(PAGE_SIZE);
+                            state.remember(id, controls::PERIOD, index.into());
                             period.set(index);
                         }
                     }>
@@ -167,6 +169,7 @@ pub fn view(id: PanelId) -> AnyView {
                     </select>
                 </label>
                 <QueryField
+                panel=id
                     applied=query
                     placeholder="query, e.g. desc:coffee amp:>100 — Enter applies"
                 />

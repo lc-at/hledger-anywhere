@@ -18,6 +18,7 @@ use leptos::prelude::*;
 use rust_decimal::Decimal;
 
 use crate::charts::{Bar, bar_chart, scale};
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal::model::{PayeeTotal, parse_register, total_by_payee};
 use crate::journal::money::{self, Amount};
@@ -65,11 +66,15 @@ impl SortKey {
 
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
-    let period = RwSignal::new(0usize);
+    let period = RwSignal::new(state.recalled_index(id, controls::PERIOD).unwrap_or(0));
     // Spending by default: the question this panel exists to answer is "who did
     // I pay", and without a query the pivot also collects employers, banks and
     // transfers — which is a different question. Clearing the field asks it.
-    let query = RwSignal::new("expenses".to_string());
+    let query = RwSignal::new(
+        state
+            .recalled_text(id, controls::QUERY)
+            .unwrap_or_else(|| "expenses".to_string()),
+    );
     let sort = RwSignal::new(Some((SortKey::Amount, SortDir::Descending)));
 
     Effect::new(move |_| {
@@ -125,6 +130,7 @@ pub fn view(id: PanelId) -> AnyView {
                         prop:value=move || period.get().to_string()
                         on:change=move |event| {
                             if let Ok(index) = event_target_value(&event).parse::<usize>() {
+                                state.remember(id, controls::PERIOD, index.into());
                                 period.set(index);
                             }
                         }
@@ -139,6 +145,7 @@ pub fn view(id: PanelId) -> AnyView {
                     </select>
                 </label>
                 <QueryField
+                panel=id
                     applied=query
                     placeholder="query, e.g. not:transfer — Enter applies"
                 />

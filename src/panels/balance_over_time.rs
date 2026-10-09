@@ -15,6 +15,7 @@ use rust_decimal::Decimal;
 
 use crate::charts::data::Line;
 use crate::charts::{line_chart, scale};
+use crate::controls;
 use crate::hledger::report::ReportSpec;
 use crate::journal::reports::{
     PeriodicReport, default_commodity, parse_periodic_report, row_values,
@@ -51,17 +52,22 @@ pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     // An index into `INTERVALS` rather than the flag itself, so the control and
     // the argv cannot drift apart.
-    let interval = RwSignal::new(0usize);
+    let interval = RwSignal::new(state.recalled_index(id, controls::INTERVAL).unwrap_or(0));
     // One level deep by default. For the default `assets liabilities` query that
     // is exactly two rows — assets and liabilities — so the chart compares those
     // against net worth, rather than drawing a line for every leaf account.
-    let depth = RwSignal::new("1".to_string());
+    let depth =
+        RwSignal::new(state.recalled_text(id, controls::DEPTH).unwrap_or_else(|| "1".to_string()));
     // Defaults to the net-worth view, not to the report's grand total. In a
     // double-entry journal every account balances to zero, so the grand total is
     // a flat line at zero — technically correct and completely useless as a
     // default. Assets plus liabilities *is* net worth, which is what people open
     // a balance-over-time chart to see.
-    let query = RwSignal::new("assets liabilities".to_string());
+    let query = RwSignal::new(
+        state
+            .recalled_text(id, controls::QUERY)
+            .unwrap_or_else(|| "assets liabilities".to_string()),
+    );
 
     Effect::new(move |_| {
         let _ = state.generation.get();
@@ -102,6 +108,7 @@ pub fn view(id: PanelId) -> AnyView {
                     "interval"
                     <select on:change=move |event| {
                         if let Ok(index) = event_target_value(&event).parse::<usize>() {
+                            state.remember(id, controls::INTERVAL, index.into());
                             interval.set(index);
                         }
                     }>
@@ -118,7 +125,11 @@ pub fn view(id: PanelId) -> AnyView {
                     "depth"
                     <select
                         prop:value=move || depth.get()
-                        on:change=move |event| depth.set(event_target_value(&event))
+                        on:change=move |event| {
+                            let value = event_target_value(&event);
+                            state.remember(id, controls::DEPTH, value.clone().into());
+                            depth.set(value);
+                        }
                     >
                         <option value="">"all"</option>
                         <option value="1">"1"</option>
@@ -127,6 +138,7 @@ pub fn view(id: PanelId) -> AnyView {
                     </select>
                 </label>
                 <QueryField
+                panel=id
                     applied=query
                     placeholder="accounts to total, e.g. assets liabilities — Enter applies"
                 />
