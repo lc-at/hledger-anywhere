@@ -72,7 +72,19 @@ backend. You point it at a directory of journal files and it runs the real
   pure and tested on the host.
 - **Phone-shaped by default**: a narrow screen gets one panel at a time as tabs
   rather than three columns of clipped figures, and a layout arranged on a wider
-  screen opens stacked instead of squeezed.
+  screen opens stacked instead of squeezed. Type scales up below 700px, because
+  12px monospace in a table is a squint on a phone.
+- **Operable from the keyboard**: tabs are a real tablist — Tab reaches them,
+  Enter opens the selected one, and the arrows move between them *without* opening
+  anything, since opening a panel is a whole engine invocation. Splitters are
+  focusable separators moved by the arrow key for their axis, Escape closes the
+  header menus and returns focus to the button that opened them, and focus is
+  visible.
+- **Printable**: `@media print` drops the header, tab bars, gutters and every
+  control, inverts the palette to ink on white — including the chart's series
+  colours, which a canvas would otherwise keep — and flows the panels in reading
+  order with rows that do not split across pages. "Save as PDF" from the browser
+  gives a report you can send to someone.
 - **An interactive terminal**: a scrollback and a command line that runs any
   hledger command against the loaded journal, with `Tab` completion for commands,
   flags, account names and file paths, and a persisted history.
@@ -387,10 +399,13 @@ snapshot when checking what a panel says.
   artifact is available at all. The interim bridge artifact remains a supported
   flavor.
 - The layout covers docking, splitting, tab reordering, maximise and persisted
-  sizes. What Golden Layout also has and this does not: **floating and popout
-  panels**, a **tab overflow menu** (tabs scroll horizontally here instead), and
-  **drop zones at the outer edge of the workspace** (a drop only targets the pane
-  or tab under the pointer).
+  sizes, and the splitters resize from the keyboard. **Docking and tab reordering
+  are pointer-only**: a keyboard user can add, close, maximise and resize panels,
+  but cannot create a new split. What Golden Layout also has and this does not:
+  **floating and popout panels**, a **tab overflow menu** (tabs shrink to fit the
+  bar, and only scroll once there are more than the bar can hold), and **drop
+  zones at the outer edge of the workspace** (a drop only targets the pane or tab
+  under the pointer).
 - Directory loading uses the `<input webkitdirectory>` picker, so a re-pick is
   required to see file changes. The File System Access API and live watching are
   not wired up.
@@ -412,6 +427,15 @@ every push to `main`.
 
 The build is entirely client-side, so deployment is just static files — with two
 things that are easy to get wrong:
+
+> **HTTPS is currently broken for the deployed site.** `hledger.gru.fi` resolves to
+> GitHub Pages and the custom domain is attached, but GitHub has never issued a
+> certificate for it: TLS serves the `*.github.io` certificate, browsers refuse the
+> connection with `ERR_CERT_COMMON_NAME_INVALID`, and Enforce HTTPS stays off
+> because there is nothing to enforce. The site answers over plain `http://` only.
+> The fix is **Settings → Pages**: remove the custom domain, save, add it back,
+> wait for the certificate, then tick Enforce HTTPS. It cannot be done from the
+> repository — the API route needs a token with `pages` scope.
 
 - **The hledger WASM module is not in the repository.** It is ~17 MB and pinned
   by URL and SHA-256 in [`wasm.lock`](wasm.lock). The workflow runs
