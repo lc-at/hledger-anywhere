@@ -1262,5 +1262,25 @@ html.gl-dragging .gl-splitter {
   .gl-tab:not(.gl-tab-active) .gl-tab-close {
     display: none;
   }
+
+  /* Denser is not better on a phone. The desktop sizes are tuned for a screen
+   * held at arm's length with a window's worth of panels on it; on a phone there
+   * is one panel and it is held closer, so 12px monospace in a table is a squint
+   * rather than a dense read. Everything scales together, so the proportions the
+   * desktop layout was built with survive. */
+  :root {
+    --gl-font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas,
+      "Liberation Mono", monospace;
+    --gl-font-mono: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas,
+      "Liberation Mono", monospace;
+  }
+
+  .panel-table {
+    font-size: 13.5px;
+  }
+
+  .panel-figure-value {
+    font-size: 18px;
+  }
 }
 

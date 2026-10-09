@@ -173,7 +173,7 @@ fn compound_view(
         if subreport.report.rows.is_empty() && subreport.report.labels().is_empty() {
             continue;
         }
-        sections.push(subreport_table(title, subreport, commodity.as_deref()));
+        sections.push(subreport_table(state, title, subreport, commodity.as_deref()));
     }
 
     if sections.is_empty() {
@@ -197,6 +197,7 @@ fn compound_view(
 
 /// One subreport as an account-row table, one column per period.
 fn subreport_table(
+    state: AppState,
     title: &str,
     subreport: &CompoundSubreport,
     commodity: Option<&str>,
@@ -214,6 +215,8 @@ fn subreport_table(
         .iter()
         .map(|row| {
             let name = row.account().unwrap_or_default().to_string();
+            let target = name.clone();
+            let title = format!("{name} — open its register");
             let cells = row
                 .amounts
                 .iter()
@@ -222,7 +225,15 @@ fn subreport_table(
                 .collect_view();
             view! {
                 <tr>
-                    <td class="account">{name}</td>
+                    <td class="account">
+                        <button
+                            class="account-link"
+                            title=title
+                            on:click=move |_| state.drill_into(target.clone())
+                        >
+                            {name}
+                        </button>
+                    </td>
                     {cells}
                 </tr>
             }

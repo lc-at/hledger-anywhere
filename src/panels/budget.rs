@@ -146,16 +146,29 @@ fn budget_view(state: AppState, report: &BudgetReport) -> AnyView {
                 Some(value) => (variance_text(value, commodity.as_deref()), "num"),
                 None => ("—".to_string(), "num"),
             };
+            // The unbudgeted row is not an account, so it is not a link to one.
+            let account_cell: AnyView = if unbudgeted {
+                view! { <td class="account">"spending without a budget"</td> }.into_any()
+            } else {
+                let target = account.clone();
+                let title = format!("{account} — open its register");
+                view! {
+                    <td class="account">
+                        <button
+                            class="account-link"
+                            title=title
+                            on:click=move |_| state.drill_into(target.clone())
+                        >
+                            {account.clone()}
+                        </button>
+                    </td>
+                }
+                .into_any()
+            };
             rows.push(
                 view! {
                     <tr class:panel-row-zero=unbudgeted>
-                        <td class="account" title=account.clone()>
-                            {if unbudgeted {
-                                "spending without a budget"
-                            } else {
-                                account.as_str()
-                            }}
-                        </td>
+                        {account_cell}
                         <td>{label.clone()}</td>
                         <td class="num">{actual}</td>
                         <td class="num">{goal}</td>

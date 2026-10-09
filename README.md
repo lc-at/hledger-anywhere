@@ -25,12 +25,13 @@ backend. You point it at a directory of journal files and it runs the real
   `not:...` — is reachable without waiting for a purpose-built view. It applies
   on Enter rather than per keystroke, because each applied query is a whole
   engine invocation and a large journal takes seconds to re-parse.
-- **Drill down from a figure to its postings.** Account names in the Balances and
-  Expenses tables are links: clicking one opens a Register for that account — or
-  points the one already open at it, raised to the front — with the query field,
-  the report and the argv all following. It is the one connection between panels,
-  and it exists because the question a balance report raises ("what is this made
-  of?") is the one a register answers.
+- **Drill down from a figure to its postings.** Every account name in every
+  account table is a link — Balances, Expenses, Accounts, Budget and all three
+  statements: clicking one opens a Register for that account, or points the one
+  already open at it, raised to the front, with the query field, the report and
+  the argv all following. It is the one connection between panels, and it exists
+  because the question a balance report raises ("what is this made of?") is the
+  one a register answers.
 - **Sortable columns** on the report tables, on the header itself, with the
   direction chosen per column: accounts A–Z, amounts biggest-first, dates
   newest-first. The Register is deliberately unsorted — its total column is the

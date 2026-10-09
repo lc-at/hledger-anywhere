@@ -56,7 +56,7 @@ pub fn view(id: PanelId) -> AnyView {
         <div class="panel panel-accounts">
             {controls}
             {argv_line(state, id)}
-            {report_view(state, id, |output| {
+            {report_view(state, id, move |output| {
                 let accounts = journal::model::parse_line_list(&output.stdout);
                 if accounts.is_empty() {
                     return message_panel("This journal declares no accounts.");
@@ -73,7 +73,21 @@ pub fn view(id: PanelId) -> AnyView {
                                 // flat list read as the account tree.
                                 let depth = account.matches(':').count();
                                 let style = format!("padding-left: {}px", 8 + depth * 14);
-                                view! { <li style=style>{account}</li> }
+                                let target = account.clone();
+                                let title = format!("{account} — open its register");
+                                view! {
+                                    <li style=style>
+                                        <button
+                                            class="account-link"
+                                            title=title
+                                            on:click=move |_| {
+                                                state.drill_into(target.clone())
+                                            }
+                                        >
+                                            {account}
+                                        </button>
+                                    </li>
+                                }
                             })
                             .collect_view()}
                     </ul>
