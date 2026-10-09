@@ -1284,3 +1284,98 @@ html.gl-dragging .gl-splitter {
   }
 }
 
+
+/* -- printing -------------------------------------------------------------- */
+
+/* A report is worth printing; the application around it is not. This is mostly
+ * subtraction — the header, the tab bars, the gutters and every control are how
+ * you got to the figures, not what you wanted on paper — plus two positive
+ * choices: paper is not a terminal, so the palette inverts to ink on white, and
+ * panels flow one after another instead of being squeezed into a mosaic that only
+ * made sense on a screen. */
+@media print {
+  .app-header,
+  .gl-tabbar,
+  .gl-splitter,
+  .panel-controls,
+  .panel-toolbar,
+  .panel-argv,
+  .gl-drop-indicator,
+  .gl-drag-proxy,
+  .gl-tab-close {
+    display: none !important;
+  }
+
+  :root {
+    color-scheme: light;
+    --gl-bg: #ffffff;
+    --gl-panel-bg: #ffffff;
+    --gl-tabbar-bg: #ffffff;
+    --gl-text: #000000;
+    --gl-text-dim: #444444;
+    --gl-border: #bbbbbb;
+    --gl-row-border: #dddddd;
+    --gl-row-hover: transparent;
+    --gl-inset-bg: #f2f2f2;
+    --gl-accent: #a34700;
+    --gl-error: #a00000;
+    --gl-success: #006600;
+    /* The chart is drawn on a canvas in these; orange on white reads, pale
+     * amber on white does not. */
+    --gl-series-1: #a34700;
+    --gl-series-2: #006600;
+    --gl-series-3: #a00000;
+    --gl-series-4: #005f8a;
+    --gl-series-5: #1b39a0;
+    --gl-series-6: #8a0060;
+    --gl-series-7: #7a5200;
+    --gl-series-8: #555555;
+  }
+
+  html,
+  body,
+  .app {
+    display: block;
+    height: auto;
+    overflow: visible;
+    background: #ffffff;
+    color: #000000;
+  }
+
+  /* Every level of the docked layout becomes a plain block: the shares are
+   * `flex-grow` values that mean nothing once the panes are stacked, and
+   * `contain: layout paint` would confuse pagination. */
+  .gl-root,
+  .gl-split,
+  .gl-stack,
+  .gl-cell {
+    display: block;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    contain: none;
+  }
+
+  .panel {
+    padding: 0 0 14px;
+  }
+
+  .panel h3 {
+    break-after: avoid;
+  }
+
+  /* A table row split across a page boundary is unreadable, and a header row
+   * repeated on each page is what makes a long table followable. */
+  .panel-table tr {
+    break-inside: avoid;
+  }
+
+  .panel-table thead {
+    display: table-header-group;
+  }
+
+  /* The chart keeps its aspect rather than the height the screen gave it. */
+  .chart-line {
+    height: 320px;
+  }
+}
