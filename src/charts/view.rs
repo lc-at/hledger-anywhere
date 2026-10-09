@@ -28,6 +28,14 @@ const BAR_HEIGHT: f64 = 15.0;
 const BAR_LABEL_WIDTH: f64 = 150.0;
 const BAR_LABEL_CHARS: usize = 22;
 
+/// Room kept at the right of the track for the value printed after a bar.
+///
+/// The longest bar otherwise ends 16px from the edge and its own label starts
+/// 6px later, so the biggest number in the chart is the one that runs out of the
+/// viewBox and gets cut in half — which is exactly the number the chart exists
+/// to show.
+const VALUE_LABEL_WIDTH: f64 = 110.0;
+
 /// Format a pixel coordinate compactly. Only geometry goes through `f64`.
 fn coord(value: f64) -> String {
     format!("{value:.2}")
@@ -108,7 +116,7 @@ pub fn bar_chart(data: &[(String, Decimal)]) -> AnyView {
 
     let height = MARGIN_TOP + MARGIN_BOTTOM + rows.len() as f64 * BAR_ROW_HEIGHT;
     let track_left = BAR_LABEL_WIDTH;
-    let track_width = (WIDTH - MARGIN_RIGHT) - track_left;
+    let track_width = (WIDTH - MARGIN_RIGHT - VALUE_LABEL_WIDTH) - track_left;
 
     let bars = rows
         .iter()
@@ -144,7 +152,7 @@ pub fn bar_chart(data: &[(String, Decimal)]) -> AnyView {
                         <title>{tooltip}</title>
                     </rect>
                     <text
-                        x=coord(track_left + width + 6.0)
+                        x=coord(track_left + width + 8.0)
                         y=coord(baseline)
                         fill="var(--gl-text-dim)"
                         font-size="11"

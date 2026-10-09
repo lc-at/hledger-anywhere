@@ -863,7 +863,7 @@ impl AppState {
             return;
         }
         self.report_keys.update(|keys| {
-            keys.insert(id, key);
+            keys.insert(id, key.clone());
         });
 
         if self.main_journal.get_untracked().is_none() {
@@ -892,6 +892,16 @@ impl AppState {
                     output: HledgerOutput::default(),
                 },
             };
+            // The engine runs one request at a time, so a run asked for earlier
+            // can finish after a later one has been asked for — switching a
+            // panel's period while its report is in flight is the easy way to
+            // see it. Applying that result would put the previous period's rows
+            // under the new period's label, and leave them there for as long as
+            // the newer report takes. A superseded run is dropped instead, and
+            // the panel goes on showing that it is loading.
+            if state.report_keys.get_untracked().get(&id) != Some(&key) {
+                return;
+            }
             if let ReportState::Failed { message, .. } = &next {
                 // Remember that *something* failed, for the panel that reports
                 // on the journal itself. On a phone the Journals panel is the

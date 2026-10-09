@@ -160,6 +160,12 @@ body {
   right: 0;
   z-index: 100;
   min-width: 300px;
+  /* The panel list is fourteen entries and a laptop window is not tall enough
+   * for all of them, which put the last ones — Terminal among them — below the
+   * bottom of the page with no way to reach them. The menu scrolls instead. */
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px;
   background: var(--gl-popover-bg);
   border: 1px solid var(--gl-border);
@@ -1087,6 +1093,13 @@ html.gl-dragging .gl-splitter {
   font-size: 9px;
 }
 
+/* A numeric column's header is a sort button, and a flex container does not
+ * inherit `text-align` — so without this the label sits at the left of a
+ * right-aligned column, up to 640px from the numbers it names. */
+.panel-table th.num .panel-sort {
+  justify-content: flex-end;
+}
+
 /* A query is typed as hledger query syntax, so it reads better in the monospace
  * face the amount columns use, and it should take the space that is going. */
 .panel-query {
@@ -1236,31 +1249,39 @@ html.gl-dragging .gl-splitter {
     display: none;
   }
 
-  /* Tabs must fit the bar rather than overflow it.
+  /* Tabs wrap instead of shrinking.
    *
    * The bar scrolls horizontally, but a tab sets `touch-action: none` so that
    * dragging one rearranges the layout — which means a finger on a tab scrolls
-   * nothing, and any tab past the right edge is simply unreachable on a phone.
-   * Five default panels need 609px of a 390px bar, so two of them were stranded.
-   *
-   * Letting the tabs shrink fixes the cause instead: they share the width they
-   * have, and the titles ellipsise. `min-width: 0` is what actually permits it —
-   * a flex item's automatic minimum is its content, so without it nothing shrinks
-   * and the bar overflows exactly as before. */
+   * nothing, so a tab past the right edge cannot be reached at all. Shrinking the
+   * tabs kept them in one row at the cost of the one thing a tab is for: five
+   * panels fitted, but thirteen collapsed to 26px of unlabelled icons, and the
+   * close buttons went with the titles. Wrapping costs a little height and always
+   * leaves every tab whole. */
+  .gl-tabbar {
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+  }
+
   .gl-tab {
-    flex: 0 1 auto;
-    min-width: 0;
+    flex: 0 0 auto;
   }
 
-  .gl-tab-title {
-    min-width: 0;
+  /* A wide table scrolls sideways on a phone, and the first column is what says
+   * which row an amount belongs to — so it stays put while the rest moves. An
+   * opaque background is the point: the columns sliding under it must not show
+   * through. */
+  .panel-table thead th:first-child,
+  .panel-table tbody td:first-child,
+  .panel-table tfoot td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--gl-panel-bg);
   }
 
-  /* The close button is the least useful thing in a tab that is not the one being
-   * read, and its space is what makes five titles fit. Closing still works:
-   * select the tab, then close it. */
-  .gl-tab:not(.gl-tab-active) .gl-tab-close {
-    display: none;
+  .panel-table thead th:first-child {
+    z-index: 2;
   }
 
   /* Denser is not better on a phone. The desktop sizes are tuned for a screen
@@ -1281,6 +1302,27 @@ html.gl-dragging .gl-splitter {
 
   .panel-figure-value {
     font-size: 18px;
+  }
+
+  /* A dropdown anchored to a button has nowhere to go on a phone: the menu is
+   * 310px wide and the button sits a fraction of the way across, so it opened
+   * 183px off the left edge with every panel name outside the screen. Below
+   * this width it hangs from the header instead, across the full width, which
+   * is also room for the longer descriptions. */
+  .app-header {
+    position: relative;
+  }
+
+  .app-menu {
+    position: static;
+  }
+
+  .gl-dropdown {
+    top: 100%;
+    right: 8px;
+    left: 8px;
+    min-width: 0;
+    max-height: calc(100vh - 120px);
   }
 }
 

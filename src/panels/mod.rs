@@ -232,45 +232,52 @@ pub(crate) fn error_panel(text: &str) -> AnyView {
 /// emptied it and offers the way out, because a report that correctly returns
 /// nothing is otherwise indistinguishable from a broken one.
 ///
-/// `label` names the period and `all_index` is the period to switch to when the
-/// user takes the way out; both panels that bound a report by a period keep their
-/// own list, so neither is assumed here.
+/// `bound` names the period that emptied the report, with the signal to widen and
+/// the index of that list's "everything" entry; a panel with no period control
+/// passes `None` and gets the query-only case.
 pub(crate) fn empty_report_view(
-    label: &str,
-    bounded: bool,
+    bound: Option<(&str, RwSignal<usize>, usize)>,
     query: &str,
-    period: RwSignal<usize>,
     query_signal: RwSignal<String>,
-    all_index: usize,
 ) -> AnyView {
     let query = query.trim().to_string();
+    let period = bound.map(|(_, signal, _)| signal);
+    let label = bound.map(|(label, _, _)| label);
 
-    // Both bounds can be set, and either can be the reason.
-    let scope = match (bounded, query.is_empty()) {
-        (true, true) => format!(" in “{label}”"),
-        (false, false) => format!(" matching “{query}”"),
-        (true, false) => format!(" in “{label}” matching “{query}”"),
-        (false, true) => String::new(),
+    let what = match (label, query.is_empty()) {
+        (Some(label), true) => format!("No postings in \u{201c}{label}\u{201d}."),
+        (None, false) => format!("No postings match \u{201c}{query}\u{201d}."),
+        (Some(label), false) => {
+            format!("No postings in \u{201c}{label}\u{201d} match \u{201c}{query}\u{201d}.")
+        }
+        (None, true) => String::new(),
     };
-    if scope.is_empty() {
+    if what.is_empty() {
         return message_panel("This journal has no matching postings.");
     }
 
+    let all_index = bound.map(|(_, _, index)| index).unwrap_or_default();
+    let clear_query = !query.is_empty();
+
     view! {
-        <p class="panel-remedy">{format!("No postings{scope}.")}</p>
+        <p class="panel-remedy">{what}</p>
         <p class="panel-count">
             "The journal may simply have no data in that period."
         </p>
         <div class="panel-controls">
-            <Show when=move || bounded>
+            <Show when=move || period.is_some()>
                 <button
                     class="gl-btn"
-                    on:click=move |_| period.set(all_index)
+                    on:click=move |_| {
+                        if let Some(period) = period {
+                            period.set(all_index);
+                        }
+                    }
                 >
                     "Show everything"
                 </button>
             </Show>
-            <Show when=move || !query.is_empty()>
+            <Show when=move || clear_query>
                 <button
                     class="gl-btn"
                     on:click=move |_| query_signal.set(String::new())

@@ -13,7 +13,7 @@ use crate::journal;
 use crate::journal::model::BalanceRow;
 use crate::layout::model::PanelId;
 use crate::panels::table::{QueryField, sort_header};
-use crate::panels::{argv_line, error_panel, message_panel, report_view};
+use crate::panels::{argv_line, empty_report_view, error_panel, message_panel, report_view};
 use crate::query::{self, SortDir};
 use crate::state::AppState;
 
@@ -142,7 +142,16 @@ pub fn view(id: PanelId) -> AnyView {
             {report_view(state, id, move |output| {
                 match journal::model::parse_balance(&output.stdout) {
                     Ok(report) if report.rows.is_empty() => {
-                        message_panel("This journal has no balances to report.")
+                        let text = query.get();
+                        // A filtered-out report is not an empty journal. Saying
+                        // "no balances to report" when a query is what emptied it
+                        // sends the reader looking for a problem with their
+                        // journal.
+                        if text.trim().is_empty() {
+                            message_panel("This journal has no balances to report.")
+                        } else {
+                            empty_report_view(None, &text, query)
+                        }
                     }
                     Ok(report) => {
                         // Sorted here rather than by hledger: the report's own
