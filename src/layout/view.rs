@@ -749,6 +749,32 @@ fn splitter(state: AppState, dir: Dir, split_path: Vec<usize>, boundary: usize) 
         }
     };
 
+    // A gutter is a control, so it is reachable and adjustable without a drag.
+    // The arrows move it by a fixed share rather than by a pixel: the model
+    // stores shares, and a share is the only unit that survives a window resize.
+    let on_key = {
+        let split_path = split_path.clone();
+        move |ev: KeyboardEvent| {
+            const STEP: f32 = 0.02;
+            // Left/Right for a gutter between side-by-side panes, Up/Down for one
+            // between stacked panes — the axis the gutter actually moves along.
+            let delta = match (ev.key().as_str(), vertical) {
+                ("ArrowLeft", false) | ("ArrowUp", true) => -STEP,
+                ("ArrowRight", false) | ("ArrowDown", true) => STEP,
+                _ => return,
+            };
+            ev.prevent_default();
+            // A full update here, unlike the drag: there is no DOM preview to
+            // preserve, and the shares are what has to change. Panels do not
+            // re-run their reports for it — `report_for` skips a report whose
+            // request key has not changed.
+            state.layout.update(|layout| {
+                layout.resize_split(&split_path, boundary, delta);
+            });
+            state.persist_layout();
+        }
+    };
+
     let on_up = {
         move |ev: PointerEvent| {
             let Some(drag) = state.drag.get_untracked() else {
@@ -784,13 +810,21 @@ fn splitter(state: AppState, dir: Dir, split_path: Vec<usize>, boundary: usize) 
     // Not `Copy`: this closure captures the split path.
     let on_cancel = on_up.clone();
 
+    let orientation = if vertical { "horizontal" } else { "vertical" };
+
     view! {
         <div
             class=class
+            role="separator"
+            tabindex="0"
+            aria-orientation=orientation
+            aria-label="Resize panes"
+            title="Drag, or use the arrow keys, to resize"
             on:pointerdown=on_down
             on:pointermove=on_move
             on:pointerup=on_up
             on:pointercancel=on_cancel
+            on:keydown=on_key
         ></div>
     }
     .into_any()
