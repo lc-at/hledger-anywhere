@@ -63,12 +63,15 @@ pub fn view(id: PanelId) -> AnyView {
                 }
                 view! {
                     <div class="panel-count">
-                        {format!("{} account(s)", accounts.len())}
+                        {crate::format::count_of(accounts.len(), "account")}
                     </div>
                     <ul class="account-tree">
-                        {accounts
+                        {journal::model::tree_display_names(
+                                accounts.iter().map(String::as_str),
+                            )
                             .into_iter()
-                            .map(|account| {
+                            .zip(accounts.iter())
+                            .map(|(display, account)| {
                                 // Indent by hierarchy depth, which is what makes a
                                 // flat list read as the account tree.
                                 let depth = account.matches(':').count();
@@ -84,7 +87,7 @@ pub fn view(id: PanelId) -> AnyView {
                                                 state.drill_into(id, target.clone())
                                             }
                                         >
-                                            {account}
+                                            {display}
                                         </button>
                                     </li>
                                 }

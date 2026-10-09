@@ -313,9 +313,9 @@ pub fn view(id: PanelId) -> AnyView {
                         view! {
                             <div class="panel-count">
                                 {if shown < total {
-                                    format!("showing {shown} of {total} transaction(s) — {scope}")
+                                    format!("showing {shown} of {} — {scope}", crate::format::count_of(total, "transaction"))
                                 } else {
-                                    format!("{total} transaction(s) — {scope}")
+                                    format!("{} — {scope}", crate::format::count_of(total, "transaction"))
                                 }}
                             </div>
                             <table class="panel-table">

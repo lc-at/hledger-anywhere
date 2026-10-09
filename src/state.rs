@@ -262,6 +262,13 @@ pub struct AppState {
     /// panel whose report fails. See `report_for`.
     pub report_failure: RwSignal<Option<String>>,
 
+    /// The newest year any loaded file mentions as a date, if any.
+    ///
+    /// A scan of the journal text, not a report: it decides whether a
+    /// date-bounded window has anything to show, and asking the engine would cost
+    /// a whole journal parse. See [`AppState::reaches_this_year`].
+    pub journal_latest_year: RwSignal<Option<i32>>,
+
     /// A pending "show me this account" request from another panel.
     ///
     /// At most one at a time: it is a navigation, not a queue. See
@@ -342,6 +349,7 @@ impl AppState {
             refresh: RwSignal::new(0),
             first_report_settled: RwSignal::new(false),
             report_failure: RwSignal::new(None),
+            journal_latest_year: RwSignal::new(None),
             drill: RwSignal::new(None),
         };
 
@@ -439,6 +447,21 @@ impl AppState {
         self.add_menu_open.set(false);
     }
 
+    /// Whether the loaded journal has anything dated in the current year.
+    ///
+    /// False for an archive, a demo with old dates, or a journal nobody has
+    /// entered anything into yet — in each case a "this month" or "this quarter"
+    /// window opens on nothing, and a panel that opens on nothing looks broken.
+    /// An unknown range counts as reaching this year, so a journal that has not
+    /// been scanned is treated normally rather than widened.
+    pub fn reaches_this_year(&self) -> bool {
+        let Some(latest) = self.journal_latest_year.get() else {
+            return true;
+        };
+        let now = js_sys::Date::new_0().get_full_year() as i32;
+        latest >= now
+    }
+
     /// Show `account` in a register, opening one if none is open.
     ///
     /// An open register is reused rather than adding one per click: drilling
@@ -503,6 +526,13 @@ impl AppState {
                     contents: &file.contents,
                 })
                 .collect::<Vec<_>>(),
+        );
+
+        self.journal_latest_year.set(
+            files
+                .iter()
+                .filter_map(|file| crate::format::latest_year(&file.contents))
+                .max(),
         );
 
         self.files.set(files.clone());

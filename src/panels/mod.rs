@@ -63,7 +63,7 @@ pub const PANELS: &[PanelDef] = &[
         kind: "accounts",
         title: "Accounts",
         icon: "🌳",
-        summary: "Every account name in the journal, as an indented tree",
+        summary: "Every account name in the journal, indented by depth",
         view: accounts::view,
     },
     PanelDef {

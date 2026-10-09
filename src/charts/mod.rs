@@ -37,4 +37,4 @@ mod view;
 #[cfg(target_arch = "wasm32")]
 pub use uplot::line_chart;
 #[cfg(target_arch = "wasm32")]
-pub use view::bar_chart;
+pub use view::{Bar, bar_chart};

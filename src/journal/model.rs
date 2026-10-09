@@ -428,6 +428,41 @@ impl RegisterEntry {
     }
 }
 
+/// Shorten each account name against its nearest ancestor in the same list.
+///
+/// `hledger accounts` prints full names in sorted order, so a list of them reads
+/// as a wall of repeated prefixes: `assets`, `assets:bank`, `assets:bank:x`.
+/// Showing only the part below the ancestor — with the caller's indentation doing
+/// the rest — turns the same data into a tree. Names with no ancestor in the list
+/// are returned whole.
+pub fn tree_display_names<'a, I>(accounts: I) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let names: Vec<&str> = accounts.into_iter().collect();
+    names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            // The nearest earlier account that is an ancestor of this one, so a
+            // name is shown against the most specific parent available rather
+            // than the first one.
+            let parent = names[..index]
+                .iter()
+                .filter(|candidate| {
+                    name.len() > candidate.len() + 1
+                        && name.starts_with(**candidate)
+                        && name.as_bytes()[candidate.len()] == b':'
+                })
+                .max_by_key(|candidate| candidate.len());
+            match parent {
+                Some(parent) => name[parent.len() + 1..].to_string(),
+                None => (*name).to_string(),
+            }
+        })
+        .collect()
+}
+
 /// One name from a pivoted register, and everything posted to it.
 #[derive(Clone, Debug)]
 pub struct PayeeTotal {
@@ -842,6 +877,43 @@ mod tests {
         assert_eq!(transactions.len(), 1);
         assert!(transactions[0].postings.is_empty());
         assert_eq!(transactions[0].status_marker(), "", "unmarked by default");
+    }
+
+    #[test]
+    fn account_names_are_shortened_against_their_nearest_ancestor() {
+        let names = [
+            "assets",
+            "assets:bank",
+            "assets:bank:checking",
+            "assets:bank:savings",
+            "expenses:food",
+            "income",
+        ];
+        assert_eq!(
+            tree_display_names(names),
+            vec!["assets", "bank", "checking", "savings", "expenses:food", "income"]
+        );
+    }
+
+    #[test]
+    fn a_parent_needs_the_separator_after_the_prefix() {
+        // "a:banking" merely starts with "a:b"; it is not a child of it. The
+        // character after a prefix has to be the separator, or a name gets
+        // shortened against something that only looks like its parent.
+        assert_eq!(tree_display_names(["a:b", "a:banking"]), vec!["a:b", "a:banking"]);
+        // It is a child of "a", though, which is what it is shortened against.
+        assert_eq!(tree_display_names(["a", "a:banking"]), vec!["a", "banking"]);
+    }
+
+    #[test]
+    fn shortening_finds_the_most_specific_parent_and_ignores_order() {
+        assert_eq!(
+            tree_display_names(["a", "a:b", "a:b:c"]),
+            vec!["a", "b", "c"]
+        );
+        // A name whose parent comes later in the list is left whole: the list is
+        // sorted, so a parent is always behind its children.
+        assert_eq!(tree_display_names(["a:b:c", "a:b"]), vec!["a:b:c", "a:b"]);
     }
 
     #[test]

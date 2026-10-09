@@ -17,7 +17,7 @@
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
-use crate::charts::bar_chart;
+use crate::charts::{Bar, bar_chart, scale};
 use crate::hledger::report::ReportSpec;
 use crate::journal::model::{PayeeTotal, parse_register, total_by_payee};
 use crate::journal::money::{self, Amount};
@@ -208,10 +208,18 @@ where
         .collect();
     ranked.sort_by_key(|(_, value)| std::cmp::Reverse(value.abs()));
 
-    let data: Vec<(String, Decimal)> = ranked
+    let data: Vec<Bar> = ranked
         .iter()
         .take(CHART_ROWS)
-        .map(|(total, value)| (total.payee.clone(), *value))
+        .map(|(total, value)| Bar {
+            label: total.payee.clone(),
+            value: *value,
+            // The same string the table below shows, from the same amount and
+            // its own hledger style.
+            text: pick_amount(&total.amounts, commodity.as_deref())
+                .map(Amount::display)
+                .unwrap_or_else(|| scale::format_tick(*value)),
+        })
         .collect();
     let chart = bar_chart(&data);
     let chart_note = (ranked.len() > CHART_ROWS)
@@ -268,7 +276,7 @@ where
         .map(|commodity| format!("Chart and default order use {commodity}."));
 
     view! {
-        <div class="panel-count">{format!("{count} payee(s)")}</div>
+        <div class="panel-count">{crate::format::count_of(count, "payee")}</div>
         {commodity_note
             .map(|text| view! { <div class="panel-count">{text}</div> }.into_any())
             .unwrap_or_else(|| ().into_any())}

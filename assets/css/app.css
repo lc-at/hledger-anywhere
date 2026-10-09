@@ -305,7 +305,10 @@ body {
   flex-grow: 0;
   flex-shrink: 1;
   flex-basis: 0;
-  min-width: 0;
+  /* A pane dragged narrower than this stops being a panel: the value column
+   * leaves first, then the table, and what is left is a column of clipped words.
+   * The floor is low enough not to fight a deliberately narrow sidebar. */
+  min-width: 120px;
   min-height: 0;
   overflow: hidden;
   contain: layout paint;
@@ -630,6 +633,9 @@ body {
 .panel-field select {
   flex: 1;
   min-width: 0;
+  /* Capped so a journal picker in a maximised panel is a control rather than a
+   * 1400px bar with its file sizes stranded at the far edge. */
+  max-width: 520px;
   padding: 3px 6px;
   background: var(--gl-input-bg);
   color: var(--gl-text);

@@ -91,26 +91,36 @@ fn truncate(text: &str, max_chars: usize) -> String {
     out
 }
 
+/// One bar: what it is called, how big it is, and how to print its size.
+///
+/// The text is supplied rather than derived from the value, because a value alone
+/// is not enough to print: only the caller holds the amount's hledger style and
+/// its commodity. A chart labelled "1200" directly above a table reading
+/// "$1,200.00" leaves the reader to work out that they are the same number, and
+/// in a journal holding several currencies that is not a safe guess.
+pub struct Bar {
+    pub label: String,
+    pub value: Decimal,
+    /// The size as text, formatted by the caller.
+    pub text: String,
+}
+
 /// A horizontal bar chart for a categorical breakdown.
 ///
-/// `data` is `(category label, amount)`; rows are re-sorted by descending
-/// magnitude so the biggest category is always at the top. Negative values keep
-/// the length of their magnitude and take the error colour, with the sign in the
-/// label and tooltip.
-pub fn bar_chart(data: &[(String, Decimal)]) -> AnyView {
-    if data.is_empty() {
+/// Rows are re-sorted by descending magnitude so the biggest category is always
+/// at the top. Negative values keep the length of their magnitude and take the
+/// error colour, with the sign in the label and tooltip.
+pub fn bar_chart(bars: &[Bar]) -> AnyView {
+    if bars.is_empty() {
         return no_data("No data to chart yet.");
     }
 
-    let mut rows: Vec<(&str, Decimal)> = data
-        .iter()
-        .map(|(label, value)| (label.as_str(), *value))
-        .collect();
-    rows.sort_by_key(|(_, value)| std::cmp::Reverse(value.abs()));
+    let mut rows: Vec<&Bar> = bars.iter().collect();
+    rows.sort_by_key(|bar| std::cmp::Reverse(bar.value.abs()));
 
     let max_magnitude = rows
         .iter()
-        .map(|(_, value)| value.abs())
+        .map(|bar| bar.value.abs())
         .max()
         .unwrap_or(Decimal::ZERO);
 
@@ -121,14 +131,15 @@ pub fn bar_chart(data: &[(String, Decimal)]) -> AnyView {
     let bars = rows
         .iter()
         .enumerate()
-        .map(|(index, (label, value))| {
+        .map(|(index, bar)| {
             let row_top = MARGIN_TOP + index as f64 * BAR_ROW_HEIGHT;
             let bar_top = row_top + (BAR_ROW_HEIGHT - BAR_HEIGHT) / 2.0;
             let baseline = row_top + BAR_ROW_HEIGHT / 2.0 + 4.0;
             // A zero amount still gets a sliver, so its tooltip is reachable.
-            let width = (scale::magnitude_fraction(*value, max_magnitude) * track_width).max(1.0);
-            let text = scale::format_tick(*value);
-            let tooltip = format!("{label}: {text}");
+            let width =
+                (scale::magnitude_fraction(bar.value, max_magnitude) * track_width).max(1.0);
+            let text = bar.text.clone();
+            let tooltip = format!("{}: {text}", bar.label);
 
             view! {
                 <g>
@@ -139,7 +150,7 @@ pub fn bar_chart(data: &[(String, Decimal)]) -> AnyView {
                         fill="var(--gl-text)"
                         font-size="12"
                     >
-                        {truncate(label, BAR_LABEL_CHARS)}
+                        {truncate(&bar.label, BAR_LABEL_CHARS)}
                     </text>
                     <rect
                         x=coord(track_left)
@@ -147,7 +158,7 @@ pub fn bar_chart(data: &[(String, Decimal)]) -> AnyView {
                         width=coord(width)
                         height=coord(BAR_HEIGHT)
                         rx="2"
-                        fill=mark_color(*value, index)
+                        fill=mark_color(bar.value, index)
                     >
                         <title>{tooltip}</title>
                     </rect>

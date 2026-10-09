@@ -115,7 +115,15 @@ pub fn view(id: PanelId) -> AnyView {
             return;
         }
         consumed.set(drill.seq);
-        period.set(DRILLED_PERIOD);
+        // A quarter is a good window into a journal that is still being written
+        // in, and an empty one for an archive — so the window follows the data.
+        // Widening to everything is the same request the panel's own empty state
+        // offers, made on the user's behalf rather than after a dead end.
+        period.set(if state.reaches_this_year() {
+            DRILLED_PERIOD
+        } else {
+            ALL_PERIODS
+        });
         query.set(drill.account.clone());
     });
 
@@ -221,9 +229,9 @@ fn register_table(entries: Vec<RegisterEntry>, limit: RwSignal<usize>) -> AnyVie
     view! {
         <div class="panel-count">
             {if shown < total {
-                format!("showing {shown} of {total} posting(s)")
+                format!("showing {shown} of {}", crate::format::count_of(total, "posting"))
             } else {
-                format!("{total} posting(s)")
+                crate::format::count_of(total, "posting")
             }}
         </div>
         <table class="panel-table">

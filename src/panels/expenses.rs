@@ -12,9 +12,10 @@
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
-use crate::charts::bar_chart;
+use crate::charts::{Bar, bar_chart, scale};
 use crate::hledger::report::ReportSpec;
 use crate::journal::model::{parse_balance, BalanceReport, BalanceRow};
+use crate::journal::money::Amount;
 use crate::journal::reports::{default_commodity, pick_amount};
 use crate::layout::model::PanelId;
 use crate::panels::table::{QueryField, sort_header};
@@ -172,10 +173,18 @@ fn expenses_view(
         .collect();
     ranked.sort_by_key(|(_, value)| std::cmp::Reverse(value.abs()));
 
-    let data: Vec<(String, Decimal)> = ranked
+    let data: Vec<Bar> = ranked
         .iter()
         .take(CHART_ROWS)
-        .map(|(row, value)| (row.display_name.clone(), *value))
+        .map(|(row, value)| Bar {
+            label: row.display_name.clone(),
+            value: *value,
+            // The same string the table below shows, from the same amount and
+            // its own hledger style.
+            text: pick_amount(&row.amounts, commodity.as_deref())
+                .map(Amount::display)
+                .unwrap_or_else(|| scale::format_tick(*value)),
+        })
         .collect();
     let chart = bar_chart(&data);
     let chart_note = if ranked.len() > CHART_ROWS {
@@ -239,7 +248,7 @@ fn expenses_view(
     let count = report.rows.len();
 
     view! {
-        <div class="panel-count">{format!("{count} account row(s)")}</div>
+        <div class="panel-count">{crate::format::count_of(count, "account")}</div>
         {note_view}
         {chart}
         <table class="panel-table">

@@ -190,7 +190,7 @@ fn compound_view(
             <span class="panel-figure-label">{headline_label}</span>
             <span class="panel-figure-value">{headline}</span>
         </div>
-        <div class="panel-count">{format!("{periods} period(s)")}</div>
+        <div class="panel-count">{crate::format::count_of(periods, "period")}</div>
         {sections}
     }
     .into_any()
