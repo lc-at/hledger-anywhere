@@ -161,7 +161,7 @@ pub fn view(id: PanelId) -> AnyView {
                         if text.trim().is_empty() {
                             message_panel("This journal has no balances to report.")
                         } else {
-                            empty_report_view(None, &text, query)
+                            empty_report_view(None, &text, query, state.newest_entry())
                         }
                     }
                     Ok(report) => {

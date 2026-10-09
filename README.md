@@ -367,8 +367,16 @@ a version, and a locally installed one can behave differently — which is exact
 how a feature can look broken locally and work deployed, or the reverse. Two
 findings that came out of it: `balance --pivot payee` returns an empty report in
 1.52.4 while `register --pivot payee` works, and `print date:thisyear` is empty
-for any journal whose data ends in a past year, which is what the Transactions
-panel's empty state now explains.
+for any journal whose data ends in a past year.
+
+That last one is why every period-bounded panel says when the journal actually
+ends. An empty report looks broken until it can explain itself — *"No postings in
+'this year'. The journal's newest entry is 2024-04-02."* — and the app already
+knows the date, because it scans the journal text to decide the drill's window.
+The scan reads the newest date in the file rather than asking hledger, and is
+worth trusting over `stats` here: hledger reports a transaction span whose end is
+exclusive, so a journal whose last entry is the 2nd is described as spanning to
+the 3rd.
 
 ### Verifying the directory picker
 

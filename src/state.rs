@@ -263,12 +263,13 @@ pub struct AppState {
     /// panel whose report fails. See `report_for`.
     pub report_failure: RwSignal<Option<String>>,
 
-    /// The newest year any loaded file mentions as a date, if any.
+    /// The newest date any loaded file mentions, normalised, if any.
     ///
     /// A scan of the journal text, not a report: it decides whether a
-    /// date-bounded window has anything to show, and asking the engine would cost
-    /// a whole journal parse. See [`AppState::reaches_this_year`].
-    pub journal_latest_year: RwSignal<Option<i32>>,
+    /// date-bounded window has anything to show and explains the panel when it
+    /// does not, and asking the engine would cost a whole journal parse for a
+    /// question about ten characters. See [`AppState::reaches_this_year`].
+    pub journal_latest_date: RwSignal<Option<String>>,
 
     /// What each panel's controls were left at, so a reload does not throw away
     /// a query somebody typed. See [`AppState::remember`].
@@ -354,7 +355,7 @@ impl AppState {
             refresh: RwSignal::new(0),
             first_report_settled: RwSignal::new(false),
             report_failure: RwSignal::new(None),
-            journal_latest_year: RwSignal::new(None),
+            journal_latest_date: RwSignal::new(None),
             controls: RwSignal::new(controls::load()),
             drill: RwSignal::new(None),
         };
@@ -510,11 +511,23 @@ impl AppState {
     /// An unknown range counts as reaching this year, so a journal that has not
     /// been scanned is treated normally rather than widened.
     pub fn reaches_this_year(&self) -> bool {
-        let Some(latest) = self.journal_latest_year.get() else {
+        let Some(latest) = self.journal_latest_date.get() else {
+            return true;
+        };
+        let Ok(year) = latest[..4.min(latest.len())].parse::<i32>() else {
             return true;
         };
         let now = js_sys::Date::new_0().get_full_year() as i32;
-        latest >= now
+        year >= now
+    }
+
+    /// The newest date in the journal, for a panel that has to explain why it
+    /// found nothing.
+    ///
+    /// Read untracked: a panel says this once, in the state it is in, rather than
+    /// re-rendering on the journal changing under it.
+    pub fn newest_entry(&self) -> Option<String> {
+        self.journal_latest_date.get_untracked()
     }
 
     /// Show `account` in a register, opening one if none is open.
@@ -583,10 +596,10 @@ impl AppState {
                 .collect::<Vec<_>>(),
         );
 
-        self.journal_latest_year.set(
+        self.journal_latest_date.set(
             files
                 .iter()
-                .filter_map(|file| crate::format::latest_year(&file.contents))
+                .filter_map(|file| crate::format::latest_date(&file.contents))
                 .max(),
         );
 

@@ -92,17 +92,17 @@ mod count_tests {
     }
 }
 
-/// The most recent year mentioned as a date in a journal, in any of the forms
-/// hledger accepts.
+/// The most recent date mentioned in a journal, in any of the forms hledger
+/// accepts, normalised to `YYYY-MM-DD`.
 ///
-/// Used to tell whether a journal's data reaches into the current year, which is
-/// what decides whether a date-bounded default window has anything to show. A
-/// scan rather than a parse: it only has to be right about the newest year, and
-/// the alternative is asking the engine — a whole journal parse to answer a
-/// question about four characters.
-pub fn latest_year(text: &str) -> Option<i32> {
+/// Used to explain an empty report: a period-bounded panel that finds nothing
+/// looks broken until it can say that the journal's newest entry is from another
+/// year. A scan rather than a parse — it only has to be right about the newest
+/// date, and the alternative is asking the engine, which would cost a whole
+/// journal parse to answer a question about ten characters.
+pub fn latest_date(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
-    let mut latest = None;
+    let mut latest: Option<String> = None;
     let mut index = 0;
     while index + 10 <= bytes.len() {
         let window = &bytes[index..index + 10];
@@ -112,9 +112,16 @@ pub fn latest_year(text: &str) -> Option<i32> {
             && matches!(window[7], b'-' | b'/' | b'.')
             && window[8..10].iter().all(u8::is_ascii_digit);
         if shaped {
-            let year = text[index..index + 4].parse::<i32>().ok();
-            if let Some(year) = year {
-                latest = Some(latest.map_or(year, |current: i32| current.max(year)));
+            // Normalised so dates written three different ways still compare:
+            // the separators are irrelevant to which date is the newest.
+            let normalized = format!(
+                "{}-{}-{}",
+                &text[index..index + 4],
+                &text[index + 5..index + 7],
+                &text[index + 8..index + 10]
+            );
+            if latest.as_deref().is_none_or(|current| normalized.as_str() > current) {
+                latest = Some(normalized);
             }
             index += 10;
         } else {
@@ -126,24 +133,45 @@ pub fn latest_year(text: &str) -> Option<i32> {
 
 #[cfg(test)]
 mod latest_year_tests {
-    use super::latest_year;
+    use super::latest_date;
 
     #[test]
-    fn finds_the_newest_year_among_mixed_forms() {
+    fn finds_the_newest_date_among_mixed_forms() {
         let text = "2024-01-01 opening\n2026/03/14 bank\n2025.07.02 fx\n";
-        assert_eq!(latest_year(text), Some(2026));
+        assert_eq!(latest_date(text).as_deref(), Some("2026-03-14"));
     }
 
     #[test]
     fn a_date_shaped_run_of_digits_needs_its_separators() {
         // 20240101 is not a date, and neither is a time or a long number.
-        assert_eq!(latest_year("20240101 12345678"), None);
-        assert_eq!(latest_year("no dates here"), None);
-        assert_eq!(latest_year(""), None);
+        assert_eq!(latest_date("20240101 12345678"), None);
+        assert_eq!(latest_date("no dates here"), None);
+        assert_eq!(latest_date(""), None);
     }
 
     #[test]
-    fn reads_the_year_from_every_occurrence() {
-        assert_eq!(latest_year("x 1999-12-31 y 2001-01-01 z"), Some(2001));
+    fn reads_every_occurrence_not_just_the_first() {
+        assert_eq!(
+            latest_date("x 1999-12-31 y 2001-01-01 z").as_deref(),
+            Some("2001-01-01")
+        );
+    }
+
+    #[test]
+    fn the_newest_date_comes_back_normalised() {
+        // Written three ways; the newest wins and is normalised, so a panel can
+        // show it and a person can read it.
+        assert_eq!(
+            latest_date("2024-01-01 a\n2024/03/14 b\n2022.07.02 c\n").as_deref(),
+            Some("2024-03-14")
+        );
+        // Day and month matter, not just the year: this is what tells a reader
+        // that their "this month" window is years behind their journal.
+        assert_eq!(
+            latest_date("2024-12-31\n2024-02-01").as_deref(),
+            Some("2024-12-31")
+        );
+        assert_eq!(latest_date("no dates"), None);
+        assert_eq!(latest_date(""), None);
     }
 }

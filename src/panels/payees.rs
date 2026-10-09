@@ -164,7 +164,12 @@ pub fn view(id: PanelId) -> AnyView {
                         let index = period.get().min(PERIODS.len() - 1);
                         let (label, _) = PERIODS[index];
                         let text = query.get();
-                        empty_report_view(Some((label, period, ALL_PERIODS)), &text, query)
+                        empty_report_view(
+                            Some((label, period, ALL_PERIODS)),
+                            &text,
+                            query,
+                            state.newest_entry(),
+                        )
                     }
                     Ok(entries) => payees_view(state, total_by_payee(&entries), sort, toggle, direction_of),
                     Err(error) => error_panel(&format!(

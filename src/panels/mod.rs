@@ -247,6 +247,7 @@ pub(crate) fn empty_report_view(
     bound: Option<(&str, RwSignal<usize>, usize)>,
     query: &str,
     query_signal: RwSignal<String>,
+    newest: Option<String>,
 ) -> AnyView {
     let query = query.trim().to_string();
     let period = bound.map(|(_, signal, _)| signal);
@@ -270,7 +271,13 @@ pub(crate) fn empty_report_view(
     view! {
         <p class="panel-remedy">{what}</p>
         <p class="panel-count">
-            "The journal may simply have no data in that period."
+            {match newest {
+                // A report that finds nothing looks broken until it can say when
+                // the journal actually ends. The app already knows, because it
+                // scanned the text to decide the drill's window.
+                Some(date) => format!("The journal's newest entry is {date}."),
+                None => "The journal may simply have no data in that period.".to_string(),
+            }}
         </p>
         <div class="panel-controls">
             <Show when=move || period.is_some()>
