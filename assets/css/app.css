@@ -1161,5 +1161,32 @@ html.gl-dragging .gl-splitter {
   .gl-row > .gl-splitter {
     display: none;
   }
+
+  /* Tabs must fit the bar rather than overflow it.
+   *
+   * The bar scrolls horizontally, but a tab sets `touch-action: none` so that
+   * dragging one rearranges the layout — which means a finger on a tab scrolls
+   * nothing, and any tab past the right edge is simply unreachable on a phone.
+   * Five default panels need 609px of a 390px bar, so two of them were stranded.
+   *
+   * Letting the tabs shrink fixes the cause instead: they share the width they
+   * have, and the titles ellipsise. `min-width: 0` is what actually permits it —
+   * a flex item's automatic minimum is its content, so without it nothing shrinks
+   * and the bar overflows exactly as before. */
+  .gl-tab {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .gl-tab-title {
+    min-width: 0;
+  }
+
+  /* The close button is the least useful thing in a tab that is not the one being
+   * read, and its space is what makes five titles fit. Closing still works:
+   * select the tab, then close it. */
+  .gl-tab:not(.gl-tab-active) .gl-tab-close {
+    display: none;
+  }
 }
 
