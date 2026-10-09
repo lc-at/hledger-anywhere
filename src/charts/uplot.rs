@@ -21,10 +21,16 @@ use web_sys::{HtmlElement, MutationObserver, MutationObserverInit, ResizeObserve
 use super::data::{self, Columns, Line};
 use super::scale;
 
-/// Height of the plot, including its axes, in CSS pixels. Fixed on purpose: a
-/// height that followed the container would feed uPlot's own root height back
-/// into the observer and grow without bound. Only the width follows the panel.
-const CHART_HEIGHT: f64 = 260.0;
+/// Height to assume when the container has not been laid out yet, in CSS pixels.
+///
+/// The container's real height comes from CSS (`clamp()`, so the chart is taller
+/// on a tall screen and shorter in a short window). This is only the fallback for
+/// a panel that is hidden, where every measurement is zero.
+///
+/// Measuring instead of fixing is safe because the container's height is *given*:
+/// it has an explicit CSS height, so the chart inside cannot change it and there
+/// is no observer feedback loop. Here the canvas fits the box, not the reverse.
+const CHART_HEIGHT_FALLBACK: f64 = 260.0;
 
 /// How solid the area under a line is. Low enough that overlapping areas stay
 /// readable, which matters as soon as a chart has more than one line.
@@ -33,6 +39,9 @@ const FILL_ALPHA: f64 = 0.15;
 /// Never size the canvas below this: a panel that is hidden or not yet laid out
 /// reports a width of zero.
 const MIN_CHART_WIDTH: f64 = 160.0;
+
+/// The same, for height.
+const MIN_CHART_HEIGHT: f64 = 140.0;
 
 /// At most this many x-axis labels, so period labels never collide.
 const X_LABEL_LIMIT: usize = 6;
@@ -87,9 +96,7 @@ fn UplotLine(columns: Columns) -> impl IntoView {
     view! {
         <div
             class="chart chart-line"
-            style=format!(
-                "height: {CHART_HEIGHT}px; background: var(--gl-panel-bg);",
-            )
+            style="background: var(--gl-panel-bg);"
             role="img"
             aria-label="Time series chart"
             node_ref=container
@@ -123,7 +130,11 @@ impl PlotHandle {
 
         let width = plot_width(element);
         set(&options, "width", &JsValue::from_f64(width))?;
-        set(&options, "height", &JsValue::from_f64(CHART_HEIGHT))?;
+        set(
+            &options,
+            "height",
+            &JsValue::from_f64(plot_height(element)),
+        )?;
 
         // The x series carries the point count and the axis labels. It is kept
         // out of the legend, where "Period" would otherwise sit beside the lines
@@ -414,12 +425,13 @@ fn watch_resize(
         let element = element.clone();
         Closure::<dyn FnMut()>::new(move || {
             let width = plot_width(&element);
+            let height = plot_height(&element);
             if let Ok(set_size) = js_sys::Reflect::get(&instance, &JsValue::from_str("setSize"))
                 && let Some(set_size) = set_size.dyn_ref::<js_sys::Function>()
             {
                 let options = object();
                 set(&options, "width", &JsValue::from_f64(width)).ok();
-                set(&options, "height", &JsValue::from_f64(CHART_HEIGHT)).ok();
+                set(&options, "height", &JsValue::from_f64(height)).ok();
                 let _ = set_size.call1(&instance, &options);
             }
         })
@@ -533,6 +545,19 @@ fn constant_color(color: &str) -> JsValue {
 /// produces a valid canvas.
 fn plot_width(element: &HtmlElement) -> f64 {
     f64::from(element.unchecked_ref::<web_sys::Element>().client_width()).max(MIN_CHART_WIDTH)
+}
+
+/// The height to draw at: the container's, since CSS decides it.
+///
+/// The fallback covers a container that is not laid out yet (a panel in an
+/// inactive tab measures zero in both directions).
+fn plot_height(element: &HtmlElement) -> f64 {
+    let measured = f64::from(element.unchecked_ref::<web_sys::Element>().client_height());
+    if measured > 0.0 {
+        measured.max(MIN_CHART_HEIGHT)
+    } else {
+        CHART_HEIGHT_FALLBACK
+    }
 }
 
 /// Format a uPlot y split as exact decimal text.

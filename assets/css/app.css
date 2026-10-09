@@ -1112,6 +1112,14 @@ html.gl-dragging .gl-splitter {
 
 /* -- charts ---------------------------------------------------------------- */
 
+/* A time-series chart sizes itself from this box, which is why the height is
+ * given here rather than in the markup: `clamp` lets it take more room on a tall
+ * screen and less in a short window, and an explicit height means the canvas
+ * inside can never feed its own size back into the layout. */
+.chart-line {
+  height: clamp(180px, 34vh, 340px);
+}
+
 /* uPlot's legend lists the x series as well, marked `.u-off`, which would put a
  * "Period" row beside the lines as though it were one of them. Hiding the first
  * row is enough: it is always the x series, and the data series keep their rows,
