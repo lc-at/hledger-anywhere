@@ -255,6 +255,15 @@ pub struct PanelInstance {
     pub kind: String,
 }
 
+/// One pane of the layout: a tab group, and the tab that names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pane {
+    /// The visible tab, whose title is what the pane is called on screen.
+    pub named_by: PanelInstance,
+    /// Every panel in the pane, in tab order.
+    pub panels: Vec<PanelInstance>,
+}
+
 /// A child of a split: how much of the parent it occupies, and its subtree.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Child {
@@ -501,6 +510,78 @@ impl Layout {
         fn walk<'a>(node: &'a Node, out: &mut Vec<&'a PanelInstance>) {
             match node {
                 Node::Stack { panels, .. } => out.extend(panels.iter()),
+                Node::Split { children, .. } => {
+                    for child in children {
+                        walk(&child.node, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(root) = &self.root {
+            walk(root, &mut out);
+        }
+        out
+    }
+
+    /// The panel to split `panel` against, for the keyboard's split actions.
+    ///
+    /// A sibling tab if there is one, so the pane divides in two where the panel
+    /// already is — which is what the pointer does by dragging a tab onto its own
+    /// pane's edge. A panel alone in its pane has no sibling, so it splits
+    /// against another pane instead, and the empty pane it leaves behind is
+    /// dropped. `None` when there is nothing to split against, which means the
+    /// layout holds only this panel and a split would have nothing to put beside
+    /// it.
+    pub fn split_target(&self, panel: PanelId) -> Option<PanelId> {
+        let panes = self.panes();
+        let mine = panes
+            .iter()
+            .find(|pane| pane.panels.iter().any(|held| held.id == panel))?;
+        if let Some(sibling) = mine.panels.iter().find(|held| held.id != panel) {
+            return Some(sibling.id);
+        }
+        panes
+            .iter()
+            .filter(|pane| !pane.panels.iter().any(|held| held.id == panel))
+            .flat_map(|pane| pane.panels.iter())
+            .map(|held| held.id)
+            .next()
+    }
+
+    /// The panes a panel could be moved into as a tab, excluding its own.
+    pub fn other_panes(&self, panel: PanelId) -> Vec<Pane> {
+        let panes = self.panes();
+        let mine = panes
+            .iter()
+            .position(|pane| pane.panels.iter().any(|held| held.id == panel));
+        panes
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != mine)
+            .map(|(_, pane)| pane)
+            .collect()
+    }
+
+    /// One pane per stack in layout order, each with the panel whose title names
+    /// it and the panels it holds.
+    ///
+    /// A pane is a place a panel can be sent, which is what the keyboard move
+    /// menu needs to offer: pointer users get this by dragging onto a drop
+    /// target, and without it the shape of the layout is the one thing a
+    /// keyboard cannot change. The active tab names the pane because that is the
+    /// title on screen.
+    pub fn panes(&self) -> Vec<Pane> {
+        fn walk(node: &Node, out: &mut Vec<Pane>) {
+            match node {
+                Node::Stack { panels, active } => {
+                    if !panels.is_empty() {
+                        out.push(Pane {
+                            named_by: panels[(*active).min(panels.len() - 1)].clone(),
+                            panels: panels.clone(),
+                        });
+                    }
+                }
                 Node::Split { children, .. } => {
                     for child in children {
                         walk(&child.node, out);
@@ -1525,6 +1606,84 @@ mod tests {
         assert!(
             restored.panels().iter().filter(|p| p.id == new_id).count() == 1
         );
+    }
+
+    #[test]
+    fn panes_are_reported_in_layout_order_named_by_the_visible_tab() {
+        let mut layout = Layout::default_stacked(&["a", "b", "c"]);
+        // The stacked default is one pane holding all three, first tab visible.
+        let panes = layout.panes();
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].named_by.kind, "a");
+        assert_eq!(panes[0].panels.len(), 3);
+
+        // Selecting the third tab changes what names the pane, not which pane it
+        // is: a pane is named by what is on screen.
+        let third = panes[0].panels[2].id;
+        layout.activate(third);
+        let panes = layout.panes();
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].named_by.kind, "c");
+    }
+
+    #[test]
+    fn a_split_targets_a_sibling_when_there_is_one_and_another_pane_otherwise() {
+        let mut layout = Layout::default_stacked(&["a", "b", "c"]);
+        let panes = layout.panes();
+        let (a, b, c) = (
+            panes[0].panels[0].id,
+            panes[0].panels[1].id,
+            panes[0].panels[2].id,
+        );
+        // A sibling, so the pane divides where the panel already is.
+        assert_eq!(layout.split_target(b), Some(a));
+
+        // Alone in its pane after the split: it splits against another pane,
+        // because a pane holding one panel has no sibling to divide against.
+        assert!(layout.move_panel(c, a, DropRegion::Right));
+        // c left [a, b] behind and sits in a pane of its own, so its target is
+        // the first panel of the pane it is not in.
+        let panes = layout.panes();
+        assert_eq!(panes.len(), 2);
+        assert!(panes[0].panels.iter().any(|p| p.id == a));
+        assert_eq!(panes[1].panels.len(), 1);
+        assert_eq!(layout.split_target(c), Some(a));
+
+        // One panel on its own: nothing to split against, so the actions are
+        // absent rather than offered and refused.
+        let single = Layout::default_stacked(&["only"]);
+        let only = single.panes()[0].named_by.id;
+        assert_eq!(single.split_target(only), None);
+        assert!(single.other_panes(only).is_empty());
+    }
+
+    #[test]
+    fn other_panes_excludes_the_panels_own_pane() {
+        let mut layout = Layout::default_stacked(&["a", "b"]);
+        let panes = layout.panes();
+        let (a, b) = (panes[0].panels[0].id, panes[0].panels[1].id);
+        assert!(layout.move_panel(b, a, DropRegion::Right));
+
+        let others = layout.other_panes(b);
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].named_by.id, a);
+        assert!(layout.other_panes(a)[0].panels.iter().any(|p| p.id == b));
+    }
+
+    #[test]
+    fn splitting_a_panel_out_of_a_pane_makes_two_panes() {
+        let mut layout = Layout::default_stacked(&["a", "b"]);
+        let panes = layout.panes();
+        assert_eq!(panes.len(), 1);
+        let (first, second) = (panes[0].panels[0].id, panes[0].panels[1].id);
+
+        // This is what the keyboard's "Split right" does: the panel leaves the
+        // pane it was in rather than joining another one.
+        assert!(layout.move_panel(second, first, DropRegion::Right));
+        let panes = layout.panes();
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0].panels.len(), 1);
+        assert_eq!(panes[1].panels.len(), 1);
     }
 
     #[test]

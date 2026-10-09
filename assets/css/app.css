@@ -1234,6 +1234,57 @@ html.gl-dragging .gl-splitter {
   text-decoration: underline;
 }
 
+/* -- pane move menu ------------------------------------------------------- */
+
+/* The keyboard's route to splitting and docking, which is the one thing about the
+ * shape of the layout that otherwise needs a pointer. It sits beside the maximise
+ * button and looks like it, because the tab bar is for tabs. */
+.gl-pane-menu {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.gl-tab-move {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-left: 1px solid var(--gl-border);
+  color: var(--gl-text-dim);
+  cursor: pointer;
+}
+
+.gl-tab-move:hover,
+.gl-tab-move[aria-expanded="true"] {
+  background: var(--gl-tab-hover-bg);
+  color: var(--gl-text);
+}
+
+/* The invisible ring the other small controls have: a 26px button is a small
+ * target to ask a thumb for. */
+.gl-tab-move::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
+/* Placed by the button's own coordinates, so only the size is set here. */
+.gl-pane-dropdown {
+  min-width: 232px;
+  max-width: calc(100vw - 16px);
+}
+
+.gl-dropdown-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--gl-border);
+}
+
 /* -- overview ------------------------------------------------------------- */
 
 /* A label and its value, with nothing to sort or total: a table because that is
@@ -1341,6 +1392,14 @@ html.gl-dragging .gl-splitter {
     inset: -6px;
   }
 
+  .gl-tab-move {
+    width: 40px;
+  }
+
+  .gl-tab-move::after {
+    inset: -6px;
+  }
+
   /* Stacked panes are separated by horizontal gutters, and those are the ones a
    * finger has to find: the band is widened further than the desktop hairline
    * because there is no content directly above or below it to steal taps from. */
@@ -1399,7 +1458,7 @@ html.gl-dragging .gl-splitter {
     position: static;
   }
 
-  .gl-dropdown {
+  .app-menu .gl-dropdown {
     top: 100%;
     right: 8px;
     left: 8px;

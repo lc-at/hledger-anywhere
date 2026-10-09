@@ -23,7 +23,7 @@ use crate::state::{AppState, EngineStatus, SourceStatus};
 /// keyboard user has no "anywhere else", and Escape is what they will try. The
 /// item that had focus is about to be removed from the document, so focus is
 /// returned to the trigger rather than left to fall on the body.
-fn close_on_escape(
+pub(crate) fn close_on_escape(
     open: RwSignal<bool>,
     trigger: NodeRef<leptos::html::Button>,
 ) -> impl Fn(web_sys::KeyboardEvent) + Copy + 'static {

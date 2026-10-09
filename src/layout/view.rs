@@ -20,11 +20,13 @@
 //! over by the fixed-width splitters, which keeps the arithmetic honest without
 //! this module ever measuring the container.
 
+use leptos::html;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{Element, HtmlElement, KeyboardEvent, PointerEvent};
 
+use crate::app::close_on_escape;
 use crate::layout::model::{
     Child, Dir, DropGeometry, DropRegion, DropTarget, MIN_SIZE, Node, PaneRect, PanelId,
     PanelInstance, Rect, TabRect, hit_test,
@@ -368,6 +370,10 @@ fn render_stack(
             <div class="gl-tabbar" role="tablist">
                 {tabs}
                 <span class="gl-tabbar-fill"></span>
+                {pane_id
+                    .parse::<PanelId>()
+                    .ok()
+                    .map(|panel| view! { <PaneMoveMenu panel=panel /> })}
                 <button
                     class="gl-tab-maximise"
                     title=restore_title
@@ -380,6 +386,149 @@ fn render_stack(
                 {body}
             </div>
         </div>
+    }
+    .into_any()
+}
+
+/// The keyboard's route to the shape of the layout.
+///
+/// Dragging a tab onto a drop target is how a pointer user splits a pane and how
+/// they moves a panel into another one. Adding, closing, maximising and resizing
+/// all have keyboard paths; this was the missing one, which left the shape of the
+/// layout as the one thing a keyboard could not change at all. It acts on the
+/// pane's visible tab, which is the tab it names.
+#[component]
+fn PaneMoveMenu(panel: PanelId) -> impl IntoView {
+    let state = expect_context::<AppState>();
+    let open = RwSignal::new(false);
+    let trigger = NodeRef::<html::Button>::new();
+    // The tab bar hides vertical overflow and the pane hides all of it, so a menu
+    // anchored to this button would be clipped by whichever ran out first. Fixed
+    // positioning escapes both, which is also why the drag proxy is fixed; the
+    // coordinates come from the button when the menu opens.
+    let anchor = RwSignal::new((0.0f64, 0.0f64));
+
+    let split = move |region: DropRegion| {
+        let Some(target) = state.layout.get_untracked().split_target(panel) else {
+            return;
+        };
+        state.layout.update(|layout| {
+            layout.move_panel(panel, target, region);
+        });
+        state.persist_layout();
+        open.set(false);
+    };
+
+    let join = move |target: PanelId| {
+        state.layout.update(|layout| {
+            layout.move_panel(panel, target, DropRegion::Center);
+        });
+        state.persist_layout();
+        open.set(false);
+    };
+
+    // Read only while the menu is open, and from the layout as it is then: these
+    // are destinations, and a list built once would go on offering panes that
+    // have closed and missing the ones that have opened.
+    let splittable = move || open.get() && state.layout.get().split_target(panel).is_some();
+    let destinations = move || {
+        if !open.get() {
+            return Vec::new();
+        }
+        state.layout.get().other_panes(panel)
+    };
+
+    let toggled = move |ev: web_sys::MouseEvent| {
+        ev.stop_propagation();
+        if open.get_untracked() {
+            open.set(false);
+            return;
+        }
+        if let Some(button) = trigger.get_untracked() {
+            let rect = button.get_bounding_client_rect();
+            anchor.set((rect.right(), rect.bottom() + 4.0));
+        }
+        open.set(true);
+    };
+
+    view! {
+        <div class="gl-pane-menu" on:keydown=close_on_escape(open, trigger)>
+            <button
+                node_ref=trigger
+                class="gl-tab-move"
+                title="Move or split this panel"
+                aria-label="Move or split this panel"
+                aria-haspopup="menu"
+                aria-expanded=move || if open.get() { "true" } else { "false" }
+                on:click=toggled
+            >
+                {move_icon()}
+            </button>
+            <Show when=move || open.get()>
+                <div
+                    class="gl-dropdown gl-pane-dropdown"
+                    role="menu"
+                    style=move || {
+                        let (x, y) = anchor.get();
+                        format!(
+                            "position: fixed; left: auto; right: calc(100vw - {x}px); top: {y}px;                              max-height: calc(100vh - {y}px - 8px);",
+                        )
+                    }
+                >
+                    <Show when=splittable>
+                        <button
+                            class="gl-dropdown-item"
+                            role="menuitem"
+                            on:click=move |_| split(DropRegion::Right)
+                        >
+                            <span class="gl-dropdown-icon">"◫"</span>
+                            <span>"Split to the right"</span>
+                        </button>
+                        <button
+                            class="gl-dropdown-item"
+                            role="menuitem"
+                            on:click=move |_| split(DropRegion::Bottom)
+                        >
+                            <span class="gl-dropdown-icon">"⬓"</span>
+                            <span>"Split below"</span>
+                        </button>
+                    </Show>
+                    <Show when=move || !destinations().is_empty()>
+                        <div class="gl-dropdown-sep" role="separator"></div>
+                        <For
+                            each=destinations
+                            key=|pane| pane.named_by.id
+                            let:pane
+                        >
+                            {
+                                let target = pane.named_by.id;
+                                let title = panels::title_for(&pane.named_by.kind);
+                                view! {
+                                    <button
+                                        class="gl-dropdown-item"
+                                        role="menuitem"
+                                        on:click=move |_| join(target)
+                                    >
+                                        <span class="gl-dropdown-icon">"⇥"</span>
+                                        <span>{format!("Move into the {title} pane")}</span>
+                                    </button>
+                                }
+                            }
+                        </For>
+                    </Show>
+                </div>
+            </Show>
+        </div>
+    }
+}
+
+/// The move glyph: a pane divided in two, drawn rather than typed.
+fn move_icon() -> AnyView {
+    view! {
+        <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+            <rect x="0.5" y="1.5" width="11" height="9" rx="1.5" fill="none" stroke="currentColor"></rect>
+            <path d="M6 1.5 L6 10.5" stroke="currentColor" stroke-width="1.2"></path>
+        </svg>
     }
     .into_any()
 }
