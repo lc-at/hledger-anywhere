@@ -442,10 +442,13 @@ impl AppState {
     /// Show `account` in a register, opening one if none is open.
     ///
     /// An open register is reused rather than adding one per click: drilling
-    /// through six accounts should not leave six panels behind. The panel is also
-    /// raised, because a request the user cannot see is indistinguishable from a
-    /// broken click — the register may be a tab behind something else.
-    pub fn drill_into(&self, account: impl Into<String>) {
+    /// through six accounts should not leave six panels behind. A new one is
+    /// added beside `source` — the panel that was clicked — rather than beside
+    /// whatever the layout last focused, because a drilled register that appears
+    /// in another column is a jump the user did not ask for. Either way the
+    /// register is raised: a request the user cannot see is indistinguishable
+    /// from a broken click.
+    pub fn drill_into(&self, source: PanelId, account: impl Into<String>) {
         let account = account.into();
 
         let open = self
@@ -461,7 +464,7 @@ impl AppState {
             None => {
                 let added = self
                     .layout
-                    .try_update(|layout| layout.add_panel("register", layout.focused));
+                    .try_update(|layout| layout.add_panel("register", Some(source)));
                 let Some(id) = added else {
                     return;
                 };

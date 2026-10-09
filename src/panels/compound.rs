@@ -138,7 +138,7 @@ fn view(id: PanelId, panel: &'static CompoundPanel) -> AnyView {
                 }
                 report_view(state, id, move |output| {
                     match parse_compound_periodic_report(&output.stdout) {
-                        Ok(report) => compound_view(state, &report, panel),
+                        Ok(report) => compound_view(state, id, &report, panel),
                         Err(error) => error_panel(
                             &format!("Could not decode the report: {error}"),
                         ),
@@ -153,6 +153,7 @@ fn view(id: PanelId, panel: &'static CompoundPanel) -> AnyView {
 /// The whole report: the headline figure, then one table per subreport.
 fn compound_view(
     state: AppState,
+    id: PanelId,
     report: &CompoundPeriodicReport,
     panel: &'static CompoundPanel,
 ) -> AnyView {
@@ -173,7 +174,7 @@ fn compound_view(
         if subreport.report.rows.is_empty() && subreport.report.labels().is_empty() {
             continue;
         }
-        sections.push(subreport_table(state, title, subreport, commodity.as_deref()));
+        sections.push(subreport_table(state, id, title, subreport, commodity.as_deref()));
     }
 
     if sections.is_empty() {
@@ -198,6 +199,7 @@ fn compound_view(
 /// One subreport as an account-row table, one column per period.
 fn subreport_table(
     state: AppState,
+    id: PanelId,
     title: &str,
     subreport: &CompoundSubreport,
     commodity: Option<&str>,
@@ -229,7 +231,7 @@ fn subreport_table(
                         <button
                             class="account-link"
                             title=title
-                            on:click=move |_| state.drill_into(target.clone())
+                            on:click=move |_| state.drill_into(id, target.clone())
                         >
                             {name}
                         </button>

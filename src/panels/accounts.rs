@@ -81,7 +81,7 @@ pub fn view(id: PanelId) -> AnyView {
                                             class="account-link"
                                             title=title
                                             on:click=move |_| {
-                                                state.drill_into(target.clone())
+                                                state.drill_into(id, target.clone())
                                             }
                                         >
                                             {account}

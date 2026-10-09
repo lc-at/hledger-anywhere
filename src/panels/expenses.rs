@@ -113,7 +113,7 @@ pub fn view(id: PanelId) -> AnyView {
             {argv_line(state, id)}
             {report_view(state, id, move |output| {
                 match parse_balance(&output.stdout) {
-                    Ok(report) => expenses_view(state, &report, sort),
+                    Ok(report) => expenses_view(state, id, &report, sort),
                     Err(error) => {
                         error_panel(&format!("Could not decode the expenses report: {error}"))
                     }
@@ -127,6 +127,7 @@ pub fn view(id: PanelId) -> AnyView {
 /// The chart, then the full table.
 fn expenses_view(
     state: AppState,
+    id: PanelId,
     report: &BalanceReport,
     sort: RwSignal<Option<(SortKey, SortDir)>>,
 ) -> AnyView {
@@ -223,7 +224,7 @@ fn expenses_view(
                         <button
                             class="account-link"
                             title=title
-                            on:click=move |_| state.drill_into(target.clone())
+                            on:click=move |_| state.drill_into(id, target.clone())
                         >
                             {name}
                         </button>

@@ -81,7 +81,7 @@ pub fn view(id: PanelId) -> AnyView {
                 }
                 report_view(state, id, move |output| {
                     match parse_budget_report(&output.stdout) {
-                        Ok(report) => budget_view(state, &report),
+                        Ok(report) => budget_view(state, id, &report),
                         Err(error) => {
                             error_panel(&format!("Could not decode the budget report: {error}"))
                         }
@@ -94,7 +94,7 @@ pub fn view(id: PanelId) -> AnyView {
 }
 
 /// The budget table, one row per `(account, period)`.
-fn budget_view(state: AppState, report: &BudgetReport) -> AnyView {
+fn budget_view(state: AppState, id: PanelId, report: &BudgetReport) -> AnyView {
     if !report.has_budget() {
         return message_panel(
             "No budget defined in this journal. Add `~ monthly` budget rules to a \
@@ -157,7 +157,7 @@ fn budget_view(state: AppState, report: &BudgetReport) -> AnyView {
                         <button
                             class="account-link"
                             title=title
-                            on:click=move |_| state.drill_into(target.clone())
+                            on:click=move |_| state.drill_into(id, target.clone())
                         >
                             {account.clone()}
                         </button>
