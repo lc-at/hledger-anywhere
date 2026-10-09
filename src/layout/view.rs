@@ -23,7 +23,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::{Element, HtmlElement, PointerEvent};
+use web_sys::{Element, HtmlElement, KeyboardEvent, PointerEvent};
 
 use crate::layout::model::{
     Child, Dir, DropGeometry, DropRegion, DropTarget, MIN_SIZE, Node, PaneRect, PanelId,
@@ -121,6 +121,12 @@ fn render_stack(
         .map(|instance| instance.id.to_string())
         .unwrap_or_default();
 
+    // The pane is a tab panel, so it needs the name of the tab that is showing.
+    let active_title = instances
+        .get(active)
+        .map(|instance| panels::title_for(&instance.kind))
+        .unwrap_or_default();
+
     let tabs = instances
         .iter()
         .enumerate()
@@ -128,6 +134,10 @@ fn render_stack(
             let id = instance.id;
             let selected = index == active;
             let title = panels::title_for(&instance.kind);
+            // A separate binding for the accessible name: the view macro moves
+            // both values, and a `.clone()` inside it would make the attribute
+            // depend on the order the macro expands its arguments in.
+            let tab_label = title.clone();
             let icon = panels::icon_for(&instance.kind);
             let tab_panel = id.to_string();
 
@@ -238,15 +248,76 @@ fn render_stack(
             };
             let on_cancel = on_up;
 
+            // Tabs are reachable and operable by keyboard. Arrowing along the bar
+            // moves focus *only*: opening the next panel is a whole engine
+            // invocation, and moving through six tabs should not start six
+            // reports. Enter opens whatever focus landed on — the same
+            // manual-activation rule the ARIA tabs pattern prescribes when
+            // selection is expensive.
+            let on_key = move |ev: KeyboardEvent| match ev.key().as_str() {
+                "Enter" | " " => {
+                    ev.prevent_default();
+                    state.layout.update(|layout| {
+                        layout.activate(id);
+                    });
+                }
+                "ArrowRight" | "ArrowLeft" => {
+                    ev.prevent_default();
+                    let Some(current) =
+                        ev.current_target().and_then(|t| t.dyn_into::<Element>().ok())
+                    else {
+                        return;
+                    };
+                    // Walk the tabs, not the siblings: the last tab's next
+                    // sibling is the tab bar's filler span, which is not a tab
+                    // and not focusable.
+                    let Some(bar) = current.parent_element() else {
+                        return;
+                    };
+                    let tabs: Vec<Element> = bar
+                        .query_selector_all(".gl-tab")
+                        .ok()
+                        .map(|nodes| {
+                            (0..nodes.length())
+                                .filter_map(|index| nodes.item(index))
+                                .filter_map(|node| node.dyn_into::<Element>().ok())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let (Some(index), false) =
+                        (tabs.iter().position(|tab| *tab == current), tabs.is_empty())
+                    else {
+                        return;
+                    };
+                    // Wrap, as the tabs pattern asks: a tab list is a ring, and
+                    // the end of the bar is not a wall.
+                    let next = if ev.key() == "ArrowRight" {
+                        (index + 1) % tabs.len()
+                    } else {
+                        (index + tabs.len() - 1) % tabs.len()
+                    };
+                    if let Some(tab) = tabs.get(next).and_then(|t| t.clone().dyn_into::<HtmlElement>().ok())
+                    {
+                        let _ = tab.focus();
+                    }
+                }
+                _ => {}
+            };
+
             view! {
                 <div
                     class="gl-tab"
                     class:gl-tab-active=selected
                     data-tab-panel=tab_panel
+                    role="tab"
+                    tabindex="0"
+                    aria-selected=if selected { "true" } else { "false" }
+                    aria-label=tab_label
                     on:pointerdown=on_down
                     on:pointermove=on_move
                     on:pointerup=on_up
                     on:pointercancel=on_cancel
+                    on:keydown=on_key
                 >
                     <span class="gl-tab-icon">{icon}</span>
                     <span class="gl-tab-title">{title}</span>
@@ -294,7 +365,7 @@ fn render_stack(
 
     view! {
         <div class="gl-stack" data-pane-id=pane_id>
-            <div class="gl-tabbar">
+            <div class="gl-tabbar" role="tablist">
                 {tabs}
                 <span class="gl-tabbar-fill"></span>
                 <button
@@ -305,7 +376,9 @@ fn render_stack(
                     {maximise_icon(maximised)}
                 </button>
             </div>
-            <div class="gl-body">{body}</div>
+            <div class="gl-body" role="tabpanel" aria-label=active_title>
+                {body}
+            </div>
         </div>
     }
     .into_any()

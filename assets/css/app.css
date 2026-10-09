@@ -1379,3 +1379,17 @@ html.gl-dragging .gl-splitter {
     height: 320px;
   }
 }
+
+/* -- focus --------------------------------------------------------------- */
+
+/* Keyboard users need to see where they are. `:focus-visible` rather than
+ * `:focus` so a mouse click does not leave a ring behind on every button, and an
+ * inset ring on a tab so it does not shift the tab bar's layout. */
+:focus-visible {
+  outline: 2px solid var(--gl-accent);
+  outline-offset: 1px;
+}
+
+.gl-tab:focus-visible {
+  outline-offset: -2px;
+}
