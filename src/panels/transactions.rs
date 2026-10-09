@@ -13,7 +13,7 @@ use crate::journal;
 use crate::journal::model::Transaction;
 use crate::layout::model::PanelId;
 use crate::panels::table::{QueryField, sort_header};
-use crate::panels::{empty_report_view, error_panel, report_view};
+use crate::panels::{argv_line, empty_report_view, error_panel, report_view};
 use crate::query::{self, SortDir};
 use crate::state::AppState;
 
@@ -178,6 +178,7 @@ pub fn view(id: PanelId) -> AnyView {
     view! {
         <div class="panel panel-transactions">
             {controls}
+            {argv_line(state, id)}
             {report_view(state, id, move |output| {
                 match journal::model::parse_transactions(&output.stdout) {
                     Ok(transactions) if transactions.is_empty() => {

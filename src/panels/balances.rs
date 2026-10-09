@@ -13,7 +13,7 @@ use crate::journal;
 use crate::journal::model::BalanceRow;
 use crate::layout::model::PanelId;
 use crate::panels::table::{QueryField, sort_header};
-use crate::panels::{error_panel, message_panel, report_view};
+use crate::panels::{argv_line, error_panel, message_panel, report_view};
 use crate::query::{self, SortDir};
 use crate::state::AppState;
 
@@ -138,6 +138,7 @@ pub fn view(id: PanelId) -> AnyView {
     view! {
         <div class="panel panel-balances">
             {controls}
+            {argv_line(state, id)}
             {report_view(state, id, move |output| {
                 match journal::model::parse_balance(&output.stdout) {
                     Ok(report) if report.rows.is_empty() => {
