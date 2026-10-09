@@ -429,10 +429,12 @@ snapshot when checking what a panel says.
   place along the tab bar in either direction, and a move into any other pane.
   Nothing in the layout now needs a drag. What Golden Layout also has and this does
   not:
-  **floating and popout panels**, a **tab overflow menu** (tabs shrink to fit the
-  bar, and only scroll once there are more than the bar can hold), and **drop
-  zones at the outer edge of the workspace** (a drop only targets the pane or tab
-  under the pointer).
+  **floating and popout panels**, a **tab overflow menu**, and **drop zones at the
+  outer edge of the workspace** (a drop only targets the pane or tab under the
+  pointer). The tab overflow menu is the one with a real cost behind it: on a phone
+  the tabs wrap, so every one is reachable, but on a wide screen with more tabs
+  than fit they keep their width and the bar scrolls, which hides the ones past the
+  edge until it is scrolled. A menu listing them would be the fix.
 - Directory loading uses the `<input webkitdirectory>` picker, so a re-pick is
   required to see file changes. The File System Access API and live watching are
   not wired up.
