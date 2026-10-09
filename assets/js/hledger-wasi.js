@@ -4,8 +4,8 @@
  * Publishes `window.hledgerWasi`, which is the entire surface `src/hledger/
  * bridge.rs` talks to:
  *
- *   init()                        -> Promise<{ wasmPath }>
- *   configure({ wasmPath, env })  -> Promise<{ wasmPath }>
+ *   init()                                  -> Promise<{ wasmPath }>
+ *   configure({ wasmPath, ledgerFile })     -> Promise<{ wasmPath, ledgerFile }>
  *   run(argv, files)              -> Promise<{ argv, stdout, stderr, exitCode, ms }>
  *
  * where `argv` is a string array and `files` is an array of `[path, contents]`
@@ -129,6 +129,12 @@ class HledgerWasi {
     return this._enqueue(() => this._send('init', {}));
   }
 
+  /**
+   * Point the engine at a journal.
+   *
+   * `ledgerFile` becomes `$LEDGER_FILE` inside the engine, which is what makes a
+   * bare `hledger balance` work. Pass `undefined` to clear it.
+   */
   configure(options = {}) {
     if (typeof options.wasmPath === 'string') {
       this.wasmPath = options.wasmPath;
@@ -136,7 +142,7 @@ class HledgerWasi {
     return this._enqueue(() =>
       this._send('configure', {
         wasmPath: this.wasmPath,
-        env: options.env,
+        ledgerFile: options.ledgerFile,
       }),
     );
   }

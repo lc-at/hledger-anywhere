@@ -17,6 +17,11 @@
 //   node --experimental-wasi-unstable-preview1 scripts/hledger-wasm.mjs \
 //       <journal> [hledger args...]
 //
+// With HLEDGER_NO_FILE_ARG=1 the journal is not passed as -f. Instead its
+// directory is mounted at /data and LEDGER_FILE points at the journal there,
+// which is exactly what the app does — so this reproduces a bare
+// `hledger balance` from the terminal, the case that has to keep working.
+//
 // Example:
 //   node --experimental-wasi-unstable-preview1 scripts/hledger-wasm.mjs \
 //       fixtures/demo/hledger.journal balance --pivot payee
@@ -45,6 +50,8 @@ if (args.length === 0) {
 
 const engine = resolve(process.env.HLEDGER_WASM ?? 'assets/wasm/hledger.wasm');
 const journal = resolve(args[0]);
+/** When set, run as the app does: no -f, LEDGER_FILE instead. */
+const noFileArg = process.env.HLEDGER_NO_FILE_ARG === '1';
 
 let module;
 try {
@@ -68,13 +75,22 @@ const wasi = new WASI({
     TERM: 'dumb',
     PATH: '/',
     PWD: '/',
+    // Only set in the no-file-arg mode, where it replaces -f.
+    ...(noFileArg ? { LEDGER_FILE: `/data/${basename(journal)}` } : {}),
   },
-  args: ['hledger', '-f', `/${basename(journal)}`, ...args.slice(1)],
+  args: noFileArg
+    ? ['hledger', ...args.slice(1)]
+    : ['hledger', '-f', `/${basename(journal)}`, ...args.slice(1)],
   // The journal's own directory is the WASI root, which the GHC runtime needs:
   // it chdir's to the working directory during start-up and aborts with
   // `chdir(/) failed` if `/` is not a preopen. The app preopens `/` the same way
   // (with files under `data/`); this just has one less level.
-  preopens: { '/': dirname(journal) },
+  // `/` is what the GHC runtime needs (see below). `/data` is where the app
+  // mounts uploaded files, so the no-file-arg mode mounts the journal's
+  // directory there as well and points LEDGER_FILE into it.
+  preopens: noFileArg
+    ? { '/': dirname(journal), '/data': dirname(journal) }
+    : { '/': dirname(journal) },
   // Report the exit code instead of throwing, so a failing report prints its
   // own error and this script's status is the engine's status.
   returnOnExit: true,

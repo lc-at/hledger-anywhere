@@ -45,6 +45,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -72,6 +73,28 @@ jobs:
         # Run explicitly rather than relying on Trunk's pre-build hook, so a
         # missing or mismatched artifact fails as its own clearly-labelled step.
         run: sh scripts/fetch-hledger-wasm.sh
+
+      - name: Test
+        # The pure modules: the line editor, the journal chooser, the engine's
+        # request/response types.
+        run: cargo test
+
+      - name: Lint
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
+
+      - name: Engine smoke test
+        # The shipped engine, driven the way the app drives it: no -f, with the
+        # journal exported as $LEDGER_FILE. Nothing here needs a browser, so a
+        # broken engine or a broken bare-command path fails before the build.
+        run: |
+          set -eu
+          journal="$RUNNER_TEMP/journal"
+          mkdir -p "$journal"
+          printf '2024-01-01 * Opening\n    assets:bank:checking   $100.00\n    equity:opening\n' > "$journal/hledger.journal"
+          node --experimental-wasi-unstable-preview1 scripts/hledger-wasm.mjs "$journal/hledger.journal" --version
+          HLEDGER_NO_FILE_ARG=1 node --experimental-wasi-unstable-preview1 scripts/hledger-wasm.mjs "$journal/hledger.journal" balance
 
       - name: Build
         run: trunk build --release

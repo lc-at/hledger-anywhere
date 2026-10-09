@@ -15,7 +15,7 @@
  * raw bytes.
  *
  * Protocol (see also hledger-wasi.js on the main thread):
- *   in : { id, type: 'configure', wasmPath?, env? }
+ *   in : { id, type: 'configure', wasmPath?, ledgerFile? }
  *        { id, type: 'init' }
  *        { id, type: 'run', argv: string[], files: [path, contents][] }
  *   out: { id, type: 'configured' | 'ready' | 'result' | 'error', ... }
@@ -55,10 +55,32 @@ const DEFAULT_ENV = [
   'PWD=/',
 ];
 
+/**
+ * The environment for one run.
+ *
+ * `LEDGER_FILE` is the whole point of this function: with it set, hledger reads
+ * that file when no `-f` is given, so a user of the terminal types exactly what
+ * they would type in a shell. The name is built here rather than by the caller so
+ * the default environment has exactly one home.
+ */
+function environmentFor(ledgerFile) {
+  if (typeof ledgerFile !== 'string' || ledgerFile === '') {
+    return DEFAULT_ENV.slice();
+  }
+  return [...DEFAULT_ENV, `LEDGER_FILE=${ledgerFile}`];
+}
+
 const encoder = new TextEncoder();
 
 let wasmPath = DEFAULT_WASM_PATH;
 let environment = DEFAULT_ENV.slice();
+
+/** The LEDGER_FILE in an environment list, or undefined. */
+function ledgerFileIn(env) {
+  const prefix = 'LEDGER_FILE=';
+  const found = env.find((entry) => entry.startsWith(prefix));
+  return found === undefined ? undefined : found.slice(prefix.length);
+}
 
 /** Compiled once and shared by every run: WebAssembly.compile is the expensive part. */
 let compiled = null;
@@ -230,10 +252,8 @@ self.onmessage = async (event) => {
           wasmPath = request.wasmPath;
           compiled = null;
         }
-        if (Array.isArray(request.env)) {
-          environment = request.env.map(String);
-        }
-        post({ id, type: 'configured', wasmPath });
+        environment = environmentFor(request.ledgerFile);
+        post({ id, type: 'configured', wasmPath, ledgerFile: ledgerFileIn(environment) });
         break;
       }
       case 'init': {

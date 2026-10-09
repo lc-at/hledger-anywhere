@@ -167,13 +167,32 @@ fn string_array(value: &JsValue) -> Vec<String> {
     array.iter().filter_map(|item| item.as_string()).collect()
 }
 
-/// Compile the module ahead of the first report.
+/// Compile the module ahead of the first command.
 ///
 /// Optional — `run` compiles on demand — but doing it up front means the first
-/// report is not the thing that has to wait ~18 MB of download.
+/// command is not the thing that has to wait for the whole download.
 pub async fn init() -> Result<(), EngineError> {
     let bridge = bridge().await?;
     call(&bridge, "init", &[]).await.map(|_| ())
+}
+
+/// Tell the worker which journal to read by default.
+///
+/// This is what lets the user type `hledger balance` with no `-f`: hledger reads
+/// `$LEDGER_FILE` when no file is given, and the worker builds the environment.
+/// Passing `None` clears it.
+pub async fn configure(ledger_file: Option<&str>) -> Result<(), EngineError> {
+    let bridge = bridge().await?;
+
+    let options = js_sys::Object::new();
+    let value = match ledger_file {
+        Some(path) => JsValue::from_str(path),
+        None => JsValue::UNDEFINED,
+    };
+    Reflect::set(&options, &JsValue::from_str("ledgerFile"), &value)
+        .map_err(|error| classify(error, "configure"))?;
+
+    call(&bridge, "configure", &[options.into()]).await.map(|_| ())
 }
 
 /// Run one invocation on the worker.

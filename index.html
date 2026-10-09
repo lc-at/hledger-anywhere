@@ -8,24 +8,27 @@
     <link data-trunk rel="copy-dir" href="assets/css" />
     <link data-trunk rel="copy-dir" href="assets/js" />
     <link data-trunk rel="copy-dir" href="assets/wasm" />
-    <link data-trunk rel="rust" data-wasm-opt="z" />
 
     <link rel="stylesheet" href="/css/app.css" />
 
     <!--
-      uPlot: the vendored stylesheet plus the module that publishes the ESM
-      build as window.uPlot for src/charts/uplot.rs. Both are copied from
-      assets/js by Trunk. Module scripts are deferred, and the wasm bootstrap
-      suspends on its own top-level await, so this runs before Rust mounts.
+      xterm.js, vendored (MIT): the terminal emulator. Plain scripts, not modules,
+      so they have run before Trunk's deferred wasm bootstrap asks for them —
+      `window.Terminal` and `window.FitAddon.FitAddon` must exist by then.
     -->
-    <link rel="stylesheet" href="/js/vendor/uplot/uPlot.min.css" />
-    <script type="module" src="/js/vendor/uplot/uplot-global.js"></script>
+    <link rel="stylesheet" href="/js/vendor/xterm/xterm.css" />
+    <script src="/js/vendor/xterm/xterm.js"></script>
+    <script src="/js/vendor/xterm/addon-fit.js"></script>
+
+    <link data-trunk rel="rust" data-wasm-opt="z" />
   </head>
   <body>
+    <div id="terminal"></div>
+
     <!--
       The WASI bridge runs hledger on a worker thread and publishes
-      window.hledgerWasi for the Rust side to call. It is a module script, so
-      it is deferred automatically and cannot race the mounts below.
+      window.hledgerWasi for the Rust side to call. It is a module script, so it
+      is deferred automatically and cannot race the terminal's first command.
     -->
     <script type="module" src="/js/hledger-wasi.js"></script>
   </body>

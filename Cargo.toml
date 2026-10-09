@@ -3,15 +3,14 @@ name = "hledger-anywhere"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "A client-side, easily extensible hledger analytics platform"
+description = "A terminal for hledger, running entirely in the browser"
 license = "AGPL-3.0-or-later"
 publish = false
 
 # Browser-only dependencies. Gating them on wasm32 keeps `cargo test` able to
-# compile and run the pure (wasm-free) modules natively: see the module layout
-# in src/main.rs, where every wasm-dependent module is behind the same cfg.
+# compile and run the pure modules natively: the line editor, the journal chooser
+# and the engine's types have no browser in them.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-leptos = { version = "0.8.22", features = ["csr"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -26,34 +25,20 @@ features = [
     "Element",
     "HtmlElement",
     "HtmlInputElement",
-    "HtmlSelectElement",
     "FileList",
     "File",
     "Blob",
     "Event",
     "EventTarget",
-    "MouseEvent",
-    "PointerEvent",
-    "CssStyleDeclaration",
-    "DomRect",
-    "DomTokenList",
-    "NodeList",
-    "Performance",
     "Storage",
-    # The uPlot line chart (src/charts/uplot.rs) keeps itself sized and themed
-    # with observers, and reads its colours from CSS custom properties.
-    "ResizeObserver",
-    "MutationObserver",
-    "MutationObserverInit",
-    "Node",
+    "console",
 ]
 
-# Pure logic, no wasm: journal parsing, money, analytics, report argv,
-# layout model. Natively testable with `cargo test`.
+# Pure logic, no wasm: the line editor, the command vocabulary, choosing which
+# uploaded file is the journal, and the engine's request/response types.
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rust_decimal = { version = "1", features = ["serde"] }
 thiserror = "2"
 
 [profile.release]

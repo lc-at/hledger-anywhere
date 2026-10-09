@@ -6,7 +6,8 @@ following third-party components, which remain under their own licences.
 ## hledger — GPL-3.0-or-later
 
 **This is the important one.** The application runs hledger, which is licensed
-under the GNU General Public License v3.0 or later.
+under the GNU General Public License v3.0 or later. hledger is not just linked
+against here, it is the whole point: the app is a terminal in front of it.
 
 - Upstream: <https://github.com/hledgerorg/hledger>
 - Pinned version: **1.52.4** (see `wasm.lock` and `scripts/build-hledger-wasm.sh`)
@@ -42,13 +43,18 @@ directory of version 0.4.2) so the app needs no npm step and no bundler.
 
 - Upstream: <https://github.com/bjorn3/browser_wasi_shim>
 
-## Interim artifact: hledger-wasm — GPL-3.0-or-later
+## xterm.js — MIT
 
-`wasm.lock` may point at the `hledger-wasm@0.1.0` npm package
-(<https://github.com/reesericci/hledger-wasm>), used only as a fallback while the
-full CLI build is unavailable. It is a fork of hledger and is likewise
-GPL-3.0-or-later. Only its `dist/hledger-wasm.wasm` binary is fetched; its
-JavaScript bridge is deliberately not used.
+Vendored in `assets/js/vendor/xterm/`, so the app has no JavaScript build step:
+
+| File | Upstream |
+|---|---|
+| `xterm.js`, `xterm.css`, `LICENSE` | `@xterm/xterm@5.5.0` — <https://github.com/xtermjs/xterm.js> |
+| `addon-fit.js` | `@xterm/addon-fit@0.10.0` — <https://github.com/xtermjs/xterm.js> |
+
+They are loaded by plain `<script>`/`<link>` tags in `index.html` and reached
+through the globals they publish (`window.Terminal`, `window.FitAddon.FitAddon`),
+which is why no npm dependency and no bundler are involved.
 
 ## Rust crates
 
@@ -58,9 +64,8 @@ their licences are:
 
 | Crate | Licence |
 |---|---|
-| `leptos` | MIT |
 | `wasm-bindgen`, `js-sys`, `web-sys`, `wasm-bindgen-futures` | MIT OR Apache-2.0 |
 | `serde`, `serde_json` | MIT OR Apache-2.0 |
-| `rust_decimal` | MIT |
+| `idb` | MIT OR Apache-2.0 |
 | `thiserror` | MIT OR Apache-2.0 |
 | `console_error_panic_hook` | MIT OR Apache-2.0 |

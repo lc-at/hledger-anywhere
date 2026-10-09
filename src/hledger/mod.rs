@@ -1,39 +1,32 @@
 //! The hledger engine boundary.
 //!
-//! `report` is pure: it turns a declarative [`report::ReportSpec`] into the argv
-//! a given hledger WASM flavor expects. `bridge` is wasm-only glue that calls
-//! into `window.hledgerWasi`, which drives the WASI worker.
+//! One engine: the real hledger CLI built for wasm32-wasi, pinned by `wasm.lock`
+//! and driven through `window.hledgerWasi`. The interim npm "bridge" artifact and
+//! the argv dialect it needed are gone, which is why nothing here converts a
+//! declarative report into a command line — the user types the command line.
 //!
-//! [`Engine`] is an enum with an inherent `async fn` rather than a trait object,
-//! because wasm futures are `!Send` and a boxed `dyn Future` would need
-//! `LocalBoxFuture` plumbing for no benefit in a browser-only application. The
-//! request and response types are plain data, so a different backend (say, a
-//! server running real hledger) remains a drop-in addition.
+//! The types are plain data and the module compiles natively, so the parts worth
+//! testing (what counts as a failure, what a failure says) are covered by
+//! `cargo test`. Only [`bridge`] touches the browser.
 
-#![allow(dead_code)]
-
-pub mod report;
+// Natively this module exists for its tests: the only code that uses it is
+// wasm-gated, so its items look unused to `cargo test`'s build.
+#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
 
 use thiserror::Error;
 
-use report::{Flavor, ReportSpec};
-
-/// The journal used to check that the interim bridge is alive.
+/// Where uploaded files are mounted inside the engine's filesystem.
 ///
-/// The bridge has no `--version` command and requires a file argument for every
-/// invocation, so liveness is proved by actually running a trivial report.
-pub const PROBE_JOURNAL: &str = "__probe.journal";
+/// Everything the user uploads lands under this directory, at its uploaded
+/// relative path, so `include` directives between uploaded files resolve. The
+/// preopen is `/`; WASI resolves paths relative to a preopen and rejects absolute
+/// paths, which is why the mount point is a directory rather than the root.
+pub const DATA_DIR: &str = "/data";
 
-/// Body of [`PROBE_JOURNAL`]: the smallest valid double-entry journal.
-const PROBE_JOURNAL_BODY: &str = "2024-01-01 probe\n    assets:probe    1\n    equity:probe   -1\n";
-
-/// One file to make available to the engine.
-///
-/// `path` is relative to the loaded directory's root; the engine mounts the
-/// whole set under `/data`, which is what lets `include` directives resolve.
+/// One file to make available to the engine, at a path relative to the upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournalFile {
     pub path: String,
@@ -47,6 +40,14 @@ impl JournalFile {
             contents: contents.into(),
         }
     }
+}
+
+/// Where the engine will find `path` once the files are mounted.
+///
+/// This is what `LEDGER_FILE` is set to, which is what lets the user type
+/// `hledger balance` with no `-f`.
+pub fn mounted_path(path: &str) -> String {
+    format!("{DATA_DIR}/{}", path.trim_start_matches('/'))
 }
 
 /// What the engine produced for one invocation.
@@ -63,28 +64,15 @@ pub struct HledgerOutput {
 impl HledgerOutput {
     /// Whether this run should be treated as a failure.
     ///
-    /// A non-zero exit is the obvious case. The subtle one is the interim
-    /// bridge, which prints `Unknown command: X` to stderr and then exits **0**:
-    /// without this check that would look like a successful report with no rows,
-    /// and the UI would claim the journal was empty.
+    /// A non-zero exit is the obvious case. The subtle one is hledger exiting 0
+    /// with something on stderr and nothing on stdout — a warning that is really
+    /// the whole story, which the terminal should colour as an error.
     pub fn is_failure(&self) -> bool {
         self.exit_code != 0 || (!self.stderr.trim().is_empty() && self.stdout.trim().is_empty())
     }
-
-    /// A single message describing the failure, preferring hledger's own stderr.
-    pub fn failure_message(&self) -> String {
-        let stderr = self.stderr.trim();
-        if !stderr.is_empty() {
-            return stderr.to_string();
-        }
-        if self.exit_code != 0 {
-            return format!("hledger exited with status {}", self.exit_code);
-        }
-        "hledger produced no output".to_string()
-    }
 }
 
-/// Anything that stops a report from being produced.
+/// Anything that stops a command from being produced.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum EngineError {
     /// The browser cannot run the engine at all (no module workers).
@@ -107,96 +95,56 @@ pub struct HledgerRequest {
 }
 
 impl HledgerRequest {
-    /// A report against one journal.
-    pub fn report(
-        spec: &ReportSpec,
-        flavor: Flavor,
-        journal: &str,
-        files: Vec<JournalFile>,
-    ) -> Self {
-        HledgerRequest {
-            argv: spec.argv(flavor, journal),
-            files,
-        }
-    }
-
-    /// A liveness check that works for both flavors.
-    pub fn probe(flavor: Flavor) -> Self {
-        match flavor {
-            Flavor::HledgerCli => HledgerRequest {
-                argv: ReportSpec::probe(flavor),
-                files: Vec::new(),
-            },
-            Flavor::WasmBridge => HledgerRequest {
-                argv: ReportSpec::text("accounts").argv(flavor, PROBE_JOURNAL),
-                files: vec![JournalFile::new(PROBE_JOURNAL, PROBE_JOURNAL_BODY)],
-            },
-        }
+    pub fn new(argv: Vec<String>, files: Vec<JournalFile>) -> Self {
+        HledgerRequest { argv, files }
     }
 }
 
-/// Which engine is in use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Engine {
-    /// The browser engine, with the argv dialect selected by `wasm.lock`.
-    Wasm { flavor: Flavor },
-    /// A canned engine for tests and for developing the UI without a wasm build.
-    Mock,
+/// Compile the module ahead of the first command.
+///
+/// Optional — a run compiles on demand — but doing it up front means the first
+/// command is not the thing that waits for the whole 13 MB download.
+#[cfg(target_arch = "wasm32")]
+pub async fn init() -> Result<(), EngineError> {
+    bridge::init().await
 }
 
-impl Engine {
-    /// The engine selected at build time by `wasm.lock`.
-    pub fn configured() -> Self {
-        Engine::Wasm {
-            flavor: Flavor::configured(),
-        }
-    }
-
-    /// The argv dialect this engine speaks.
-    pub fn flavor(&self) -> Flavor {
-        match self {
-            Engine::Wasm { flavor } => *flavor,
-            Engine::Mock => Flavor::HledgerCli,
-        }
-    }
-
-    /// Run one invocation.
-    ///
-    /// A failed report is `Ok` with a non-zero exit code: the caller needs the
-    /// stderr to display. `Err` is reserved for transport failures, which is the
-    /// distinction [`HledgerOutput::is_failure`] does not cover.
-    pub async fn run(&self, request: HledgerRequest) -> Result<HledgerOutput, EngineError> {
-        match self {
-            #[cfg(target_arch = "wasm32")]
-            Engine::Wasm { .. } => bridge::run(&request).await,
-            #[cfg(not(target_arch = "wasm32"))]
-            Engine::Wasm { .. } => Err(EngineError::Unsupported(
-                "the wasm engine is only available in a browser build".to_string(),
-            )),
-            Engine::Mock => Ok(mock_output(&request)),
-        }
-    }
-
-    /// Check that the engine is present and can run.
-    pub async fn probe(&self) -> Result<HledgerOutput, EngineError> {
-        self.run(HledgerRequest::probe(self.flavor())).await
-    }
+/// Set the environment the engine runs in, notably `LEDGER_FILE`.
+///
+/// `None` clears it, which makes hledger fall back to `$HOME/.hledger.journal`
+/// and fail honestly when there is nothing there.
+#[cfg(target_arch = "wasm32")]
+pub async fn configure(ledger_file: Option<&str>) -> Result<(), EngineError> {
+    bridge::configure(ledger_file).await
 }
 
-/// A deterministic stand-in for the real engine, used by tests and by
-/// `Engine::Mock`.
-fn mock_output(request: &HledgerRequest) -> HledgerOutput {
-    HledgerOutput {
-        argv: request.argv.clone(),
-        stdout: match request.argv.get(3).map(String::as_str) {
-            Some("balance") => r#"[[["assets:probe","assets:probe",0,[{"acommodity":"$","aquantity":{"decimalMantissa":100,"decimalPlaces":2}}]]],[{"acommodity":"$","aquantity":{"decimalMantissa":100,"decimalPlaces":2}}]]"#.to_string(),
-            Some("print") => "[]".to_string(),
-            _ => String::new(),
-        },
-        stderr: String::new(),
-        exit_code: 0,
-        ms: 0.0,
-    }
+/// Run one invocation.
+///
+/// A failed command is `Ok` with a non-zero exit code: the terminal needs the
+/// stderr to display. `Err` is reserved for transport failures.
+#[cfg(target_arch = "wasm32")]
+pub async fn run(request: HledgerRequest) -> Result<HledgerOutput, EngineError> {
+    bridge::run(&request).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn init() -> Result<(), EngineError> {
+    Err(native_error())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn configure(_ledger_file: Option<&str>) -> Result<(), EngineError> {
+    Err(native_error())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn run(_request: HledgerRequest) -> Result<HledgerOutput, EngineError> {
+    Err(native_error())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_error() -> EngineError {
+    EngineError::Unsupported("the wasm engine is only available in a browser build".to_string())
 }
 
 #[cfg(test)]
@@ -216,7 +164,7 @@ mod tests {
     #[test]
     fn a_clean_run_is_not_a_failure() {
         assert!(!output(0, "some output", "").is_failure());
-        // Warnings on stderr with real output are still a success.
+        // A warning beside real output is still a success.
         assert!(!output(0, "rows", "warning: something").is_failure());
     }
 
@@ -227,80 +175,43 @@ mod tests {
 
     #[test]
     fn exit_zero_with_only_stderr_is_a_failure() {
-        // The interim bridge's signature failure: "Unknown command: X" on stderr
-        // and exit code 0. Treating that as success would render an empty table.
-        let failure = output(0, "", "Unknown command: incomestatement");
-        assert!(failure.is_failure());
-        assert_eq!(failure.failure_message(), "Unknown command: incomestatement");
+        // hledger can warn and exit 0 with nothing on stdout. The terminal should
+        // colour that as a problem, not print it as the report.
+        assert!(output(0, "", "no journal file was specified").is_failure());
     }
 
     #[test]
-    fn failure_messages_prefer_stderr_and_never_are_empty() {
-        assert_eq!(output(1, "", "hledger: parse error").failure_message(), "hledger: parse error");
-        assert_eq!(output(3, "", "").failure_message(), "hledger exited with status 3");
-        assert_eq!(output(0, "", "").failure_message(), "hledger produced no output");
+    fn uploaded_files_are_mounted_under_the_data_directory() {
+        assert_eq!(mounted_path("books/2024.journal"), "/data/books/2024.journal");
+        assert_eq!(mounted_path("/leading.journal"), "/data/leading.journal");
     }
 
     #[test]
-    fn report_requests_use_the_flavor_dialect_and_mount_files() {
+    fn a_request_carries_its_argv_and_files_unchanged() {
+        // Nothing rewrites the user's command any more: what they typed is what
+        // runs, which is the whole point of setting LEDGER_FILE instead of
+        // injecting -f.
         let files = vec![JournalFile::new("hledger.journal", "")];
-        let request = HledgerRequest::report(
-            &ReportSpec::json("balance"),
-            Flavor::HledgerCli,
-            "hledger.journal",
+        let request = HledgerRequest::new(
+            vec!["hledger".to_string(), "balance".to_string(), "--tree".to_string()],
             files.clone(),
         );
-        assert_eq!(
-            request.argv,
-            vec!["hledger", "-f", "/data/hledger.journal", "balance", "-O", "json"]
-        );
+        assert_eq!(request.argv, ["hledger", "balance", "--tree"]);
         assert_eq!(request.files, files);
     }
 
-    #[test]
-    fn the_bridge_probe_actually_runs_a_report() {
-        // With no --version command available, the only honest liveness check is
-        // to run a report against a tiny journal.
-        let request = HledgerRequest::probe(Flavor::WasmBridge);
-        assert_eq!(request.argv[0], "hledger-wasm");
-        assert_eq!(request.argv[1], "accounts");
-        assert_eq!(request.files.len(), 1);
-        assert_eq!(request.files[0].path, PROBE_JOURNAL);
-
-        let cli = HledgerRequest::probe(Flavor::HledgerCli);
-        assert_eq!(cli.argv, vec!["hledger", "--version"]);
-        assert!(cli.files.is_empty());
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn the_wasm_engine_reports_clearly_when_compiled_natively() {
-        let engine = Engine::Wasm {
-            flavor: Flavor::HledgerCli,
-        };
-        let error = futures_lite_block_on(engine.probe()).expect_err("must not run natively");
+    fn the_native_build_reports_clearly_instead_of_pretending() {
+        let error = block_on(run(HledgerRequest::new(vec!["hledger".to_string()], Vec::new())))
+            .expect_err("must not run natively");
         assert!(matches!(error, EngineError::Unsupported(_)));
     }
 
+    /// Minimal executor so the async API can be tested natively without pulling
+    /// in a runtime dependency.
     #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn the_mock_engine_answers_without_any_browser() {
-        let engine = Engine::Mock;
-        let request = HledgerRequest::report(
-            &ReportSpec::json("balance"),
-            Flavor::HledgerCli,
-            "hledger.journal",
-            Vec::new(),
-        );
-        let output = futures_lite_block_on(engine.run(request)).expect("mock must succeed");
-        assert!(output.stdout.contains("assets:probe"));
-        assert!(!output.is_failure());
-    }
-
-    /// Minimal executor so the async engine API can be tested natively without
-    /// pulling in a runtime dependency.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
         use std::task::{Context, Poll, Waker};
 
         let mut future = Box::pin(future);

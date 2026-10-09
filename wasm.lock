@@ -4,26 +4,13 @@
 # app runs against. It is read by:
 #   * scripts/fetch-hledger-wasm.sh  — resolves/verifies assets/wasm/hledger.wasm
 #   * build.rs                       — bakes the values in as compile-time env
-#                                      vars, so the UI can report exactly what
-#                                      it is running and whether it matches
+#                                      vars, so the terminal can report exactly
+#                                      what it is running and whether it matches
 #
-# `flavor` selects how argv is assembled, because the two available artifacts
-# take different command lines:
-#
-#   hledger-cli           the real hledger CLI. argv is
-#                         `hledger -f <journal> <command> [args...]`, supports
-#                         the full report/query surface and `-O json`.
-#                         Built by scripts/build-hledger-wasm.sh.
-#
-#   hledger-wasm-bridge   the interim/fallback artifact from the
-#                         `hledger-wasm@0.1.0` npm package, whose argv is
-#                         `<command> <journal> [args...]`. It exposes only
-#                         accounts/print/balance/aregister/commodities, always
-#                         emits JSON, and accepts no report options.
-#
-# Target state reached: this is the real hledger CLI, built for wasm32-wasi by
-# scripts/build-hledger-wasm.sh. The interim bridge artifact remains a supported
-# flavor if a build ever has to fall back to it.
+# `flavor` names the artifact. Only `hledger-cli` is supported: the real hledger
+# CLI, whose argv is `hledger [args...]`, with the journal supplied through
+# $LEDGER_FILE rather than -f. An earlier build also carried an interim npm
+# artifact with a different dialect; the terminal needs neither, and it is gone.
 #
 # The artifact is not committed (see .gitignore: assets/wasm/*.wasm). Locally it
 # is taken from artifacts/hledger.wasm after a build; CI has no build output, so
