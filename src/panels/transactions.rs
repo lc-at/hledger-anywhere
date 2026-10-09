@@ -81,6 +81,13 @@ const PERIODS: [(&str, Option<&str>); 4] = [
     ("all", None),
 ];
 
+/// The index of the entry in [`PERIODS`] with no date bound.
+///
+/// Used when a bounded period turns out to be empty: the way out of "no
+/// transactions this year" is "all", and offering it is the difference between
+/// an explanation and a dead end.
+const ALL_PERIODS: usize = 3;
+
 pub fn view(id: PanelId) -> AnyView {
     let state = expect_context::<AppState>();
     let limit = RwSignal::new(PAGE_SIZE);
@@ -174,7 +181,7 @@ pub fn view(id: PanelId) -> AnyView {
             {report_view(state, id, move |output| {
                 match journal::model::parse_transactions(&output.stdout) {
                     Ok(transactions) if transactions.is_empty() => {
-                        message_panel("This journal has no transactions.")
+                        empty_view(period, limit, query)
                     }
                     Ok(transactions) => {
                         let total = transactions.len();
@@ -352,6 +359,72 @@ pub fn view(id: PanelId) -> AnyView {
                     )),
                 }
             })}
+        </div>
+    }
+    .into_any()
+}
+
+/// What to say when the report came back empty.
+///
+/// "No transactions" and "no transactions *in this period*" are different
+/// statements, and only one of them is usually true. A journal whose data ends in
+/// a past year — a demo, or an archive someone still reads — returns nothing for
+/// "this year" while holding thousands of transactions. So the empty state names
+/// the bound that emptied it and offers the way out, because a report that
+/// correctly returns nothing is otherwise indistinguishable from a broken one.
+fn empty_view(
+    period: RwSignal<usize>,
+    limit: RwSignal<usize>,
+    query: RwSignal<String>,
+) -> AnyView {
+    let index = period.get().min(PERIODS.len() - 1);
+    let (label, bound) = PERIODS[index];
+    let text = query.get();
+    let text = text.trim().to_string();
+
+    // Both bounds can be set, and either can be the reason.
+    let scope = match (bound.is_some(), text.is_empty()) {
+        (true, true) => format!(" in “{label}”"),
+        (false, false) => format!(" matching “{text}”"),
+        (true, false) => format!(" in “{label}” matching “{text}”"),
+        (false, true) => String::new(),
+    };
+
+    if scope.is_empty() {
+        return message_panel("This journal has no transactions.");
+    }
+
+    let clear_period = bound.is_some();
+    let clear_query = !text.is_empty();
+
+    view! {
+        <p class="panel-remedy">{format!("No transactions{scope}.")}</p>
+        <p class="panel-count">
+            "The journal may simply have no data in that period."
+        </p>
+        <div class="panel-controls">
+            <Show when=move || clear_period>
+                <button
+                    class="gl-btn"
+                    on:click=move |_| {
+                        limit.set(PAGE_SIZE);
+                        period.set(ALL_PERIODS);
+                    }
+                >
+                    "Show all transactions"
+                </button>
+            </Show>
+            <Show when=move || clear_query>
+                <button
+                    class="gl-btn"
+                    on:click=move |_| {
+                        limit.set(PAGE_SIZE);
+                        query.set(String::new());
+                    }
+                >
+                    "Clear the query"
+                </button>
+            </Show>
         </div>
     }
     .into_any()

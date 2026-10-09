@@ -301,13 +301,32 @@ Two design decisions are worth knowing before changing them:
 
 ```sh
 . scripts/env.sh
-cargo test                 # 70 pure-module tests
+cargo test                 # pure-module tests
 cargo clippy --all-targets
 ```
 
 The JSON fixtures in `fixtures/` were captured from a real hledger and are what
 keeps the decoders honest; `fixtures/demo/` doubles as the built-in demo journal,
 so the two cannot drift apart.
+
+### Running the engine without a browser
+
+`scripts/hledger-wasm.mjs` runs the *shipped* engine under Node's WASI, so a
+report's exact bytes, exit code and flag behaviour can be checked in a second
+instead of booting a browser and reading them off a panel:
+
+```sh
+node --experimental-wasi-unstable-preview1 scripts/hledger-wasm.mjs \
+    fixtures/demo/hledger.journal balance --pivot payee
+```
+
+It is deliberately the shipped module rather than a system hledger: the app pins
+a version, and a locally installed one can behave differently — which is exactly
+how a feature can look broken locally and work deployed, or the reverse. Two
+findings that came out of it: `balance --pivot payee` returns an empty report in
+1.52.4 while `register --pivot payee` works, and `print date:thisyear` is empty
+for any journal whose data ends in a past year, which is what the Transactions
+panel's empty state now explains.
 
 ### Verifying the directory picker
 
