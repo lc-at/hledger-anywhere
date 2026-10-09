@@ -17,6 +17,27 @@ use crate::state::{AppState, EngineStatus, SourceStatus};
 ///
 /// The listener is leaked on purpose, exactly as the drag guards are: one per
 /// menu, for the life of the page, with no teardown to get wrong.
+/// Close a header menu on Escape, and put focus back on the button that opened it.
+///
+/// The menus open on a click and close when a click lands anywhere else; a
+/// keyboard user has no "anywhere else", and Escape is what they will try. The
+/// item that had focus is about to be removed from the document, so focus is
+/// returned to the trigger rather than left to fall on the body.
+fn close_on_escape(
+    open: RwSignal<bool>,
+    trigger: NodeRef<leptos::html::Button>,
+) -> impl Fn(web_sys::KeyboardEvent) + Copy + 'static {
+    move |event: web_sys::KeyboardEvent| {
+        if event.key() == "Escape" {
+            event.prevent_default();
+            open.set(false);
+            if let Some(button) = trigger.get() {
+                let _ = button.focus();
+            }
+        }
+    }
+}
+
 fn close_on_outside_click(open: RwSignal<bool>) {
     let Some(document) = web_sys::window().and_then(|window| window.document()) else {
         return;
@@ -50,6 +71,8 @@ pub fn App() -> impl IntoView {
 #[component]
 fn Header() -> impl IntoView {
     let state = expect_context::<AppState>();
+    // Escape closes the panel menu and puts focus back here.
+    let add_trigger = NodeRef::<leptos::html::Button>::new();
 
     // Once, for the life of the page: see `close_on_outside_click`.
     Effect::new(move |_| close_on_outside_click(state.add_menu_open));
@@ -92,9 +115,14 @@ fn Header() -> impl IntoView {
 
             <span class="app-spacer"></span>
 
-            <div class="app-menu" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
+            <div
+                class="app-menu"
+                on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                on:keydown=close_on_escape(state.add_menu_open, add_trigger)
+            >
                 <button
                     class="gl-btn"
+                    node_ref=add_trigger
                     on:click=move |_| state.add_menu_open.update(|open| *open = !*open)
                 >
                     "＋ Panel"
@@ -141,6 +169,8 @@ fn Header() -> impl IntoView {
 fn SettingsMenu() -> impl IntoView {
     let state = expect_context::<AppState>();
     let open = RwSignal::new(false);
+    // Escape closes the menu and puts focus back here.
+    let settings_trigger = NodeRef::<leptos::html::Button>::new();
 
     // Once, for the life of the page: see `close_on_outside_click`.
     Effect::new(move |_| close_on_outside_click(open));
@@ -183,9 +213,14 @@ fn SettingsMenu() -> impl IntoView {
     };
 
     view! {
-        <div class="app-menu" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
+        <div
+            class="app-menu"
+            on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+            on:keydown=close_on_escape(open, settings_trigger)
+        >
             <button
                 class="gl-btn"
+                node_ref=settings_trigger
                 on:click=move |_| {
                     let opening = !open.get_untracked();
                     open.set(opening);
