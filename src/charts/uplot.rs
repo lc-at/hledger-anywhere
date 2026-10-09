@@ -18,13 +18,17 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlElement, MutationObserver, MutationObserverInit, ResizeObserver};
 
-use super::data::{self, Columns};
+use super::data::{self, Columns, Line};
 use super::scale;
 
 /// Height of the plot, including its axes, in CSS pixels. Fixed on purpose: a
 /// height that followed the container would feed uPlot's own root height back
 /// into the observer and grow without bound. Only the width follows the panel.
 const CHART_HEIGHT: f64 = 260.0;
+
+/// How solid the area under a line is. Low enough that overlapping areas stay
+/// readable, which matters as soon as a chart has more than one line.
+const FILL_ALPHA: f64 = 0.15;
 
 /// Never size the canvas below this: a panel that is hidden or not yet laid out
 /// reports a width of zero.
@@ -38,15 +42,15 @@ const X_LABEL_LIMIT: usize = 6;
 /// and money labels must not show the noise.
 const TICK_DECIMALS: u32 = 8;
 
-/// A line (with a filled area under it) over time.
+/// A line chart: one line per [`Line`], all sharing `labels` as their x axis.
 ///
-/// `data` is `(period label, amount)` in chronological order. An empty series
-/// renders the neutral "no data" message rather than an empty chart.
-pub fn line_chart(data: &[(String, Decimal)]) -> AnyView {
-    if data.is_empty() {
+/// Nothing to plot renders the neutral "no data" message rather than an empty
+/// grid.
+pub fn line_chart(labels: Vec<String>, lines: Vec<Line>) -> AnyView {
+    let columns = data::columns(labels, lines);
+    if columns.is_empty() {
         return super::view::no_data("No data to chart yet.");
     }
-    let columns = data::columns(data);
     view! { <UplotLine columns=columns /> }.into_any()
 }
 
@@ -121,30 +125,38 @@ impl PlotHandle {
         set(&options, "width", &JsValue::from_f64(width))?;
         set(&options, "height", &JsValue::from_f64(CHART_HEIGHT))?;
 
-        // The x series carries the point count; its label is only used if a
-        // legend is ever re-enabled.
+        // The x series carries the point count and the axis labels. It is kept
+        // out of the legend, where "Period" would otherwise sit beside the lines
+        // as though it were one of them.
         let x_series = object();
         set(&x_series, "label", &JsValue::from_str("Period"))?;
-
-        let y_series = object();
-        set(&y_series, "label", &JsValue::from_str("Balance"))?;
-        set(&y_series, "width", &JsValue::from_f64(2.0))?;
-        let points = object();
-        set(&points, "size", &JsValue::from_f64(6.0))?;
-        set(&y_series, "points", &points)?;
+        set(&x_series, "show", &JsValue::FALSE)?;
 
         let series = js_sys::Array::new();
         series.push(&x_series);
-        series.push(&y_series);
+        for line in &columns.series {
+            let y_series = object();
+            set(&y_series, "label", &JsValue::from_str(&line.label))?;
+            set(&y_series, "width", &JsValue::from_f64(2.0))?;
+            let points = object();
+            set(&points, "size", &JsValue::from_f64(6.0))?;
+            set(&y_series, "points", &points)?;
+            series.push(&y_series);
+        }
         set(&options, "series", &series)?;
 
         set(&options, "scales", &scales(columns, &mut keepalive)?)?;
         set(&options, "axes", &axes(columns, &mut keepalive)?)?;
 
-        // No legend: the panel already carries a table of the same figures, and
-        // a one-series legend is noise. The vertical cursor still works.
+        // A legend is how one line is told from another, so it appears exactly
+        // when there is more than one. For a single line it is noise: the panel
+        // already carries a table of the same figures.
         let legend = object();
-        set(&legend, "show", &JsValue::FALSE)?;
+        set(
+            &legend,
+            "show",
+            &JsValue::from_bool(columns.series.len() > 1),
+        )?;
         set(&options, "legend", &legend)?;
         let cursor = object();
         set(&cursor, "y", &JsValue::FALSE)?;
@@ -155,12 +167,14 @@ impl PlotHandle {
         for value in &columns.xs {
             xs.push(&JsValue::from_f64(*value));
         }
-        let ys = js_sys::Array::new();
-        for value in &columns.ys {
-            ys.push(&JsValue::from_f64(*value));
-        }
         data.push(&xs);
-        data.push(&ys);
+        for line in &columns.series {
+            let ys = js_sys::Array::new();
+            for value in &line.ys {
+                ys.push(&JsValue::from_f64(*value));
+            }
+            data.push(&ys);
+        }
 
         let arguments = js_sys::Array::new();
         arguments.push(&options);
@@ -330,14 +344,28 @@ fn apply_theme(instance: &JsValue) {
     if let Ok(series) = js_sys::Reflect::get(instance, &JsValue::from_str("series"))
         && let Ok(series) = series.dyn_into::<js_sys::Array>()
     {
-        let data_series = series.get(1);
-        if data_series.is_object() {
-            let _ = set(&data_series, "stroke", &constant_color(&theme.series));
-            let _ = set(&data_series, "fill", &constant_color(&theme.fill));
-            if let Ok(points) = js_sys::Reflect::get(&data_series, &JsValue::from_str("points"))
+        // Index 0 is the x series: it has no line to colour. Each data series
+        // takes the next palette colour, and the fill is that same colour with
+        // the alpha baked in, so the area under a line reads as "that line" and
+        // overlapping areas still show through.
+        for index in 1..series.length() {
+            let Some(color) = theme.color_for(index as usize - 1) else {
+                continue;
+            };
+            let line = series.get(index);
+            if !line.is_object() {
+                continue;
+            }
+            let _ = set(&line, "stroke", &constant_color(color));
+            let _ = set(
+                &line,
+                "fill",
+                &constant_color(&data::with_alpha(color, FILL_ALPHA)),
+            );
+            if let Ok(points) = js_sys::Reflect::get(&line, &JsValue::from_str("points"))
                 && points.is_object()
             {
-                let _ = set(&points, "stroke", &constant_color(&theme.series));
+                let _ = set(&points, "stroke", &constant_color(color));
             }
         }
     }
@@ -431,23 +459,42 @@ fn watch_theme(
 
 /// The colours the chart needs, read from the app's CSS custom properties.
 struct Theme {
-    series: String,
-    fill: String,
+    /// One colour per line, in the order lines should take them.
+    palette: Vec<String>,
     text_dim: String,
     border: String,
 }
 
+/// Fallback palette for a page whose stylesheet did not load, mirroring the
+/// `--gl-series-*` tokens in `assets/css/app.css`.
+const PALETTE_FALLBACK: [&str; 8] = [
+    "#ff7f00", "#2ecc71", "#ff5f56", "#31c4ff", "#4f8cff", "#ff5fd7", "#ffd700", "#b0b0b0",
+];
+
 impl Theme {
     /// Read every colour from `<html>`'s computed style.
     fn read(window: &web_sys::Window) -> Self {
-        let series = css_color(window, "--gl-series-1", "#fb4934");
-        let accent = css_color(window, "--gl-accent", "#458588");
         Self {
-            fill: data::with_alpha(&accent, 0.15),
-            series,
-            text_dim: css_color(window, "--gl-text-dim", "#a89984"),
-            border: css_color(window, "--gl-border", "#1d2021"),
+            palette: PALETTE_FALLBACK
+                .iter()
+                .enumerate()
+                .map(|(index, fallback)| {
+                    css_color(window, &format!("--gl-series-{}", index + 1), fallback)
+                })
+                .collect(),
+            text_dim: css_color(window, "--gl-text-dim", "#8a8a8a"),
+            border: css_color(window, "--gl-border", "#1e1e1e"),
         }
+    }
+
+    /// The colour for the nth line, cycling when there are more lines than
+    /// colours. A second pass through the palette is imperfect but readable,
+    /// and there is no better answer for an unbounded number of lines.
+    fn color_for(&self, index: usize) -> Option<&str> {
+        if self.palette.is_empty() {
+            return None;
+        }
+        self.palette.get(index % self.palette.len()).map(String::as_str)
     }
 }
 

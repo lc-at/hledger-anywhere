@@ -1110,6 +1110,53 @@ html.gl-dragging .gl-splitter {
   opacity: 0.8;
 }
 
+/* -- charts ---------------------------------------------------------------- */
+
+/* uPlot's legend lists the x series as well, marked `.u-off`, which would put a
+ * "Period" row beside the lines as though it were one of them. Hiding the first
+ * row is enough: it is always the x series, and the data series keep their rows,
+ * including the dimmed state that clicking one toggles. */
+.u-legend tr.u-series:first-child {
+  display: none;
+}
+
+/* The legend is a table of names and cursor values; give it the panel's own
+ * monospace and let it wrap rather than widen the panel. */
+.u-legend {
+  font: var(--gl-font-mono);
+  color: var(--gl-text-dim);
+}
+
+/* uPlot does not colour its legend swatches — the marker is an unstyled square —
+ * so the palette is applied here, in the same order the lines take it. The x
+ * series is the first row and is hidden above, so the data series start at the
+ * second; the marker boxes come from uPlot's own `width`/`height`. */
+.u-legend tr.u-series:nth-child(2) .u-marker {
+  background: var(--gl-series-1);
+}
+.u-legend tr.u-series:nth-child(3) .u-marker {
+  background: var(--gl-series-2);
+}
+.u-legend tr.u-series:nth-child(4) .u-marker {
+  background: var(--gl-series-3);
+}
+.u-legend tr.u-series:nth-child(5) .u-marker {
+  background: var(--gl-series-4);
+}
+.u-legend tr.u-series:nth-child(6) .u-marker {
+  background: var(--gl-series-5);
+}
+.u-legend tr.u-series:nth-child(7) .u-marker {
+  background: var(--gl-series-6);
+}
+.u-legend tr.u-series:nth-child(8) .u-marker {
+  background: var(--gl-series-7);
+}
+.u-legend tr.u-series:nth-child(9) .u-marker {
+  background: var(--gl-series-8);
+}
+
+
 /* -- compound report headline ---------------------------------------------- */
 
 /* The one figure a balance sheet or income statement exists to show. It is the

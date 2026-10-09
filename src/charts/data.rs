@@ -9,7 +9,36 @@
 
 use rust_decimal::Decimal;
 
+/// One line: a name for the legend and one value per point.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Line {
+    /// The legend entry. Ignored when it is the only line, since a legend of
+    /// one says nothing the panel title does not.
+    pub label: String,
+    /// The value at each point, in x order.
+    pub values: Vec<Decimal>,
+}
+
+impl Line {
+    pub fn new(label: impl Into<String>, values: Vec<Decimal>) -> Self {
+        Self {
+            label: label.into(),
+            values,
+        }
+    }
+}
+
 /// One series in the columnar shape uPlot consumes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Series {
+    /// The legend entry.
+    pub label: String,
+    /// y coordinates: the amount as a float.
+    pub ys: Vec<f64>,
+}
+
+/// Everything uPlot needs: the x labels, their numeric coordinates, and the
+/// lines to draw over them.
 ///
 /// uPlot's x values must be **numbers** (its scales are numeric, time or
 /// linear), so the point index is the x coordinate and the human label is kept
@@ -17,41 +46,51 @@ use rust_decimal::Decimal;
 /// an x value would push `NaN` through every scale calculation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Columns {
-    /// One display label per point, in series order.
+    /// One display label per point, in x order.
     pub labels: Vec<String>,
     /// x coordinates: the zero-based point index.
     pub xs: Vec<f64>,
-    /// y coordinates: the amount as a float.
-    pub ys: Vec<f64>,
+    /// The lines to draw, in the order they should be coloured.
+    pub series: Vec<Series>,
 }
 
 impl Columns {
-    /// The number of points.
+    /// The number of points along the x axis.
     pub fn len(&self) -> usize {
-        self.ys.len()
+        self.labels.len()
     }
 
     /// Whether there is nothing to plot.
     pub fn is_empty(&self) -> bool {
-        self.ys.is_empty()
+        self.series.is_empty() || self.labels.is_empty()
     }
 }
 
-/// Map `(label, amount)` pairs into uPlot columns.
+/// Shape `lines` against `labels` into uPlot columns.
 ///
 /// `Decimal::as_f64` is infallible (it is the exact equivalent of
 /// `ToPrimitive::to_f64`), and an amount can never exceed `f64`'s much larger
 /// range, so no value is dropped.
-pub fn columns(data: &[(String, Decimal)]) -> Columns {
-    let mut labels = Vec::with_capacity(data.len());
-    let mut xs = Vec::with_capacity(data.len());
-    let mut ys = Vec::with_capacity(data.len());
-    for (index, (label, value)) in data.iter().enumerate() {
-        labels.push(label.clone());
-        xs.push(index as f64);
-        ys.push(value.as_f64());
-    }
-    Columns { labels, xs, ys }
+///
+/// Every line is padded to the label count. uPlot wants one value per x per
+/// series, and a short line would not merely leave a gap: it would shift every
+/// later point of that line onto the wrong period, which is a wrong chart rather
+/// than an incomplete one.
+pub fn columns(labels: Vec<String>, lines: Vec<Line>) -> Columns {
+    let count = labels.len();
+    let xs = (0..count).map(|index| index as f64).collect();
+    let series = lines
+        .into_iter()
+        .map(|line| {
+            let mut ys: Vec<f64> = line.values.iter().map(Decimal::as_f64).collect();
+            ys.resize(count, 0.0);
+            Series {
+                label: line.label,
+                ys,
+            }
+        })
+        .collect();
+    Columns { labels, xs, series }
 }
 
 /// The x-axis tick positions for a series of `count` points, at most `limit` of
@@ -158,32 +197,73 @@ mod tests {
 
     #[test]
     fn columns_are_indexed_and_keep_labels_in_order() {
-        let data = vec![
-            ("2024-01".to_string(), dec(125, 2)),
-            ("2024-02".to_string(), dec(-50, 2)),
-            ("2024-03".to_string(), Decimal::ZERO),
+        let labels = vec![
+            "2024-01".to_string(),
+            "2024-02".to_string(),
+            "2024-03".to_string(),
         ];
-        let columns = columns(&data);
+        let columns = columns(
+            labels,
+            vec![Line::new(
+                "Total",
+                vec![dec(125, 2), dec(-50, 2), Decimal::ZERO],
+            )],
+        );
         assert_eq!(columns.labels, vec!["2024-01", "2024-02", "2024-03"]);
         assert_eq!(columns.xs, vec![0.0, 1.0, 2.0]);
-        assert_eq!(columns.ys, vec![1.25, -0.5, 0.0]);
+        assert_eq!(columns.series.len(), 1);
+        assert_eq!(columns.series[0].label, "Total");
+        assert_eq!(columns.series[0].ys, vec![1.25, -0.5, 0.0]);
         assert_eq!(columns.len(), 3);
         assert!(!columns.is_empty());
     }
 
     #[test]
-    fn columns_of_an_empty_series_are_all_empty() {
-        let columns = columns(&[]);
-        assert!(columns.is_empty());
-        assert!(columns.labels.is_empty());
-        assert!(columns.xs.is_empty());
+    fn several_lines_share_one_x_axis() {
+        let columns = columns(
+            vec!["a".to_string(), "b".to_string()],
+            vec![
+                Line::new("Assets", vec![dec(10, 0), dec(20, 0)]),
+                Line::new("Liabilities", vec![dec(-5, 0), dec(-8, 0)]),
+            ],
+        );
+        assert_eq!(columns.xs, vec![0.0, 1.0]);
+        assert_eq!(columns.series.len(), 2);
+        assert_eq!(columns.series[1].label, "Liabilities");
+        assert_eq!(columns.series[1].ys, vec![-5.0, -8.0]);
+    }
+
+    #[test]
+    fn a_short_line_is_padded_rather_than_shifting_its_points() {
+        // Without padding, this line's second value would be plotted at the
+        // *last* point instead of the second — a wrong chart, not a gap.
+        let columns = columns(
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            vec![Line::new("Short", vec![dec(10, 0), dec(20, 0)])],
+        );
+        assert_eq!(columns.series[0].ys, vec![10.0, 20.0, 0.0]);
+        assert_eq!(columns.len(), 3);
+    }
+
+    #[test]
+    fn columns_of_nothing_are_empty() {
+        let empty = columns(Vec::new(), Vec::new());
+        assert!(empty.is_empty());
+        assert!(empty.labels.is_empty());
+        assert!(empty.xs.is_empty());
+
+        // Labels with no lines is also nothing to draw.
+        assert!(columns(vec!["a".to_string()], Vec::new()).is_empty());
     }
 
     #[test]
     fn a_single_point_is_a_zero_index() {
-        let columns = columns(&[("2024-01".to_string(), dec(-7, 1))]);
+        let columns = columns(
+            vec!["2024-01".to_string()],
+            vec![Line::new("", vec![dec(-7, 1)])],
+        );
         assert_eq!(columns.xs, vec![0.0]);
-        assert_eq!(columns.ys, vec![-0.7]);
+        assert_eq!(columns.series[0].ys, vec![-0.7]);
     }
 
     #[test]

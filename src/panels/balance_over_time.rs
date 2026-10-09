@@ -13,14 +13,25 @@
 use leptos::prelude::*;
 use rust_decimal::Decimal;
 
+use crate::charts::data::Line;
 use crate::charts::{line_chart, scale};
 use crate::hledger::report::ReportSpec;
-use crate::journal::reports::{PeriodicReport, default_commodity, parse_periodic_report};
+use crate::journal::reports::{
+    PeriodicReport, default_commodity, parse_periodic_report, row_values,
+};
 use crate::layout::model::PanelId;
 use crate::panels::table::QueryField;
 use crate::panels::{argv_line, error_panel, message_panel, report_view};
 use crate::query;
 use crate::state::AppState;
+
+/// How many account rows the chart draws, before the total line.
+///
+/// Past a handful, lines stop being distinguishable — especially on a phone —
+/// and the table below always lists every period, so nothing is hidden by the
+/// cap. Four plus the total leaves the default view at three: assets,
+/// liabilities, net worth.
+const MAX_LINES: usize = 4;
 
 /// The period flags, as `(label, flag)`, coarsest first.
 ///
@@ -41,6 +52,10 @@ pub fn view(id: PanelId) -> AnyView {
     // An index into `INTERVALS` rather than the flag itself, so the control and
     // the argv cannot drift apart.
     let interval = RwSignal::new(0usize);
+    // One level deep by default. For the default `assets liabilities` query that
+    // is exactly two rows — assets and liabilities — so the chart compares those
+    // against net worth, rather than drawing a line for every leaf account.
+    let depth = RwSignal::new("1".to_string());
     // Defaults to the net-worth view, not to the report's grand total. In a
     // double-entry journal every account balances to zero, so the grand total is
     // a flat line at zero — technically correct and completely useless as a
@@ -66,6 +81,10 @@ pub fn view(id: PanelId) -> AnyView {
                 .map(|(_, flag)| *flag)
                 .unwrap_or("--yearly");
             spec = spec.arg("--historical").arg(flag);
+            let requested_depth = depth.get();
+            if !requested_depth.is_empty() {
+                spec = spec.arg("--depth").arg(requested_depth);
+            }
             for argument in query::query_args(&query.get()) {
                 spec = spec.arg(argument);
             }
@@ -93,6 +112,18 @@ pub fn view(id: PanelId) -> AnyView {
                                 view! { <option value=index.to_string()>{*label}</option> }
                             })
                             .collect_view()}
+                    </select>
+                </label>
+                <label>
+                    "depth"
+                    <select
+                        prop:value=move || depth.get()
+                        on:change=move |event| depth.set(event_target_value(&event))
+                    >
+                        <option value="">"all"</option>
+                        <option value="1">"1"</option>
+                        <option value="2">"2"</option>
+                        <option value="3">"3"</option>
                     </select>
                 </label>
                 <QueryField
@@ -136,12 +167,13 @@ pub fn view(id: PanelId) -> AnyView {
 
 /// The chart and the table behind it.
 ///
-/// The series is the *total of whatever the query selected*. For the default
-/// query that is assets plus liabilities, i.e. net worth; for a query naming one
-/// account it is that account's balance over time. It deliberately does not try
-/// to pick "the matching row": a query like `assets liabilities` selects a
-/// subtree with hundreds of rows, and their total is the meaningful figure, not
-/// any single row.
+/// One line per account row, biggest last value first, plus the total. A single
+/// total was the whole story before, which made the panel a plot of whatever
+/// number the query happened to add up to; the rows are what make trends
+/// comparable, and they cost nothing extra — hledger already returned them.
+///
+/// The total comes last and always, because for the default query it is net
+/// worth, which is the figure the panel is named for.
 fn series_view(state: AppState, report: &PeriodicReport, query: &str) -> AnyView {
     let commodity = state
         .settings
@@ -158,8 +190,6 @@ fn series_view(state: AppState, report: &PeriodicReport, query: &str) -> AnyView
             )
         });
 
-    let values = report.grand_total_values(commodity.as_deref());
-
     // Everything between here and the chart is about labelling what was plotted,
     // so the header can say which accounts the figure covers.
     let query = query.trim().to_string();
@@ -169,12 +199,32 @@ fn series_view(state: AppState, report: &PeriodicReport, query: &str) -> AnyView
         query.clone()
     };
 
-    let data: Vec<(String, Decimal)> = report.labels().into_iter().zip(values).collect();
-    if data.is_empty() {
+    let labels = report.labels();
+    if labels.is_empty() {
         return message_panel("This report has no periods to plot.");
     }
 
-    let chart = line_chart(&data);
+    // Rows are ranked by their *last* value's magnitude — the size the account
+    // has ended up at — rather than by hledger's own depth-first account order,
+    // which has nothing to do with which accounts are worth following.
+    let mut ranked: Vec<Line> = report
+        .rows
+        .iter()
+        .map(|row| {
+            Line::new(
+                row.account().unwrap_or_default().to_string(),
+                row_values(row, commodity.as_deref()),
+            )
+        })
+        .collect();
+    ranked.sort_by_key(|line| {
+        std::cmp::Reverse(line.values.last().copied().unwrap_or_default().abs())
+    });
+
+    let mut lines: Vec<Line> = ranked.into_iter().take(MAX_LINES).collect();
+    lines.push(Line::new("Total", report.grand_total_values(commodity.as_deref())));
+    let chart = line_chart(labels.clone(), lines);
+
     // Name the commodity in the column heading. A mixed-commodity journal has to
     // pick one series, and a chart that does not say which one is impossible to
     // read — the figure can look "wrong" when it is simply denominated in
@@ -183,10 +233,12 @@ fn series_view(state: AppState, report: &PeriodicReport, query: &str) -> AnyView
         Some(commodity) => format!("Balance ({commodity})"),
         None => "Balance".to_string(),
     };
-    let rows = data
+    let totals = report.grand_total_values(commodity.as_deref());
+    let rows = labels
         .iter()
+        .zip(totals)
         .map(|(label, value)| {
-            let text = value_text(*value, commodity.as_deref());
+            let text = value_text(value, commodity.as_deref());
             view! {
                 <tr>
                     <td>{label.clone()}</td>
