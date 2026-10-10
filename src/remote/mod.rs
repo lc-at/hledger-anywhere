@@ -115,14 +115,19 @@ pub fn scoped(path: &str) -> String {
 
 /// An entry path as the app knows it, with the category on the front.
 ///
-/// A listing from a scoped client names paths relative to the scope; the rest of
-/// the app thinks in account-absolute paths, so the category is put back.
-pub fn unscoped(path: &str) -> String {
-    if path.starts_with(CATEGORY) {
-        path.to_string()
-    } else {
-        format!("{CATEGORY}{}", path.trim_start_matches('/'))
+/// A listing names its entries relative to **the folder that was listed**, not to
+/// the scope root, so the folder has to be put back too. Assuming the scope root is
+/// what made a file in a nested folder resolve to a path that does not exist — and
+/// then be skipped as unreadable rather than loaded.
+pub fn joined(directory: &str, key: &str) -> String {
+    let key = key.trim_start_matches('/');
+    if key.is_empty() {
+        return directory.to_string();
     }
+    format!(
+        "{}{key}",
+        directory.trim_end_matches('/').to_string() + "/"
+    )
 }
 
 /// The folders directly inside `directory` that still have to be listed.
@@ -245,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_is_scoped_and_unscoped_without_doubling_the_category() {
+    fn a_path_is_scoped_without_doubling_the_category() {
         // The client already knows the category, so the category comes off.
         assert_eq!(scoped("/hledger/rt.csv"), "rt.csv");
         assert_eq!(scoped("/hledger/books/2024.journal"), "books/2024.journal");
@@ -255,16 +260,35 @@ mod tests {
         // A path that never mentioned the category is left alone.
         assert_eq!(scoped("rt.csv"), "rt.csv");
 
-        // And a listing from the client goes back to an account-absolute path.
-        assert_eq!(unscoped("rt.csv"), "/hledger/rt.csv");
-        assert_eq!(unscoped("books/2024.journal"), "/hledger/books/2024.journal");
-        assert_eq!(unscoped("/hledger/rt.csv"), "/hledger/rt.csv");
-
-        // The pair round-trips, which is what keeps writes out of a folder named
-        // after the category.
+        // And the round trip holds, which is what keeps writes out of a folder
+        // named after the category.
         for path in ["/hledger/rt.csv", "/hledger/books/deep/x.journal"] {
-            assert_eq!(unscoped(&scoped(path)), path);
+            let relative = scoped(path);
+            let back = joined("/hledger/", &relative);
+            assert_eq!(back, path, "round trip of {path}");
         }
+    }
+
+    #[test]
+    fn a_listing_entry_is_joined_to_the_folder_that_was_listed() {
+        // This is the bug that made a file in a nested folder disappear: entries
+        // are named relative to the folder listed, not to the scope root.
+        assert_eq!(joined("/hledger/", "hledger/"), "/hledger/hledger/");
+        assert_eq!(joined("/hledger/", "kb.csv"), "/hledger/kb.csv");
+        assert_eq!(joined("/hledger/hledger/", "rt.csv"), "/hledger/hledger/rt.csv");
+        assert_eq!(
+            joined("/hledger/books/", "deep/"),
+            "/hledger/books/deep/"
+        );
+        assert_eq!(
+            joined("/hledger/books/deep/", "2024.journal"),
+            "/hledger/books/deep/2024.journal"
+        );
+
+        // A key with a leading slash is not a different file.
+        assert_eq!(joined("/hledger/books/", "/deep/"), "/hledger/books/deep/");
+        // And the folder itself is what you get for an empty key.
+        assert_eq!(joined("/hledger/books/", ""), "/hledger/books/");
     }
 
     #[test]

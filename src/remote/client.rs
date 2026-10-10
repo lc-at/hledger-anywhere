@@ -280,13 +280,15 @@ impl Account {
         .await
         .map_err(|error| RemoteError::Failed(describe(&error)))?;
 
-        // A scoped listing names paths relative to the scope; the app wants them
-        // account-absolute, which is what `mount_path` strips the category from.
+        // A listing names its entries relative to the folder that was listed, and
+        // the app wants account-absolute paths: those are what `mount_path` takes
+        // the category off, and what the walk hands back to `list` in turn.
+        let folder = format!("{}{}", super::CATEGORY, super::scoped(directory));
         let mut value = json_value(&listing);
         if let Some(object) = value.as_object_mut() {
             let renamed: Vec<(String, serde_json::Value)> = object
                 .iter()
-                .map(|(path, entry)| (super::unscoped(path), entry.clone()))
+                .map(|(path, entry)| (super::joined(&folder, path), entry.clone()))
                 .collect();
             object.clear();
             for (path, entry) in renamed {

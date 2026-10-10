@@ -92,14 +92,16 @@ files runs `remote` and gets them back — `Read 3 file(s)`, the include between
 journals resolving, and `balance` producing the report. A file that cannot be read is
 skipped and named rather than stopping the sync.
 
-Five real bugs came out of that, none of them visible to a stub: the token was never
+Six real bugs came out of that, none of them visible to a stub: the token was never
 claimed, because the library only loaded when a remote command ran; `connected` is
 restored asynchronously, so asking a throwaway client straight after construction
 always answered "no"; paths were doubled, because a client scoped at the category
 already knows about it; the first listing after the return can come back empty while
 the library is still coming up, which is indistinguishable from an empty account; and
 a file the library classifies as binary still has to be decoded as text, because a
-CSV is text with commas in it.
+CSV is text with commas in it; and a listing names its entries relative to *the
+folder that was listed*, not to the scope root, so everything in a nested folder
+resolved to a path that did not exist and was skipped as unreadable.
 
 **A screen reader can read the terminal.** `screenreader on` turns on xterm's
 accessibility tree — a real text representation of the screen that a screen reader
@@ -147,6 +149,16 @@ file, named either way round (`data/2024.journal` as the engine sees it, or
 succeeded. The join is made well-formed: a file that does not end in a newline gets
 one, so two entries can never become one broken one. A target that is a directory,
 climbs out of the mount, or is more than one word is refused with the reason.
+
+**What it does not do: OPFS.** A file-backed filesystem in the browser
+(Origin Private File System) has been on the roadmap since before the engine could
+write at all, on the theory that sending every file to the engine worker before
+every command is expensive. It was measured rather than assumed: posting an 8 MB
+file set to a worker takes about **23 ms**, and the size barely matters — 0.25 MB and
+8 MB cost the same, because it is message overhead, not copying. hledger's own
+runtime is seconds. So the answer is no: IndexedDB holds what is loaded, the worker
+gets a copy each run, and none of it is worth replacing. Recorded here because "why
+isn't this using OPFS" is a reasonable question with a measured answer.
 
 **A report can be drawn.** `chart` runs hledger for you — `chart expenses -M` runs
 `hledger expenses -M -O csv`, and with no arguments it asks the question a chart is
