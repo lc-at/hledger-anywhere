@@ -41,6 +41,14 @@ extern "C" {
 
     #[wasm_bindgen(method, js_name = "loadAddon")]
     fn load_addon(this: &Xterm, addon: &JsValue);
+
+    /// Character columns, kept current by the fit addon.
+    #[wasm_bindgen(method, getter)]
+    fn cols(this: &Xterm) -> u32;
+
+    /// Character rows.
+    #[wasm_bindgen(method, getter)]
+    fn rows(this: &Xterm) -> u32;
 }
 
 /// The terminal on screen.
@@ -80,6 +88,15 @@ impl Screen {
 
     pub fn focus(&self) {
         self.terminal.focus();
+    }
+
+    /// The terminal's size in character cells.
+    ///
+    /// hledger formats its reports to the width of the terminal it is running in,
+    /// and the only way to tell it is through the environment — see
+    /// [`Screen::size`]'s callers and `hledger-wasm/terminal-size-stub`.
+    pub fn size(&self) -> (u32, u32) {
+        (self.terminal.cols(), self.terminal.rows())
     }
 
     /// Resize the terminal to its element.

@@ -38,10 +38,20 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | Command | What it does |
 |---|---|
 | `upload` | Choose files to add. **Replaces** what is loaded, so uploading the same set again is how you update it. |
+| `upload_dir` | Choose a folder to add, keeping the paths inside it — what a journal split into `2024.journal`, `2025.journal` and `prices/` needs. |
 | `journal` | List the uploaded files and mark the one being read. |
 | `journal <path>` | Read a different uploaded file. |
 | `clear` | Clear the screen. |
 | `?` | The app's own help, with the engine's version and checksum. |
+
+**Reports are as wide as the terminal, as far as hledger makes them.** hledger
+normally asks the operating system how wide the terminal is, and WASI has no
+terminal to ask; the wasm build's `terminal-size` stub reads `$COLUMNS` and
+`$LINES` instead, and the app exports the xterm size into every run's environment
+— including after a window resize, so widening the window widens the next report.
+What hledger does with the width is hledger's business: `register` and `aregister`
+lay their columns out to fill it, while `balance` and `print` size themselves to
+their content and look the same at any width.
 
 Keys: **Enter** runs, **↑/↓** recall history, **Tab** completes hledger commands,
 flags and uploaded paths, **Ctrl+U** or **Ctrl+C** clears the line, **Ctrl+L**
@@ -69,11 +79,19 @@ sh scripts/build-hledger-wasm.sh   # once: builds hledger.wasm (~13 MB, needs th
 trunk serve                        # http://127.0.0.1:8080
 ```
 
-`trunk build --release` produces `dist/`, which is all you deploy. A
-`pre_build` hook resolves `assets/wasm/hledger.wasm` before every build: from
-`artifacts/hledger.wasm` if you built it locally, otherwise by downloading the
-release asset pinned by size and SHA-256 in `wasm.lock`. Without it the app still
-builds, and the terminal says the engine is missing.
+`trunk build --release` produces `dist/`, which is all you deploy.
+
+**The engine is committed** at `assets/wasm/hledger.wasm` (13 MB), so a fresh clone
+builds without a network. A `pre_build` hook keeps it honest: it verifies the file
+against the `sha256` in `wasm.lock`, and prefers `artifacts/hledger.wasm` when you
+have just built one, so changing a build input is enough to change the engine. A
+file that does not match the lock is rejected rather than run, and if none is
+available the app still builds and the terminal says the engine is missing.
+
+Refreshing it after changing `hledger-wasm/` (the stubs, or the cabal project):
+build, then update `size` and `sha256` in `wasm.lock` to the printed values. Engine
+builds are rare — one per hledger version — which is why the artifact is worth
+carrying in the repository rather than fetched.
 
 ## How it fits together
 
@@ -83,7 +101,7 @@ assets/js/          hledger-worker.js   the WASI runtime, off the main thread
                     hledger-wasi.js     the main-thread bridge, window.hledgerWasi
                     vendor/wasi/        browser_wasi_shim (MIT), vendored
                     vendor/xterm/       xterm.js (MIT), vendored
-assets/wasm/        hledger.wasm, gitignored, resolved from wasm.lock
+assets/wasm/        hledger.wasm, committed, verified against wasm.lock
 src/terminal/       the line editor, the commands, the prompt (pure)
   view.rs           xterm.js, wrapped (wasm)
 src/hledger/        the engine's request/response types, and the bridge to JS
@@ -132,14 +150,12 @@ before building.
 
 ## Known limitations
 
-- **Reports are formatted to hledger's default width.** hledger asks the terminal
-  how wide it is; WASI has no terminal, so it falls back to 80 columns however wide
-  the window is. `hledger-wasm/terminal-size-stub/` is the hook if that ever needs
-  changing, but it means rebuilding and republishing the pinned artifact.
 - **A running command cannot be cancelled** — see above.
-- **Uploads replace rather than accumulate**, and only files are uploaded, not
-  directories. Files with the same name collide, and the second is reported rather
-  than silently shadowing the first.
+- **Uploads replace rather than accumulate.** Two files landing on the same path
+  collide, and the second is reported rather than silently shadowing the first.
+- **The width only reaches hledger because the engine was built that way.**
+  Anything running this engine outside the app gets hledger's 80-column default,
+  since nothing else sets `$COLUMNS`.
 - **The scrollback is the session's.** Reloading restores the files and the command
   history, not what was on screen.
 - **`upload` is the only way in.** Drag-and-drop onto the terminal is not wired up.

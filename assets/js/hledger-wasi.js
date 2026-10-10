@@ -5,7 +5,8 @@
  * bridge.rs` talks to:
  *
  *   init()                                  -> Promise<{ wasmPath }>
- *   configure({ wasmPath, ledgerFile })     -> Promise<{ wasmPath, ledgerFile }>
+ *   configure({ wasmPath, ledgerFile, columns, lines })
+ *                                         -> Promise<{ wasmPath, ledgerFile }>
  *   run(argv, files)              -> Promise<{ argv, stdout, stderr, exitCode, ms }>
  *
  * where `argv` is a string array and `files` is an array of `[path, contents]`
@@ -130,10 +131,13 @@ class HledgerWasi {
   }
 
   /**
-   * Point the engine at a journal.
+   * Tell the engine about its world: which journal to read, and how big the
+   * terminal is.
    *
    * `ledgerFile` becomes `$LEDGER_FILE` inside the engine, which is what makes a
-   * bare `hledger balance` work. Pass `undefined` to clear it.
+   * bare `hledger balance` work; `columns`/`lines` become `$COLUMNS`/`$LINES`,
+   * which is how hledger learns the report width. Pass `undefined` to clear any of
+   * them.
    */
   configure(options = {}) {
     if (typeof options.wasmPath === 'string') {
@@ -143,6 +147,8 @@ class HledgerWasi {
       this._send('configure', {
         wasmPath: this.wasmPath,
         ledgerFile: options.ledgerFile,
+        columns: options.columns,
+        lines: options.lines,
       }),
     );
   }

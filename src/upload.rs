@@ -1,8 +1,10 @@
-//! Choosing journal files to upload (wasm-only).
+//! Choosing what to upload (wasm-only).
 //!
-//! Uses `<input type="file" multiple>`. Files, not a directory: the browser
-//! cannot copy a directory anywhere the page can keep it, and "upload the files"
-//! is what a person expects to do here.
+//! Two shapes, because journals come in two shapes. `<input type="file" multiple>`
+//! takes individual files, which all land at the root of the mount; adding
+//! `webkitdirectory` takes a whole directory and keeps the paths inside it, which
+//! is what a journal split into `2024.journal`, `2025.journal` and a `prices/`
+//! directory needs — an `include` graph is only a graph if the paths survive.
 //!
 //! The picker is driven imperatively rather than through the rendered tree
 //! because it is a modal browser dialog whose result is a one-shot event.
@@ -34,6 +36,25 @@ const OFFSCREEN_INPUT_STYLE: &str =
 /// be found in devtools, and driven by tests.
 pub const UPLOAD_INPUT_ID: &str = "hledger-anywhere-upload-input";
 
+/// Which picker to open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Individual files, all mounted at the root.
+    Files,
+    /// A directory, with the paths inside it preserved.
+    Directory,
+}
+
+impl Mode {
+    /// The command word that opens this picker, for messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Files => "upload",
+            Mode::Directory => "upload_dir",
+        }
+    }
+}
+
 /// What went wrong, in terms the terminal can print.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickError {
@@ -54,7 +75,7 @@ impl PickError {
                 format!("this browser cannot open a file picker: {reason}")
             }
             PickError::Cancelled => "upload cancelled".to_string(),
-            PickError::Empty => "nothing was uploaded".to_string(),
+            PickError::Empty => "nothing usable was uploaded".to_string(),
             PickError::TooLarge { bytes } => format!(
                 "too much to mount ({:.1} MB, limit {:.0} MB)",
                 *bytes as f64 / (1024.0 * 1024.0),
@@ -77,6 +98,8 @@ pub struct Picked {
 pub struct PendingPick {
     input: HtmlInputElement,
     settled: Promise,
+    /// Remembered so the selection is read the same way it was asked for.
+    mode: Mode,
 }
 
 /// Open the upload picker and return a handle to await the result.
@@ -87,7 +110,7 @@ pub struct PendingPick {
 /// through `spawn_local`, which defers it to a later task — makes the browser
 /// refuse the dialog *silently*: no error, no dialog, and a promise that never
 /// settles. That failure looks exactly like a dead command.
-pub fn open_picker() -> Result<PendingPick, PickError> {
+pub fn open_picker(mode: Mode) -> Result<PendingPick, PickError> {
     let window = web_sys::window()
         .ok_or_else(|| PickError::Unavailable("there is no window object".into()))?;
     let document = window
@@ -108,6 +131,20 @@ pub fn open_picker() -> Result<PendingPick, PickError> {
     // all belong to a journal, and guessing at extensions would hide the ones
     // that do not look like any of them.
 
+    if mode == Mode::Directory {
+        // `webkitdirectory` is what makes this a *directory* picker. web-sys
+        // exposes no setter, so set the content attribute — which is what the
+        // behaviour keys on — as well as the IDL property. The legacy `directory`
+        // attribute is set too, for engines that predate the standardised name.
+        let _ = input.set_attribute("webkitdirectory", "");
+        let _ = input.set_attribute("directory", "");
+        let _ = js_sys::Reflect::set(
+            input.as_ref(),
+            &JsValue::from_str("webkitdirectory"),
+            &JsValue::TRUE,
+        );
+    }
+
     // Positioned off-screen rather than hidden. The `hidden` attribute means
     // `display: none`, and a browser is entitled to refuse to open a picker for an
     // element that is not rendered.
@@ -126,13 +163,21 @@ pub fn open_picker() -> Result<PendingPick, PickError> {
     // The dialog opens *only* because of this call.
     input.click();
 
-    Ok(PendingPick { input, settled })
+    Ok(PendingPick {
+        input,
+        settled,
+        mode,
+    })
 }
 
 impl PendingPick {
     /// Wait for the user to finish with the dialog, then read the selection.
     pub async fn await_selection(self) -> Result<Picked, PickError> {
-        let PendingPick { input, settled } = self;
+        let PendingPick {
+            input,
+            settled,
+            mode,
+        } = self;
 
         let event = JsFuture::from(settled)
             .await
@@ -156,7 +201,7 @@ impl PendingPick {
             return Err(PickError::Empty);
         }
 
-        read_files(&files).await
+        read_files(&files, mode).await
     }
 }
 
@@ -184,16 +229,17 @@ fn picker_promise(input: &HtmlInputElement) -> Promise {
 }
 
 /// Read every chosen file into memory, skipping what cannot be mounted.
-async fn read_files(files: &[File]) -> Result<Picked, PickError> {
+async fn read_files(files: &[File], mode: Mode) -> Result<Picked, PickError> {
     let mut picked = Picked::default();
     let mut total = 0.0f64;
 
     for file in files {
-        // Uploaded files all land under one directory, so the name is the path.
-        // Two files with the same name would collide there, and mounting both is
-        // not possible — so the second is reported rather than silently shadowing
-        // the first.
-        let path = file.name();
+        // Files land under one directory, so their path is either the name or,
+        // for a directory pick, where they sat inside it.
+        let path = match mode {
+            Mode::Files => file.name(),
+            Mode::Directory => relative_path(file),
+        };
         if picked.files.iter().any(|mounted| mounted.path == path) {
             picked
                 .skipped
@@ -235,9 +281,41 @@ async fn read_files(files: &[File]) -> Result<Picked, PickError> {
         return Err(PickError::Empty);
     }
 
+    if mode == Mode::Directory {
+        crate::journal::strip_common_root(&mut picked.files);
+    }
     picked.files.sort_by(|left, right| left.path.cmp(&right.path));
+
+    // A name that collides after the root was stripped would silently shadow the
+    // file already mounted, so say which one lost.
+    let mut seen: Vec<String> = Vec::new();
+    picked.files.retain(|file| {
+        if seen.contains(&file.path) {
+            picked
+                .skipped
+                .push((file.path.clone(), "duplicate path after upload".to_string()));
+            false
+        } else {
+            seen.push(file.path.clone());
+            true
+        }
+    });
     Ok(picked)
 }
+
+/// Where a file sat inside the picked directory.
+///
+/// `webkitRelativePath` is the only thing that carries this — the `File` API has
+/// no directory walk — and it includes the directory the user chose, so a pick of
+/// `~/books` yields `books/hledger.journal`.
+fn relative_path(file: &File) -> String {
+    let raw = js_sys::Reflect::get(file.as_ref(), &JsValue::from_str("webkitRelativePath"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .unwrap_or_default();
+    if raw.is_empty() { file.name() } else { raw }
+}
+
 
 /// Read a file as text, or `None` if the browser refuses.
 async fn read_text(file: &File) -> Option<String> {

@@ -113,6 +113,37 @@ pub fn choose_main(files: &[JournalFile]) -> Option<String> {
     Some(journals[0].path.clone())
 }
 
+/// Drop the picked directory's own name from every path.
+///
+/// `webkitRelativePath` includes the directory the user chose, so a pick of
+/// `~/books` yields `books/hledger.journal`. Reports read better, and
+/// `journal <path>` stays short, if paths are relative to what was actually
+/// chosen rather than repeating the folder name.
+///
+/// Only stripped when *every* file agrees on the first component — which is what
+/// distinguishes a chosen folder from a set of files that happen to share a
+/// prefix.
+pub fn strip_common_root(files: &mut [JournalFile]) {
+    let Some(prefix) = files
+        .iter()
+        .map(|file| file.path.split_once('/').map(|(head, _)| head.to_string()))
+        .collect::<Option<Vec<_>>>()
+        .and_then(|heads| {
+            let first = heads.first()?.clone();
+            heads.iter().all(|head| *head == first).then_some(first)
+        })
+    else {
+        return;
+    };
+
+    let prefix_with_slash = format!("{prefix}/");
+    for file in files.iter_mut() {
+        if let Some(rest) = file.path.strip_prefix(&prefix_with_slash) {
+            file.path = rest.to_string();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +219,36 @@ mod tests {
         let files = [file("notes.txt", "x"), file("data.csv", "a,b")];
         assert_eq!(choose_main(&files), None);
         assert_eq!(choose_main(&[]), None);
+    }
+
+    #[test]
+    fn a_chosen_directorys_own_name_is_stripped_from_every_path() {
+        let mut files = [
+            file("books/hledger.journal", ""),
+            file("books/2025.journal", ""),
+            file("books/prices/2025.csv", "date,amount\n"),
+        ];
+        strip_common_root(&mut files);
+        assert_eq!(
+            files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            ["hledger.journal", "2025.journal", "prices/2025.csv"]
+        );
+    }
+
+    #[test]
+    fn nothing_is_stripped_when_the_first_components_differ() {
+        // Files picked individually, or a folder whose files disagree: stripping
+        // would be guessing, and the paths would stop meaning anything.
+        let mut files = [file("books/a.journal", ""), file("notes/b.journal", "")];
+        strip_common_root(&mut files);
+        assert_eq!(files[0].path, "books/a.journal");
+        assert_eq!(files[1].path, "notes/b.journal");
+
+        // A file at the root has no first component to agree on.
+        let mut files = [file("a.journal", ""), file("books/b.journal", "")];
+        strip_common_root(&mut files);
+        assert_eq!(files[0].path, "a.journal");
+        assert_eq!(files[1].path, "books/b.journal");
     }
 
     #[test]

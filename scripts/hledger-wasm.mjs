@@ -32,7 +32,9 @@
 // exactly as it does in the browser.
 //
 // Env:
-//   HLEDGER_WASM   path to the engine (default: assets/wasm/hledger.wasm)
+//   HLEDGER_WASM          path to the engine (default: assets/wasm/hledger.wasm)
+//   HLEDGER_NO_FILE_ARG=1 no -f; mount at /data and set LEDGER_FILE instead
+//   COLUMNS, LINES        terminal size, passed into the engine's environment
 
 import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve, relative } from 'node:path';
@@ -77,6 +79,11 @@ const wasi = new WASI({
     PWD: '/',
     // Only set in the no-file-arg mode, where it replaces -f.
     ...(noFileArg ? { LEDGER_FILE: `/data/${basename(journal)}` } : {}),
+    // The terminal size, passed through when the caller sets it. The app exports
+    // the xterm dimensions this way so hledger formats reports to fit; this is how
+    // that path is checked without a browser.
+    ...(process.env.COLUMNS ? { COLUMNS: process.env.COLUMNS } : {}),
+    ...(process.env.LINES ? { LINES: process.env.LINES } : {}),
   },
   args: noFileArg
     ? ['hledger', ...args.slice(1)]

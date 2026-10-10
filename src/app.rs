@@ -149,10 +149,21 @@ impl App {
         }
     }
 
-    /// Keep the terminal sized to the window.
-    fn resize_handler(&self) {
+    /// Keep the terminal sized to the window, and the engine told about it.
+    ///
+    /// A resized terminal means resized reports, so fitting is only half of it:
+    /// the new column count has to reach hledger before the next command. The
+    /// handler holds a `Weak` rather than an `Rc`, because it is stored *in* the
+    /// app and a strong reference would be a cycle.
+    fn resize_handler(self: &Rc<App>) {
         let screen = Rc::clone(&self.screen);
-        let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || screen.fit());
+        let app = Rc::downgrade(self);
+        let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+            screen.fit();
+            if let Some(app) = app.upgrade() {
+                app.configure();
+            }
+        });
         if let Some(window) = web_sys::window() {
             let _ = window
                 .add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref());
@@ -251,7 +262,11 @@ impl App {
 
     fn submit(self: &Rc<App>) {
         let Some(line) = self.editor.borrow_mut().take() else {
-            // A blank line: a shell prints another prompt and nothing else.
+            // An empty line is a command too, and the one a terminal is most
+            // often given: it prints a fresh prompt line, as a shell does.
+            // Redrawing in place would be invisible — the prompt is already there
+            // — so pressing Enter appeared to do nothing.
+            self.screen.write("\r\n");
             self.prompt();
             return;
         };
@@ -271,7 +286,8 @@ impl App {
                 let help = format!("{}\n{}\n", terminal::help(), crate::hledger_info::describe());
                 self.announce(&help);
             }
-            Command::Upload => self.upload(),
+            Command::Upload => self.upload(upload::Mode::Files),
+            Command::UploadDir => self.upload(upload::Mode::Directory),
             Command::Journal(None) => {
                 let text = terminal::file_list(&self.paths(), self.main.borrow().as_deref());
                 self.announce(&text);
@@ -283,10 +299,10 @@ impl App {
 
     // -- commands -----------------------------------------------------------
 
-    fn upload(self: &Rc<App>) {
+    fn upload(self: &Rc<App>, mode: upload::Mode) {
         // Synchronously: see the module comment. Everything after this point can
         // be async because the dialog is already open.
-        let pending = match upload::open_picker() {
+        let pending = match upload::open_picker(mode) {
             Ok(pending) => pending,
             Err(error) => {
                 self.announce(&error.message());
@@ -297,6 +313,12 @@ impl App {
         spawn_local(async move {
             match pending.await_selection().await {
                 Ok(picked) => app.accept_upload(picked),
+                // Naming the command that was cancelled matters here: a directory
+                // dialog and a file dialog look nothing alike, and the user should
+                // not have to remember which one they asked for.
+                Err(upload::PickError::Cancelled) => {
+                    app.announce(&format!("{} cancelled", mode.name()))
+                }
                 Err(error) => app.announce(&error.message()),
             }
         });
@@ -338,20 +360,21 @@ impl App {
         ));
     }
 
-    /// Point the engine at the current journal.
+    /// Tell the engine which journal to read and how big the terminal is.
     ///
-    /// This is what makes a bare `hledger balance` work: hledger reads
-    /// `$LEDGER_FILE` when no `-f` is given.
+    /// The journal is what makes a bare `hledger balance` work: hledger reads
+    /// `$LEDGER_FILE` when no `-f` is given. The size is what it formats reports
+    /// to — hledger asks the terminal, WASI cannot answer, and the wasm build's
+    /// terminal-size stub reads `$COLUMNS`/`$LINES` instead, so the size has to be
+    /// in the environment before every run. Called at startup, after an upload,
+    /// and on every resize.
     fn configure(self: &Rc<App>) {
-        let ledger_file = self
-            .main
-            .borrow()
-            .as_deref()
-            .map(hledger::mounted_path);
+        let ledger_file = self.main.borrow().as_deref().map(hledger::mounted_path);
+        let (columns, lines) = self.screen.size();
         spawn_local(async move {
             // A failure here only means the engine is unreachable, which the next
             // command will report in full.
-            let _ = hledger::configure(ledger_file.as_deref()).await;
+            let _ = hledger::configure(ledger_file.as_deref(), Some(columns), Some(lines)).await;
         });
     }
 

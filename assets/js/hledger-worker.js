@@ -15,7 +15,7 @@
  * raw bytes.
  *
  * Protocol (see also hledger-wasi.js on the main thread):
- *   in : { id, type: 'configure', wasmPath?, ledgerFile? }
+ *   in : { id, type: 'configure', wasmPath?, ledgerFile?, columns?, lines? }
  *        { id, type: 'init' }
  *        { id, type: 'run', argv: string[], files: [path, contents][] }
  *   out: { id, type: 'configured' | 'ready' | 'result' | 'error', ... }
@@ -58,16 +58,32 @@ const DEFAULT_ENV = [
 /**
  * The environment for one run.
  *
- * `LEDGER_FILE` is the whole point of this function: with it set, hledger reads
- * that file when no `-f` is given, so a user of the terminal types exactly what
- * they would type in a shell. The name is built here rather than by the caller so
- * the default environment has exactly one home.
+ * Two things are set beyond the fixed defaults, and both are the terminal telling
+ * the engine about the world it is in:
+ *
+ *   LEDGER_FILE  which journal to read when no `-f` is given, so the user types
+ *                exactly what they would type in a shell.
+ *   COLUMNS,     how big the terminal is. hledger normally asks the operating
+ *   LINES        system, which WASI cannot answer, so the engine's terminal-size
+ *                stub reads these instead (see hledger-wasm/terminal-size-stub).
+ *                Without them hledger formats every report to 80 columns
+ *                regardless of the window.
+ *
+ * Both names are built here rather than by the caller, so the environment has
+ * exactly one home.
  */
-function environmentFor(ledgerFile) {
-  if (typeof ledgerFile !== 'string' || ledgerFile === '') {
-    return DEFAULT_ENV.slice();
+function environmentFor(ledgerFile, columns, lines) {
+  const environment = DEFAULT_ENV.slice();
+  if (typeof ledgerFile === 'string' && ledgerFile !== '') {
+    environment.push(`LEDGER_FILE=${ledgerFile}`);
   }
-  return [...DEFAULT_ENV, `LEDGER_FILE=${ledgerFile}`];
+  if (Number.isInteger(columns) && columns > 0) {
+    environment.push(`COLUMNS=${columns}`);
+  }
+  if (Number.isInteger(lines) && lines > 0) {
+    environment.push(`LINES=${lines}`);
+  }
+  return environment;
 }
 
 const encoder = new TextEncoder();
@@ -252,7 +268,7 @@ self.onmessage = async (event) => {
           wasmPath = request.wasmPath;
           compiled = null;
         }
-        environment = environmentFor(request.ledgerFile);
+        environment = environmentFor(request.ledgerFile, request.columns, request.lines);
         post({ id, type: 'configured', wasmPath, ledgerFile: ledgerFileIn(environment) });
         break;
       }

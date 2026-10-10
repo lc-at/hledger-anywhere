@@ -176,23 +176,46 @@ pub async fn init() -> Result<(), EngineError> {
     call(&bridge, "init", &[]).await.map(|_| ())
 }
 
-/// Tell the worker which journal to read by default.
+/// Tell the worker about the world the engine runs in.
 ///
-/// This is what lets the user type `hledger balance` with no `-f`: hledger reads
-/// `$LEDGER_FILE` when no file is given, and the worker builds the environment.
-/// Passing `None` clears it.
-pub async fn configure(ledger_file: Option<&str>) -> Result<(), EngineError> {
+/// `ledger_file` is what lets the user type `hledger balance` with no `-f`:
+/// hledger reads `$LEDGER_FILE` when no file is given. `columns` and `lines` are
+/// the terminal's size, which hledger needs because it formats reports to the
+/// width of the terminal it is running in and WASI gives it no way to ask — the
+/// wasm build's terminal-size stub reads them from the environment instead. The
+/// worker builds the environment; passing `None` for anything clears it.
+pub async fn configure(
+    ledger_file: Option<&str>,
+    columns: Option<u32>,
+    lines: Option<u32>,
+) -> Result<(), EngineError> {
     let bridge = bridge().await?;
 
     let options = js_sys::Object::new();
-    let value = match ledger_file {
-        Some(path) => JsValue::from_str(path),
-        None => JsValue::UNDEFINED,
-    };
-    Reflect::set(&options, &JsValue::from_str("ledgerFile"), &value)
-        .map_err(|error| classify(error, "configure"))?;
+    for (key, value) in [
+        (
+            "ledgerFile",
+            ledger_file.map(JsValue::from_str).unwrap_or(JsValue::UNDEFINED),
+        ),
+        ("columns", number(columns)),
+        ("lines", number(lines)),
+    ] {
+        Reflect::set(&options, &JsValue::from_str(key), &value)
+            .map_err(|error| classify(error, "configure"))?;
+    }
 
     call(&bridge, "configure", &[options.into()]).await.map(|_| ())
+}
+
+/// A character count as a JS number, or `undefined` when there is none.
+///
+/// `Number.isInteger` on the worker side rejects anything else, so a nonsense
+/// size cannot become a nonsense `$COLUMNS`.
+fn number(value: Option<u32>) -> JsValue {
+    match value {
+        Some(value) => JsValue::from_f64(f64::from(value)),
+        None => JsValue::UNDEFINED,
+    }
 }
 
 /// Run one invocation on the worker.

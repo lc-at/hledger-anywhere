@@ -109,13 +109,18 @@ pub async fn init() -> Result<(), EngineError> {
     bridge::init().await
 }
 
-/// Set the environment the engine runs in, notably `LEDGER_FILE`.
+/// Set the environment the engine runs in: the journal, and the terminal size.
 ///
-/// `None` clears it, which makes hledger fall back to `$HOME/.hledger.journal`
-/// and fail honestly when there is nothing there.
+/// `ledger_file` of `None` makes hledger fall back to `$HOME/.hledger.journal`
+/// and fail honestly when there is nothing there. The size is what hledger
+/// formats reports to; `None` leaves it on its 80-column default.
 #[cfg(target_arch = "wasm32")]
-pub async fn configure(ledger_file: Option<&str>) -> Result<(), EngineError> {
-    bridge::configure(ledger_file).await
+pub async fn configure(
+    ledger_file: Option<&str>,
+    columns: Option<u32>,
+    lines: Option<u32>,
+) -> Result<(), EngineError> {
+    bridge::configure(ledger_file, columns, lines).await
 }
 
 /// Run one invocation.
@@ -133,7 +138,11 @@ pub async fn init() -> Result<(), EngineError> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn configure(_ledger_file: Option<&str>) -> Result<(), EngineError> {
+pub async fn configure(
+    _ledger_file: Option<&str>,
+    _columns: Option<u32>,
+    _lines: Option<u32>,
+) -> Result<(), EngineError> {
     Err(native_error())
 }
 

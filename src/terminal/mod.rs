@@ -98,8 +98,10 @@ const FLAGS: [&str; 32] = [
 /// What a typed line means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command<'a> {
-    /// Open the file picker and mount what is chosen.
+    /// Open the file picker and mount the files chosen.
     Upload,
+    /// Open a directory picker and mount the files inside it, keeping the paths.
+    UploadDir,
     /// Show or change which uploaded file is the journal.
     Journal(Option<&'a str>),
     /// Wipe the screen.
@@ -124,6 +126,7 @@ pub fn classify(line: &str) -> Command<'_> {
     };
     match head {
         "upload" => Command::Upload,
+        "upload_dir" => Command::UploadDir,
         "journal" => Command::Journal((!rest.is_empty()).then_some(rest)),
         "clear" => Command::Clear,
         "?" => Command::Help,
@@ -350,7 +353,7 @@ pub enum Completion {
 /// Every word completion can offer: the app's commands, hledger's, the common
 /// flags, and the uploaded file paths.
 pub fn candidates(paths: &[String]) -> Vec<String> {
-    let mut all: Vec<String> = ["upload", "journal", "clear", "?"]
+    let mut all: Vec<String> = ["upload", "upload_dir", "journal", "clear", "?"]
         .iter()
         .map(|word| (*word).to_string())
         .collect();
@@ -447,7 +450,8 @@ pub fn prompt_redraw(prompt: &str, line: &str, cursor: usize) -> String {
 pub fn welcome(version: &str) -> String {
     format!(
         "hledger-anywhere — hledger {version} (wasm32-wasi), running entirely in this tab.\r\n\
-         No journal is loaded. Type `upload` to add hledger journal files, or `?` for help.\r\n",
+         No journal is loaded. Type `upload` for journal files, `upload_dir` for a whole\r\n\
+         folder, or `?` for help.\r\n",
     )
 }
 
@@ -702,6 +706,7 @@ mod tests {
     fn only_four_words_are_the_apps() {
         assert_eq!(classify("upload"), Command::Upload);
         assert_eq!(classify("  upload  "), Command::Upload);
+        assert_eq!(classify("upload_dir"), Command::UploadDir);
         assert_eq!(classify("clear"), Command::Clear);
         assert_eq!(classify("?"), Command::Help);
         assert_eq!(classify("journal"), Command::Journal(None));
@@ -760,6 +765,7 @@ mod tests {
         let cold = welcome("1.52.4");
         assert!(cold.contains("1.52.4"));
         assert!(cold.contains("upload"));
+        assert!(cold.contains("upload_dir"), "a folder upload must be discoverable");
 
         let back = resumed(3, "books/hledger.journal");
         assert!(back.contains('3'));

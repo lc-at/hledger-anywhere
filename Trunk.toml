@@ -11,7 +11,10 @@ port = 8080
 open = false
 
 [watch]
-watch = ["src", "assets/css", "assets/js", "index.html"]
+# assets/wasm is watched so that installing a new engine — which
+# scripts/fetch-hledger-wasm.sh does — is copied into dist without having to
+# notice that the file that changed is the one nothing else watches.
+watch = ["src", "assets/css", "assets/js", "assets/wasm", "index.html"]
 
 # Resolve assets/wasm/hledger.wasm before every build/serve. The script is
 # intentionally non-fatal: without the artifact the app still builds and runs, and
