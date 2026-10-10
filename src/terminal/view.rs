@@ -94,7 +94,7 @@ impl Screen {
         self.terminal.clear();
     }
 
-    pub fn focus(&self) {
+    fn focus(&self) {
         self.terminal.focus();
     }
 

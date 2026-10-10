@@ -24,7 +24,7 @@ use thiserror::Error;
 /// relative path, so `include` directives between uploaded files resolve. The
 /// preopen is `/`; WASI resolves paths relative to a preopen and rejects absolute
 /// paths, which is why the mount point is a directory rather than the root.
-pub const DATA_DIR: &str = "/data";
+const DATA_DIR: &str = "/data";
 
 /// One file to make available to the engine, at a path relative to the upload.
 #[derive(Clone, Debug, PartialEq, Eq)]

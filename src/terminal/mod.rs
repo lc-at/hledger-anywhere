@@ -30,7 +30,7 @@ pub const DEFAULT_FONT: u32 = 14;
 // reads without thinking about it.
 
 /// Bold. Used for anything the user can type.
-pub const BOLD: &str = "\u{1b}[1m";
+const BOLD: &str = "\u{1b}[1m";
 /// Dim. Used for explanation, and for the parts of a message that are not the point.
 pub const DIM: &str = "\u{1b}[2m";
 /// Red, for failures.
@@ -38,7 +38,7 @@ pub const RED: &str = "\u{1b}[31m";
 /// Dim red, for the exit status of a command that failed.
 pub const DIM_RED: &str = "\u{1b}[2;31m";
 /// The accent colour the rest of the interface uses, as a 256-colour amber.
-pub const ACCENT: &str = "\u{1b}[38;5;214m";
+const ACCENT: &str = "\u{1b}[38;5;214m";
 /// Back to normal.
 pub const RESET: &str = "\u{1b}[0m";
 
@@ -713,7 +713,7 @@ pub enum Completion {
 /// One list, because three things have to agree about it: completion offers these
 /// first, the `?` help is expected to describe them, and the README is expected to
 /// document them. Tests check the last two against this.
-pub const COMMANDS: &[&str] = &[
+const COMMANDS: &[&str] = &[
     "upload",
     "upload_dir",
     "journal",
@@ -1476,7 +1476,7 @@ pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
 }
 
 /// A size as a person would say it.
-pub fn bytes_label(bytes: usize) -> String {
+fn bytes_label(bytes: usize) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
     let bytes = bytes as f64;

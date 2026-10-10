@@ -19,7 +19,7 @@ use crate::hledger::JournalFile;
 const CONVENTIONAL_NAMES: [&str; 3] = ["hledger.journal", ".hledger.journal", "hledger.hledger"];
 
 /// Whether a path is one hledger would accept as a journal.
-pub fn is_journal_path(path: &str) -> bool {
+fn is_journal_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".journal") || lower.ends_with(".hledger") || lower.ends_with(".j")
 }

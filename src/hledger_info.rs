@@ -10,10 +10,10 @@
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 /// The hledger version the pinned wasm build was made from.
-pub const HLEDGER_VERSION: &str = env!("HLEDGER_WASM_HLEDGER_VERSION");
+const HLEDGER_VERSION: &str = env!("HLEDGER_WASM_HLEDGER_VERSION");
 
 /// SHA-256 of the pinned artifact, as recorded in `wasm.lock`.
-pub const SHA256: &str = env!("HLEDGER_WASM_SHA256");
+const SHA256: &str = env!("HLEDGER_WASM_SHA256");
 
 /// The engine version as the user should see it in the banner.
 pub fn version() -> &'static str {

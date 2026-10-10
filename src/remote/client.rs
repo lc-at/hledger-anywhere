@@ -213,7 +213,7 @@ impl Account {
     }
 
     /// Whether an account is connected, without asking the network.
-    pub fn is_connected() -> bool {
+    fn is_connected() -> bool {
         new_client()
             .ok()
             .and_then(|client| get(&client, "connected").ok())

@@ -34,7 +34,7 @@ const OFFSCREEN_INPUT_STYLE: &str =
 
 /// Id of the transient upload input, while it exists. Stable so the element can
 /// be found in devtools, and driven by tests.
-pub const UPLOAD_INPUT_ID: &str = "hledger-anywhere-upload-input";
+const UPLOAD_INPUT_ID: &str = "hledger-anywhere-upload-input";
 
 /// Which picker to open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

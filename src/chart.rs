@@ -28,7 +28,7 @@ const EIGHTHS: [char; 8] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '�
 
 /// A parsed CSV table: a header row and the rows under it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Table {
+struct Table {
     pub header: Vec<String>,
     pub rows: Vec<Vec<String>>,
 }
@@ -58,7 +58,7 @@ fn is_total(label: &str) -> bool {
 /// Quoted fields are what make this worth writing rather than splitting on
 /// commas: amounts are quoted and contain them (`"$1,234.56"`), so a naive split
 /// turns one amount into two.
-pub fn parse_csv(text: &str) -> Table {
+fn parse_csv(text: &str) -> Table {
     let mut records: Vec<Vec<String>> = Vec::new();
     for line in text.lines() {
         if line.trim().is_empty() {
@@ -106,7 +106,7 @@ fn parse_record(line: &str) -> Vec<String> {
 /// `$1,234.56`, `$-1000.00`, `-$5`, `1234.56 EUR` and `(5.00)` all mean what they
 /// look like; `0` means zero. Anything without a number is `None`, which is how
 /// an empty cell and a header stay out of the drawing.
-pub fn parse_amount(text: &str) -> Option<f64> {
+fn parse_amount(text: &str) -> Option<f64> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return None;
@@ -161,7 +161,7 @@ fn fit(label: &str, width: usize) -> String {
 /// The values are drawn by size and labelled with their sign, rather than drawn
 /// left and right of a zero line: on a terminal, a bar that grows in the direction
 /// you can read beats one that grows in two.
-pub fn ranking(table: &Table, width: usize, height: usize) -> Vec<String> {
+fn ranking(table: &Table, width: usize, height: usize) -> Vec<String> {
     let mut entries: Vec<(String, f64, String)> = table
         .data_rows()
         .filter_map(|row| {
@@ -230,7 +230,7 @@ pub fn ranking(table: &Table, width: usize, height: usize) -> Vec<String> {
 /// months drawn 55 columns apart is a diagram with nothing in it. Each period gets
 /// a slot just wide enough for a bar and a label, so the shape is what you see
 /// instead of the whitespace.
-pub fn series(table: &Table, width: usize, height: usize) -> Vec<String> {
+fn series(table: &Table, width: usize, height: usize) -> Vec<String> {
     let columns = table.columns().saturating_sub(1);
     if columns == 0 {
         return Vec::new();

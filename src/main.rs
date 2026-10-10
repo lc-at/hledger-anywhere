@@ -3,14 +3,23 @@
 //! # Module layout
 //!
 //! The crate is split along a wasm boundary, enforced by `cfg` rather than by
-//! convention so a `web_sys` import cannot leak into logic that should be
-//! testable on the host:
+//! convention, so a `web_sys` import cannot leak into logic that should be testable
+//! on the host.
 //!
-//! * **Pure modules**, [`terminal`] (the line editor, the command vocabulary,
-//!   the text printed around output), [`journal`] (which uploaded file hledger
-//!   should read), and [`hledger`]'s types. These are covered by `cargo test`.
-//! * **Browser modules**, [`app`], [`terminal::view`] (xterm.js), [`upload`]
-//!   (the file picker), [`store`] (IndexedDB) and `hledger::bridge`.
+//! **Pure modules**, covered by `cargo test`:
+//!
+//! * [`terminal`], the line editor, the vocabulary, and the text printed around
+//!   output.
+//! * [`journal`], which loaded file hledger should read.
+//! * [`chart`], drawing a report, used by the chart plugin.
+//! * [`plugins`], the plugin contract and the bundled plugins.
+//! * [`remote`], remoteStorage paths, listings and the library glue.
+//! * [`hledger_info`], which engine this is, and [`hledger`]'s request types.
+//!
+//! **Browser modules**: [`app`], which wires everything together and decides what a
+//! keystroke means, [`terminal::view`] (xterm.js), [`upload`] (the file picker),
+//! [`store`] (the IndexedDB cache), [`remote::client`] (the remoteStorage library)
+//! and `hledger::bridge`.
 //!
 //! There is one thing in the app: a terminal. The engine is the real hledger CLI
 //! built for wasm32-wasi, pinned by `wasm.lock`.
@@ -22,9 +31,9 @@ mod store;
 #[cfg(target_arch = "wasm32")]
 mod upload;
 
+mod chart;
 mod hledger;
 mod hledger_info;
-mod chart;
 mod journal;
 mod plugins;
 mod remote;
