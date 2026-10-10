@@ -24,6 +24,7 @@ mod upload;
 
 mod hledger;
 mod hledger_info;
+mod chart;
 mod journal;
 mod remote;
 mod terminal;

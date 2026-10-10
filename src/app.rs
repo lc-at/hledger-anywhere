@@ -23,6 +23,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlElement;
 
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
+use crate::chart;
 use crate::journal;
 use crate::remote;
 use crate::store::{Session, Store};
@@ -396,6 +397,138 @@ impl App {
         self.set_font_size(next);
     }
 
+    /// `chart [args]`: run a report and draw it.
+    ///
+    /// The default asks the question a chart is usually asked — what did the months
+    /// cost — and any argument overrides it. `-O csv` is added because it is the
+    /// only output that keeps accounts, periods and amounts apart without parsing a
+    /// text table whose columns move; a caller who asked for a format keeps theirs.
+    fn run_chart(self: &Rc<App>, arguments: &str) {
+        let arguments = if arguments.trim().is_empty() {
+            "balance -M expenses".to_string()
+        } else {
+            arguments.trim().to_string()
+        };
+        let mut argv = argv_for(&arguments);
+        if !arguments.contains("-O") && !arguments.contains("--output-format") {
+            argv.push("-O".to_string());
+            argv.push("csv".to_string());
+        }
+
+        let files = self.files.borrow().clone();
+        self.busy.set(true);
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            let result = hledger::run(HledgerRequest::new(argv, files)).await;
+            app.finish_chart(&arguments, result);
+        });
+    }
+
+    /// A run whose output is drawn rather than printed.
+    fn finish_chart(
+        self: &Rc<App>,
+        command: &str,
+        result: Result<HledgerOutput, EngineError>,
+    ) {
+        match result {
+            Ok(output) => {
+                let (columns, rows) = self.screen.size();
+                // Only drawn from hledger's own numbers, never from the app's
+                // arithmetic: a chart that disagreed with the report would be worse
+                // than no chart at all.
+                let lines = if output.is_failure() {
+                    Vec::new()
+                } else {
+                    chart::render(&output.stdout, columns as usize, rows.saturating_sub(4) as usize)
+                };
+
+                if lines.is_empty() {
+                    if output.is_failure() {
+                        self.output(&output.stderr, Some("\u{1b}[31m"));
+                    } else {
+                        self.say(&format!(
+                            "Nothing to draw: `{command}` gave no amounts. Chart a \
+                             filtered report, like `chart expenses -M` or \
+                             `chart balance --depth 2`."
+                        ));
+                    }
+                } else {
+                    self.say(&terminal::chart_note(command));
+                    self.output(&lines.join("\n"), None);
+                }
+
+                self.record_writes(&output);
+
+                if output.is_failure() {
+                    let status = format!(
+                        "[exit {} · {:.1} s]",
+                        output.exit_code,
+                        output.ms / 1000.0
+                    );
+                    self.block(&status, Some("\u{1b}[2;31m"));
+                    self.remember_chatter(&status);
+                }
+            }
+            Err(EngineError::Cancelled) => self.say("[cancelled]"),
+            Err(error) => self.block(&error.to_string(), Some("\u{1b}[31m")),
+        }
+
+        self.busy.set(false);
+        let pending = std::mem::take(&mut *self.pending.borrow_mut());
+        if pending.is_empty() {
+            self.prompt();
+        } else {
+            self.handle(&pending);
+        }
+    }
+
+    /// Keep what a run wrote, whatever the app did with its output.
+    ///
+    /// Takes the `Rc` because keeping the change means configuring the engine, and
+    /// the write path and the read path have to agree on what is loaded.
+    fn record_writes(self: &Rc<App>, output: &HledgerOutput) {
+        if output.written.is_empty() {
+            return;
+        }
+        // What a command writes is part of the filesystem, not a detour from it:
+        // it replaces or joins the mounted files and is kept for the next visit.
+        // That is what makes `-o` onto a loaded file an edit rather than a report
+        // you have to catch.
+        let mut sizes = Vec::new();
+        {
+            let mut files = self.files.borrow_mut();
+            for file in &output.written {
+                let replaced = files.iter().any(|known| known.path == file.path);
+                sizes.push((file.path.clone(), file.contents.len(), replaced));
+                files.retain(|known| known.path != file.path);
+                files.push(file.clone());
+            }
+            files.sort_by(|left, right| left.path.cmp(&right.path));
+        }
+
+        // A journal that arrived this way is a journal like any other.
+        if self.main.borrow().is_none() {
+            *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
+        }
+        // The account names were read from the journal just replaced.
+        *self.accounts.borrow_mut() = None;
+
+        self.say(&terminal::wrote_note(&sizes));
+
+        // Kept for `download`, which may be typed long after the run; a later run
+        // that writes the same path replaces it.
+        let mut written = self.written.borrow_mut();
+        for file in &output.written {
+            written.retain(|kept| kept.path != file.path);
+            written.push(file.clone());
+        }
+
+        // Stored and re-sent, so the next command reads the new contents rather
+        // than the ones it started with.
+        self.remember();
+        self.configure();
+    }
+
     /// Turn the terminal's accessibility tree on or off, and remember it.
     ///
     /// xterm can do this at runtime, so there is no reload and no lost scrollback;
@@ -763,6 +896,8 @@ impl App {
                 if self.screen_reader.get() { "on" } else { "off" },
                 if self.screen_reader.get() { "off" } else { "on" }
             )),
+            Command::Chart(None) => self.run_chart(""),
+            Command::Chart(Some(arguments)) => self.run_chart(arguments),
             Command::ScreenReader(Some(wanted)) => match terminal::parse_switch(wanted) {
                 Ok(on) => self.set_screen_reader(on),
                 Err(complaint) => self.announce(&complaint),
@@ -929,45 +1064,7 @@ impl App {
                 if let Some(note) = note {
                     self.say(&note);
                 }
-                if !output.written.is_empty() {
-                    // What a command writes is part of the filesystem, not a
-                    // detour from it: it replaces or joins the mounted files and is
-                    // kept for the next visit. That is what makes `-o` onto a
-                    // loaded file an edit rather than a report you have to catch.
-                    let mut sizes = Vec::new();
-                    {
-                        let mut files = self.files.borrow_mut();
-                        for file in &output.written {
-                            let replaced = files.iter().any(|known| known.path == file.path);
-                            sizes.push((file.path.clone(), file.contents.len(), replaced));
-                            files.retain(|known| known.path != file.path);
-                            files.push(file.clone());
-                        }
-                        files.sort_by(|left, right| left.path.cmp(&right.path));
-                    }
-
-                    // A journal that arrived this way is a journal like any other.
-                    if self.main.borrow().is_none() {
-                        *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
-                    }
-                    // The account names were read from the journal just replaced.
-                    *self.accounts.borrow_mut() = None;
-
-                    self.say(&terminal::wrote_note(&sizes));
-
-                    // Kept for `download`, which may be typed long after the run;
-                    // a later run that writes the same path replaces it.
-                    let mut written = self.written.borrow_mut();
-                    for file in &output.written {
-                        written.retain(|kept| kept.path != file.path);
-                        written.push(file.clone());
-                    }
-
-                    // Stored and re-sent, so the next command reads the new
-                    // contents rather than the ones it started with.
-                    self.remember();
-                    self.configure();
-                }
+                self.record_writes(&output);
                 if output.is_failure() {
                     let status = format!(
                         "[exit {} · {:.1} s]",

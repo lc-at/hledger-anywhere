@@ -151,6 +151,8 @@ pub enum Command<'a> {
     Font(Option<&'a str>),
     /// `screenreader [on|off]` shows or sets the accessibility tree.
     ScreenReader(Option<&'a str>),
+    /// `chart [hledger args]` draws a report instead of printing it.
+    Chart(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -182,6 +184,7 @@ pub fn classify(line: &str) -> Command<'_> {
         "put" => Command::Put((!rest.is_empty()).then_some(rest)),
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
+        "chart" => Command::Chart((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -521,6 +524,7 @@ pub fn candidates(paths: &[String]) -> Vec<String> {
         "put",
         "font",
         "screenreader",
+        "chart",
     ]
         .iter()
         .map(|word| (*word).to_string())
@@ -914,6 +918,15 @@ pub fn download_list(files: &[String]) -> String {
     text
 }
 
+/// The note printed above a chart, so it is always clear what was drawn.
+///
+/// A chart is the app's interpretation, not hledger's output, and the numbers are
+/// hledger's own; saying which command produced them is the difference between a
+/// picture and a claim.
+pub fn chart_note(command: &str) -> String {
+    format!("[chart of `{command}` — hledger's numbers, drawn]")
+}
+
 /// Read an on/off argument, accepting the spellings people actually type.
 pub fn parse_switch(text: &str) -> Result<bool, String> {
     match text.trim().to_lowercase().as_str() {
@@ -1054,6 +1067,7 @@ pub fn help() -> String {
        put <path>        save a file hledger wrote into the connected account\n\
        font [size]       show or set the font size (Ctrl+= / Ctrl+- / Ctrl+0 too)\n\
        screenreader on   turn the accessibility tree on (off turns it off)\n\
+       chart [args]      draw a report instead of printing it, e.g. `chart expenses -M`\n\
        /text             search the output; n and N repeat the search\n\
        clear             clear the screen\n\
        ?                 this help\n\
@@ -1774,6 +1788,18 @@ mod tests {
         let complaint = parse_switch("maybe").expect_err("not a switch");
         assert!(complaint.contains("on or off"), "{complaint}");
         assert!(complaint.contains("screenreader on"), "{complaint}");
+    }
+
+    #[test]
+    fn a_chart_is_asked_for_like_any_other_command() {
+        assert_eq!(classify("chart"), Command::Chart(None));
+        assert_eq!(
+            classify("chart expenses -M"),
+            Command::Chart(Some("expenses -M"))
+        );
+        // hledger's own commands are untouched, including one that starts the same.
+        assert_eq!(classify("charting"), Command::Hledger("charting"));
+        assert!(chart_note("balance -M expenses").contains("balance -M expenses"));
     }
 
     #[test]
