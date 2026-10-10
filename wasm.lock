@@ -12,23 +12,23 @@
 # $LEDGER_FILE rather than -f. An earlier build also carried an interim npm
 # artifact with a different dialect; the terminal needs neither, and it is gone.
 #
-# The artifact IS committed, at assets/wasm/hledger.wasm. Engine builds are rare
-# (one per hledger version, not per commit), the app is useless without it, and a
-# fresh clone should build and run with no network. scripts/fetch-hledger-wasm.sh
-# verifies it against `sha256` on every build, and prefers artifacts/hledger.wasm
-# when one has just been built locally, so the checksum is what stops a stale or
-# corrupted binary from ever being run.
+# The artifact is NOT committed: it is 13 MB and changes once per hledger version,
+# so it is published as a release asset and fetched at build time by
+# scripts/fetch-hledger-wasm.sh. `sha256` is enforced whichever way the file
+# arrives, so a wrong, stale or tampered upload is rejected rather than run.
 #
-# Refreshing it after changing hledger-wasm/ (the stubs, or the cabal project):
+# Publishing a new engine (which needs the GitHub API, hence CI rather than a
+# developer machine — see .github/workflows/publish-engine.yml):
 #
-#   sh scripts/build-hledger-wasm.sh      # writes artifacts/hledger.wasm and
-#                                         # prints its size and SHA-256
+#   sh scripts/build-hledger-wasm.sh     # writes artifacts/hledger.wasm and
+#                                        # prints its size and SHA-256
 #   # set `size` and `sha256` below to those printed values
-#   sh scripts/fetch-hledger-wasm.sh      # installs and verifies it
-#   git add assets/wasm/hledger.wasm wasm.lock
+#   git tag wasm-v3 && git push origin wasm-v3
+#   # CI attaches artifacts/... to that tag's release. Then set `url` to the
+#   # asset URL it prints.
 #
-# `url` is an optional download fallback for a build that does not have the file
-# at all. It is empty when there is nowhere to fetch from.
+# Locally, artifacts/hledger.wasm takes precedence, so changing a build input is
+# enough to change the engine without publishing anything.
 #
 # NOTE: keys here are read by a small awk parser, so keep the flat
 # `key = "value"` form.
@@ -39,4 +39,4 @@ hledger_version = "1.52.4"
 ghc_version = "9.12"
 size = 13194161
 sha256 = "acd7c4e955b1191a23afc5171508cba960cf8311cf5f8fb8a9f62f50659e4178"
-url = ""
+url = "https://github.com/lc-at/hledger-anywhere/releases/download/wasm-v2/hledger.wasm"

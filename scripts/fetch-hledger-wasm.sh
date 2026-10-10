@@ -9,17 +9,11 @@
 # "hledger.wasm is missing" state with the instructions below, rather than
 # failing the build or showing blank panels.
 #
-# The artifact itself is committed at assets/wasm/hledger.wasm, so a fresh clone
-# can build without a network. This script exists to keep it honest: it verifies
-# the file against the `sha256` in wasm.lock, and lets a local rebuild take
-# precedence so that changing the build inputs is enough to change the engine.
-#
 # Resolution order:
 #   1. $HLEDGER_WASM_PATH          explicit override, for experimenting
 #   2. artifacts/hledger.wasm      a local build from build-hledger-wasm.sh
-#   3. assets/wasm/hledger.wasm    the committed artifact, if it verifies
-#   4. wasm.lock `url`             a pinned, checksummed download, if one is set
-#   5. nothing available           print instructions, exit 0
+#   3. wasm.lock `url`             the published asset, checksummed
+#   4. nothing available           print instructions, exit 0
 #
 # Whenever a checksum is recorded in wasm.lock it is enforced, including on
 # files that are already in place, so a stale or corrupted binary is replaced

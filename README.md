@@ -81,17 +81,18 @@ trunk serve                        # http://127.0.0.1:8080
 
 `trunk build --release` produces `dist/`, which is all you deploy.
 
-**The engine is committed** at `assets/wasm/hledger.wasm` (13 MB), so a fresh clone
-builds without a network. A `pre_build` hook keeps it honest: it verifies the file
-against the `sha256` in `wasm.lock`, and prefers `artifacts/hledger.wasm` when you
-have just built one, so changing a build input is enough to change the engine. A
-file that does not match the lock is rejected rather than run, and if none is
-available the app still builds and the terminal says the engine is missing.
+**The engine is fetched, not committed.** It is 13 MB and changes once per hledger
+version, so `wasm.lock` pins it by URL, size and SHA-256, and a `pre_build` hook
+downloads and verifies it — preferring `artifacts/hledger.wasm` when you have just
+built one locally, so changing a build input is enough to change the engine. A file
+that does not match the lock is rejected rather than run, and if none is available
+the app still builds and the terminal says the engine is missing.
 
-Refreshing it after changing `hledger-wasm/` (the stubs, or the cabal project):
-build, then update `size` and `sha256` in `wasm.lock` to the printed values. Engine
-builds are rare — one per hledger version — which is why the artifact is worth
-carrying in the repository rather than fetched.
+Publishing a new engine after changing `hledger-wasm/` (the stubs, or the cabal
+project): build it, update `size` and `sha256` in `wasm.lock`, then push a `wasm-*`
+tag — [publish-engine.yml](.github/workflows/publish-engine.yml) attaches the
+artifact to that tag's release using the runner's own token, because a release
+needs the GitHub API. Point `url` at the asset it publishes.
 
 ## How it fits together
 
@@ -101,7 +102,7 @@ assets/js/          hledger-worker.js   the WASI runtime, off the main thread
                     hledger-wasi.js     the main-thread bridge, window.hledgerWasi
                     vendor/wasi/        browser_wasi_shim (MIT), vendored
                     vendor/xterm/       xterm.js (MIT), vendored
-assets/wasm/        hledger.wasm, committed, verified against wasm.lock
+assets/wasm/        hledger.wasm, fetched at build time, verified against wasm.lock
 src/terminal/       the line editor, the commands, the prompt (pure)
   view.rs           xterm.js, wrapped (wasm)
 src/hledger/        the engine's request/response types, and the bridge to JS
@@ -169,7 +170,8 @@ before building.
 
 Pushing to `main` runs `.github/workflows/deploy-pages.yml`: tests, lints, an
 engine smoke test, `trunk build --release`, and a publish of `dist/` to GitHub
-Pages. One-time settings, and the DNS `CNAME` record `hledger` →
+Pages. Pushing a `wasm-*` tag runs `publish-engine.yml`, which publishes the engine
+artifact itself. One-time settings, and the DNS `CNAME` record `hledger` →
 `<owner>.github.io`, are described at the top of that workflow.
 
 ## Licensing

@@ -19,10 +19,10 @@
 /vendor
 /artifacts
 
-# assets/wasm/hledger.wasm IS committed. hledger.wasm is the product: the app is a
-# terminal in front of it, and a build that cannot fetch it has nothing to run.
-# Engine builds are rare (one per hledger version), and it is verified against the
-# SHA-256 in wasm.lock on every build, so the 13 MB is worth not depending on a
-# network. See wasm.lock for how to refresh it.
+# Fetched hledger WASM binary (see wasm.lock + scripts/fetch-hledger-wasm.sh).
+# Published as a release asset rather than committed: it is 13 MB and changes once
+# per hledger version, and a tag push publishes it from CI.
+assets/wasm/*.wasm
+!assets/wasm/.gitkeep
 
 .DS_Store
