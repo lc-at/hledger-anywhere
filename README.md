@@ -50,6 +50,7 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `disconnect` | Forget the account; the files already loaded stay loaded. |
 | `font [size]` | Show or set the font size — the keyboard shortcuts need a keyboard, and a phone has none. |
 | `screenreader on` | Turn xterm's accessibility tree on or off, remembered between visits. |
+| `cmd >> file` | Run `cmd` and append what it prints to a loaded file. |
 | `chart [args]` | Draw a report instead of printing it — `chart expenses -M`, `chart balance --depth 2`. |
 | `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
 | `unalias <name>` | Remove one. |
@@ -83,6 +84,22 @@ can walk line by line, instead of the canvas it otherwise sees. It is off by
 default because building and maintaining that second representation costs
 something, and the setting is remembered, so someone who needs it gets it from the
 first render of every visit rather than having to find a command first.
+
+**Output can be appended, not just printed.** The app is not a shell, but one
+piece of shell syntax is worth having, because it is how hledger is actually used:
+
+```
+$ hledger import data/statement.csv >> data/2024.journal
+[appended 42 line(s) to data/2024.journal (3.1 KB) — `print -f data/2024.journal` shows it]
+```
+
+`import`, `print` and `rewrite` all *print* what they computed, and appending that to
+a journal is the operation a journal needs — `-o` overwrites. The target is a loaded
+file, named either way round (`data/2024.journal` as the engine sees it, or
+`2024.journal` as the app does), and it is appended to only if the command
+succeeded. The join is made well-formed: a file that does not end in a newline gets
+one, so two entries can never become one broken one. A target that is a directory,
+climbs out of the mount, or is more than one word is refused with the reason.
 
 **A report can be drawn.** `chart` runs hledger for you — `chart expenses -M` runs
 `hledger expenses -M -O csv`, and with no arguments it asks the question a chart is

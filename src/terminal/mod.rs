@@ -663,6 +663,103 @@ P 2024-02-01 EUR $1.08
 P 2024-02-01 GBP $1.27
 ";
 
+/// What a submitted line asks for.
+///
+/// The app is not a shell, but one piece of shell syntax is worth having: hledger
+/// prints what it computed, and appending that to a journal is how `import`,
+/// `print` and `rewrite` are actually used. Without it, the only way to keep a
+/// command's output is `-o`, which overwrites — and appending is the operation a
+/// journal needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Redirect {
+    /// A command, with nothing redirected.
+    Plain(String),
+    /// Run `command` and append its output to `target`.
+    Append { command: String, target: String },
+    /// Something to tell the user about instead.
+    Bad(String),
+}
+
+/// Read `command >> target` from a line.
+///
+/// Only the first `>>` counts and the target must be one word: a path with spaces
+/// would be indistinguishable from more arguments, and guessing would append a
+/// journal somewhere nobody meant. Quoting the target is not supported either — say
+/// `>> data/my file.journal` and you get told, rather than a surprise.
+pub fn redirect(line: &str) -> Redirect {
+    let trimmed = line.trim();
+    let Some((command, target)) = trimmed.split_once(">>") else {
+        return Redirect::Plain(trimmed.to_string());
+    };
+    let command = command.trim();
+    let target = target.trim();
+    if command.is_empty() {
+        return Redirect::Bad("Nothing to run before `>>`.".to_string());
+    }
+    if target.is_empty() {
+        return Redirect::Bad(format!(
+            "`{command} >>` needs a file to append to, like `>> data/2024.journal`."
+        ));
+    }
+    if target.split_whitespace().count() != 1 {
+        return Redirect::Bad(format!(
+            "`{target}` is more than one word. Write the file alone after `>>`."
+        ));
+    }
+    Redirect::Append {
+        command: command.to_string(),
+        target: target.to_string(),
+    }
+}
+
+/// The file a `>>` target names, as the app knows it.
+///
+/// The engine sees the journal directory mounted at `data/`, so people write
+/// `data/2024.journal`; the app's own files are named without it. Both are accepted
+/// and neither is guessed at: a target outside the mount is not a file this app can
+/// append to.
+pub fn append_target(target: &str) -> Result<String, String> {
+    let path = target.trim().trim_start_matches("./");
+    let path = path.strip_prefix("data/").unwrap_or(path);
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return Err("`>>` needs a file name, not a directory.".to_string());
+    }
+    if path.ends_with('/') {
+        return Err(format!(
+            "`{target}` is a directory. Append to a file inside it."
+        ));
+    }
+    if path.split('/').any(|part| part == "..") {
+        return Err(format!("`{target}` is outside the journal directory."));
+    }
+    Ok(path.to_string())
+}
+
+/// `existing` with `addition` on the end, as one well-formed file.
+///
+/// Both sides are made to end in a newline, because appending to a file that does
+/// not end in one is how two journal entries become one broken one.
+pub fn append_text(existing: &str, addition: &str) -> String {
+    let mut text = existing.to_string();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(addition);
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
+/// What the terminal says after appending.
+pub fn append_note(target: &str, added_lines: usize, total_bytes: usize) -> String {
+    format!(
+        "[appended {added_lines} line(s) to {target} ({}) — `print -f {target}` shows it]",
+        bytes_label(total_bytes)
+    )
+}
+
 /// What `alias name=expansion` means.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AliasEdit {
@@ -1068,6 +1165,7 @@ pub fn help() -> String {
        font [size]       show or set the font size (Ctrl+= / Ctrl+- / Ctrl+0 too)\n\
        screenreader on   turn the accessibility tree on (off turns it off)\n\
        chart [args]      draw a report instead of printing it, e.g. `chart expenses -M`\n\
+       cmd >> file       run `cmd` and append its output to a loaded file\n\
        /text             search the output; n and N repeat the search\n\
        clear             clear the screen\n\
        ?                 this help\n\
@@ -1788,6 +1886,70 @@ mod tests {
         let complaint = parse_switch("maybe").expect_err("not a switch");
         assert!(complaint.contains("on or off"), "{complaint}");
         assert!(complaint.contains("screenreader on"), "{complaint}");
+    }
+
+    #[test]
+    fn a_redirect_is_read_from_the_line() {
+        assert_eq!(
+            redirect("hledger import data/2024.csv >> data/2024.journal"),
+            Redirect::Append {
+                command: "hledger import data/2024.csv".to_string(),
+                target: "data/2024.journal".to_string(),
+            }
+        );
+        // No redirect at all is the ordinary case and must pass through untouched.
+        assert_eq!(
+            redirect("  balance --tree  "),
+            Redirect::Plain("balance --tree".to_string())
+        );
+
+        // Each way it can be wrong says which part is wrong.
+        for (line, expected) in [
+            (">> data/x.journal", "before"),
+            ("print >>", "append to"),
+            ("print >> two words", "more than one word"),
+        ] {
+            match redirect(line) {
+                Redirect::Bad(message) => assert!(message.contains(expected), "{line}: {message}"),
+                other => panic!("{line} should be refused: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_redirect_target_is_understood_the_way_people_write_it() {
+        // The engine's view and the app's view of the same file.
+        assert_eq!(append_target("data/2024.journal").as_deref(), Ok("2024.journal"));
+        assert_eq!(append_target("2024.journal").as_deref(), Ok("2024.journal"));
+        assert_eq!(
+            append_target("data/books/2024.journal").as_deref(),
+            Ok("books/2024.journal")
+        );
+        assert_eq!(append_target("./data/x.journal").as_deref(), Ok("x.journal"));
+
+        assert!(append_target("data/").is_err());
+        assert!(append_target("../outside.journal").is_err());
+        assert!(append_target("data/books/").is_err());
+    }
+
+    #[test]
+    fn appending_keeps_the_file_well_formed() {
+        // Either side missing its newline must not join two entries together.
+        assert_eq!(append_text("a\n", "b\n"), "a\nb\n");
+        assert_eq!(append_text("a", "b\n"), "a\nb\n");
+        assert_eq!(append_text("a\n", "b"), "a\nb\n");
+        assert_eq!(append_text("a", "b"), "a\nb\n");
+        // An empty file is not a special case that needs a leading newline.
+        assert_eq!(append_text("", "b\n"), "b\n");
+        assert_eq!(append_text("", ""), "");
+    }
+
+    #[test]
+    fn the_append_note_says_what_landed_where() {
+        let note = append_note("2024.journal", 12, 4096);
+        assert!(note.contains("12 line(s)"), "{note}");
+        assert!(note.contains("2024.journal"), "{note}");
+        assert!(note.contains("4.0 KB"), "{note}");
     }
 
     #[test]

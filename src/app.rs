@@ -483,21 +483,30 @@ impl App {
     }
 
     /// Keep what a run wrote, whatever the app did with its output.
-    ///
-    /// Takes the `Rc` because keeping the change means configuring the engine, and
-    /// the write path and the read path have to agree on what is loaded.
     fn record_writes(self: &Rc<App>, output: &HledgerOutput) {
-        if output.written.is_empty() {
+        let sizes = self.absorb(&output.written);
+        if sizes.is_empty() {
             return;
         }
-        // What a command writes is part of the filesystem, not a detour from it:
-        // it replaces or joins the mounted files and is kept for the next visit.
-        // That is what makes `-o` onto a loaded file an edit rather than a report
-        // you have to catch.
+        self.say(&terminal::wrote_note(&sizes));
+    }
+
+    /// Take files into what is loaded, store them, and tell the engine.
+    ///
+    /// Files the engine produced are part of the filesystem, not a detour from it:
+    /// they replace or join the mounted ones and are kept for the next visit, which
+    /// is what makes `-o` onto a loaded file an edit rather than a report you have
+    /// to catch. Takes the `Rc` because telling the engine is part of keeping a
+    /// change: the write path and the read path must agree on what is loaded.
+    fn absorb(self: &Rc<App>, incoming: &[JournalFile]) -> Vec<(String, usize, bool)> {
+        if incoming.is_empty() {
+            return Vec::new();
+        }
+
         let mut sizes = Vec::new();
         {
             let mut files = self.files.borrow_mut();
-            for file in &output.written {
+            for file in incoming {
                 let replaced = files.iter().any(|known| known.path == file.path);
                 sizes.push((file.path.clone(), file.contents.len(), replaced));
                 files.retain(|known| known.path != file.path);
@@ -513,20 +522,21 @@ impl App {
         // The account names were read from the journal just replaced.
         *self.accounts.borrow_mut() = None;
 
-        self.say(&terminal::wrote_note(&sizes));
-
         // Kept for `download`, which may be typed long after the run; a later run
         // that writes the same path replaces it.
-        let mut written = self.written.borrow_mut();
-        for file in &output.written {
-            written.retain(|kept| kept.path != file.path);
-            written.push(file.clone());
+        {
+            let mut written = self.written.borrow_mut();
+            for file in incoming {
+                written.retain(|kept| kept.path != file.path);
+                written.push(file.clone());
+            }
         }
 
         // Stored and re-sent, so the next command reads the new contents rather
         // than the ones it started with.
         self.remember();
         self.configure();
+        sizes
     }
 
     /// Turn the terminal's accessibility tree on or off, and remember it.
@@ -807,7 +817,7 @@ impl App {
     }
 
     fn submit(self: &Rc<App>) {
-        let Some(line) = self.editor.borrow_mut().take() else {
+        let Some(mut line) = self.editor.borrow_mut().take() else {
             // An empty line is a command too, and the one a terminal is most
             // often given: it prints a fresh prompt line, as a shell does.
             // Redrawing in place would be invisible — the prompt is already there
@@ -817,7 +827,34 @@ impl App {
             return;
         };
         save_history(self.editor.borrow().history());
+        // The echo is what was typed, `>>` and all, because that is what is on
+        // screen and a search must not find it.
         self.remember_chatter(&format!("{}{line}", self.prompt_text()));
+
+        // One piece of shell syntax, read before anything else: `cmd >> file`.
+        let append = match terminal::redirect(&line) {
+            terminal::Redirect::Plain(command) => {
+                line = command;
+                None
+            }
+            terminal::Redirect::Append { command, target } => match terminal::append_target(&target)
+            {
+                Ok(path) => {
+                    line = command;
+                    // Both forms matter: the app files under `path`, and the note
+                    // has to name the file the way a command would.
+                    Some((path, target))
+                }
+                Err(complaint) => {
+                    self.announce(&complaint);
+                    return;
+                }
+            },
+            terminal::Redirect::Bad(message) => {
+                self.announce(&message);
+                return;
+            }
+        };
 
         // The command is already on screen: the prompt redraw printed what was
         // typed, character by character. A shell does not echo it again, and
@@ -839,6 +876,13 @@ impl App {
             }
             _ => line,
         };
+
+        // An append only means something for a command that prints journal text.
+        // Saying so beats silently ignoring the `>>`, which would lose the output.
+        if append.is_some() && !matches!(terminal::classify(&line), Command::Hledger(_)) {
+            self.announce("`>>` appends what an hledger command prints. Give it one to run.");
+            return;
+        }
 
         match terminal::classify(&line) {
             Command::Clear => {
@@ -923,7 +967,7 @@ impl App {
                 self.announce(&text);
             }
             Command::Journal(Some(path)) => self.set_journal(path),
-            Command::Hledger(command) => self.run(command),
+            Command::Hledger(command) => self.run_with(command, append),
         }
     }
 
@@ -1039,7 +1083,8 @@ impl App {
         });
     }
 
-    fn run(self: &Rc<App>, command: &str) {
+    /// Run a command, optionally appending what it prints to a loaded file.
+    fn run_with(self: &Rc<App>, command: &str, append: Option<(String, String)>) {
         let argv = argv_for(command);
         let files = self.files.borrow().clone();
         self.busy.set(true);
@@ -1047,13 +1092,25 @@ impl App {
         let app = Rc::clone(self);
         spawn_local(async move {
             let result = hledger::run(HledgerRequest::new(argv, files)).await;
-            app.finish(result);
+            app.finish(result, append);
         });
     }
 
-    fn finish(self: &Rc<App>, result: Result<HledgerOutput, EngineError>) {
+    fn finish(
+        self: &Rc<App>,
+        result: Result<HledgerOutput, EngineError>,
+        append: Option<(String, String)>,
+    ) {
         match result {
             Ok(output) => {
+                // Redirected output goes to the file, not the screen: showing it
+                // as well would be the print you asked not to have. Nothing is
+                // appended from a run that failed.
+                if let (Some((path, target)), false) = (append.as_ref(), output.is_failure()) {
+                    self.append_output(path, target, &output);
+                    return self.settle();
+                }
+
                 let (visible, note) = terminal::visible_output(&output.stdout);
                 if !visible.trim().is_empty() {
                     self.output(&visible, None);
@@ -1082,6 +1139,12 @@ impl App {
             Err(error) => self.block(&error.to_string(), Some("\u{1b}[31m")),
         }
 
+        self.settle();
+    }
+
+    /// The end of every run: ready for input, and replaying what was typed while
+    /// the engine was busy.
+    fn settle(self: &Rc<App>) {
         self.busy.set(false);
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         if pending.is_empty() {
@@ -1091,6 +1154,28 @@ impl App {
             // an Enter.
             self.handle(&pending);
         }
+    }
+
+    /// Append what a command printed to a loaded file.
+    ///
+    /// The command ran against the files as they were, and its output is journal
+    /// text — that is what `import`, `print` and `rewrite` produce — so the file
+    /// grows by exactly what was on stdout, well-formed at the join.
+    fn append_output(self: &Rc<App>, path: &str, target: &str, output: &HledgerOutput) {
+        let existing = self
+            .files
+            .borrow()
+            .iter()
+            .find(|file| file.path == path)
+            .map(|file| file.contents.clone())
+            .unwrap_or_default();
+        let combined = terminal::append_text(&existing, &output.stdout);
+        let added = output.stdout.lines().count();
+        let total = combined.len();
+
+        let file = JournalFile::new(path, &combined);
+        self.absorb(&[file]);
+        self.say(&terminal::append_note(target, added, total));
     }
 
     /// Load the built-in sample journal.
