@@ -56,6 +56,14 @@ They are loaded by plain `<script>`/`<link>` tags in `index.html` and reached
 through the globals they publish (`window.Terminal`, `window.FitAddon.FitAddon`),
 which is why no npm dependency and no bundler are involved.
 
+## remoteStorage.js — MIT
+
+Vendored in `assets/js/vendor/remotestorage/`, loaded on demand by
+`src/remote/client.rs` when a remote command is first used.
+
+- Upstream: <https://github.com/remotestorage/remotestorage.js>
+- Pinned version: **2.0.0-beta.10** (npm's `latest` and `stable` both point at it)
+
 ## Rust crates
 
 The Rust dependency tree is not listed here; run `cargo license` or

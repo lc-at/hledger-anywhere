@@ -24,6 +24,7 @@ use web_sys::HtmlElement;
 
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
 use crate::journal;
+use crate::remote;
 use crate::store::{Session, Store};
 use crate::terminal::{self, Command, Completion, Editor};
 use crate::terminal::view::Screen;
@@ -98,6 +99,59 @@ pub fn start() {
     let booting = Rc::clone(&app);
     spawn_local(async move { boot(booting).await });
 }
+
+/// Walk a remoteStorage directory and read every file in it.
+///
+/// Breadth-first over the folders `getListing` reports, with a visited set: the
+/// library is not consulted about loops, and one bad listing should not become an
+/// infinite walk. The size cap is the same one an upload gets, because this is the
+/// same act by a different route.
+async fn read_remote(
+    directory: &str,
+) -> Result<(upload::Picked, Option<String>), remote::client::RemoteError> {
+    let account = remote::client::Account::open().await?;
+    let address = account.user_address();
+    let mut picked = upload::Picked::default();
+    let mut queue = vec![directory.to_string()];
+    let mut visited: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+
+    while let Some(here) = queue.pop() {
+        if visited.contains(&here) {
+            continue;
+        }
+        visited.push(here.clone());
+
+        let entries = account.list(&here).await?;
+        // Only folders directly inside this one are worth listing next: a listing
+        // that reached further would otherwise be walked twice.
+        queue.extend(remote::subdirectories(&entries, &here));
+
+        for entry in entries.iter().filter(|entry| !entry.is_dir) {
+            let Some(path) = remote::mount_path(&entry.path) else {
+                continue;
+            };
+            if picked.files.iter().any(|file| file.path == path) {
+                continue;
+            }
+            let contents = account.read(&entry.path).await?;
+            bytes += contents.len();
+            if bytes > MAX_REMOTE_BYTES {
+                return Err(remote::client::RemoteError::Failed(format!(
+                    "that is more than {} MB of journal; `remote <folder>` loads a smaller part",
+                    MAX_REMOTE_BYTES / (1024 * 1024)
+                )));
+            }
+            picked.files.push(JournalFile::new(path, contents));
+        }
+    }
+
+    picked.files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok((picked, address))
+}
+
+/// How much may be read from an account in one go, matching the upload limit.
+const MAX_REMOTE_BYTES: usize = 50 * 1024 * 1024;
 
 /// Hand a file to the browser as a download.
 ///
@@ -626,6 +680,13 @@ impl App {
             Command::Unalias(None) => {
                 self.announce("Which one? `unalias <name>`, or `alias` to list them.");
             }
+            Command::Connect(Some(address)) => self.connect_remote(address),
+            Command::Connect(None) => self.announce(
+                "Which account? `connect user@host` — for example `connect you@5apps.com`.",
+            ),
+            Command::Disconnect => self.disconnect_remote(),
+            Command::Remote(None) => self.load_remote(""),
+            Command::Remote(Some(path)) => self.load_remote(path),
             Command::Search(term) => self.search(term.unwrap_or("")),
             Command::SearchAgain(backwards) => self.search_again(backwards),
             Command::Download(Some(path)) => self.download(path),
@@ -646,6 +707,33 @@ impl App {
 
     // -- commands -----------------------------------------------------------
 
+    /// Files arrive three ways — picked, dropped, read from an account — and this
+    /// is the one place that mounts them, so the states it sets (files, main
+    /// journal, cache, engine configuration) cannot drift between them.
+    fn accept_files(self: &Rc<App>, picked: Picked, source: &str) {
+        let text = terminal::files_arrived(
+            source,
+            &picked
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .collect::<Vec<_>>(),
+            &picked.skipped,
+            journal::choose_main(&picked.files).as_deref(),
+        );
+        // What is loaded is what was chosen: a second load replaces the first
+        // rather than accumulating, so `journal` and `?` can describe the state in
+        // one sentence.
+        *self.files.borrow_mut() = picked.files;
+        *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
+        // Different journal, different accounts.
+        *self.accounts.borrow_mut() = None;
+
+        self.remember();
+        self.configure();
+        self.announce(&text);
+    }
+
     fn upload(self: &Rc<App>, mode: upload::Mode) {
         // Synchronously: see the module comment. Everything after this point can
         // be async because the dialog is already open.
@@ -659,7 +747,7 @@ impl App {
         let app = Rc::clone(self);
         spawn_local(async move {
             match pending.await_selection().await {
-                Ok(picked) => app.accept_upload(picked),
+                Ok(picked) => app.accept_files(picked, "Uploaded"),
                 // Naming the command that was cancelled matters here: a directory
                 // dialog and a file dialog look nothing alike, and the user should
                 // not have to remember which one they asked for.
@@ -671,24 +759,6 @@ impl App {
         });
     }
 
-    fn accept_upload(self: &Rc<App>, picked: Picked) {
-        let text = terminal::uploaded(
-            &picked.files.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
-            &picked.skipped,
-            journal::choose_main(&picked.files).as_deref(),
-        );
-        // What is uploaded is what is loaded: a second upload replaces the first
-        // rather than accumulating, so `journal` and `?` can describe the state in
-        // one sentence.
-        *self.files.borrow_mut() = picked.files;
-        *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
-        // Different journal, different accounts.
-        *self.accounts.borrow_mut() = None;
-
-        self.remember();
-        self.configure();
-        self.announce(&text);
-    }
 
     fn set_journal(self: &Rc<App>, path: &str) {
         let files = self.files.borrow();
@@ -974,6 +1044,75 @@ impl App {
         self.announce(&format!("Removed `{name}`."));
     }
 
+    /// `connect user@host`: start connecting a remoteStorage account.
+    ///
+    /// This ends in a redirect to the provider's consent screen and back, so the
+    /// message has to be printed before anything else happens — after the redirect
+    /// there is nobody left to print it.
+    fn connect_remote(self: &Rc<App>, address: &str) {
+        let app = Rc::clone(self);
+        let address = address.to_string();
+        self.announce(&format!(
+            "Connecting {address} — your browser will leave this page for the \
+             provider's consent screen and come back."
+        ));
+        spawn_local(async move {
+            if let Err(error) = remote::client::load_library().await {
+                app.announce(&error.message());
+                return;
+            }
+            match remote::client::Account::connect(&address) {
+                Ok(()) => {}
+                Err(error) => app.announce(&error.message()),
+            }
+        });
+    }
+
+    /// `disconnect`: forget the account. The local cache is left alone, so the
+    /// files already loaded keep working.
+    fn disconnect_remote(self: &Rc<App>) {
+        match remote::client::Account::disconnect() {
+            Ok(()) => self.announce(
+                "Disconnected. The files already loaded stay loaded; `connect` \
+                 brings the account back.",
+            ),
+            Err(error) => self.announce(&error.message()),
+        }
+    }
+
+    /// `remote [dir]`: walk the account and mount what is there.
+    ///
+    /// The work is done in the terminal's own thread of control, so the terminal
+    /// says what it is doing: a journal is a directory tree, and this walks it one
+    /// listing at a time.
+    fn load_remote(self: &Rc<App>, argument: &str) {
+        let app = Rc::clone(self);
+        let directory = remote::directory_for(argument);
+        self.busy.set(true);
+        self.announce(&format!("Reading {directory} from your storage account…"));
+
+        spawn_local(async move {
+            let outcome = read_remote(&directory).await;
+            app.busy.set(false);
+            match outcome {
+                Ok((picked, _)) if picked.files.is_empty() => app.announce(&format!(
+                    "Nothing under {directory}. Files have to live in the {} category.",
+                    remote::CATEGORY
+                )),
+                Ok((picked, address)) => {
+                    let count = picked.files.len();
+                    app.accept_files(picked, "Read");
+                    let from = match address {
+                        Some(address) => format!("{directory} in {address}"),
+                        None => directory.clone(),
+                    };
+                    app.announce(&format!("Read {count} file(s) from {from}."));
+                }
+                Err(error) => app.announce(&error.message()),
+            }
+        });
+    }
+
     /// Take files dropped anywhere on the page.
     ///
     /// One listener for all three drag events: they differ only in what should
@@ -1009,7 +1148,7 @@ impl App {
                         let app = Rc::clone(&app);
                         spawn_local(async move {
                             match upload::read_dropped(&files).await {
-                                Ok(picked) => app.accept_upload(picked),
+                                Ok(picked) => app.accept_files(picked, "Dropped"),
                                 Err(error) => app.announce(&error.message()),
                             }
                         });

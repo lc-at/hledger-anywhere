@@ -1,0 +1,253 @@
+//! The remoteStorage library, glued in (wasm-only).
+//!
+//! Everything here goes through `js_sys::Reflect`, like the rest of the app's
+//! JavaScript boundary: the vendored bundle is an ordinary script that publishes
+//! `window.RemoteStorage`, and going through the global keeps the boundary
+//! callable by hand from the console when a connection misbehaves.
+//!
+//! The library is loaded **on demand**. It is 146 KB that most visits never need,
+//! and the first thing this app has to do is be a terminal.
+
+use js_sys::{Array, Function, Promise, Reflect};
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
+
+use super::{CATEGORY, Entry};
+
+/// Where the vendored library lives.
+const LIBRARY: &str = "/js/vendor/remotestorage/remotestorage.js";
+
+/// The category this app claims, in the form `access.claim` wants.
+const CLAIM: &str = "hledger";
+
+/// What went wrong, in terms the terminal can print.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteError {
+    /// The library could not be loaded.
+    Library(String),
+    /// The library was loaded but would not do what was asked.
+    Call(String),
+    /// The account is not connected yet.
+    NotConnected,
+    /// The account is connected but the request failed.
+    Failed(String),
+}
+
+impl RemoteError {
+    pub fn message(&self) -> String {
+        match self {
+            RemoteError::Library(reason) => {
+                format!("could not load the remoteStorage library: {reason}")
+            }
+            RemoteError::Call(what) => format!("the remoteStorage library would not {what}"),
+            RemoteError::NotConnected => {
+                "no storage account is connected. `connect user@host` starts that.".to_string()
+            }
+            RemoteError::Failed(reason) => reason.clone(),
+        }
+    }
+}
+
+fn window() -> Result<JsValue, RemoteError> {
+    web_sys::window()
+        .map(JsValue::from)
+        .ok_or_else(|| RemoteError::Call("find the window".to_string()))
+}
+
+fn get(target: &JsValue, name: &str) -> Result<JsValue, RemoteError> {
+    Reflect::get(target, &JsValue::from_str(name))
+        .map_err(|_| RemoteError::Call(format!("read `{name}`")))
+}
+
+fn call(target: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, RemoteError> {
+    let function = get(target, name)?
+        .dyn_into::<Function>()
+        .map_err(|_| RemoteError::Call(format!("use `{name}`")))?;
+    let list = Array::new();
+    for argument in args {
+        list.push(argument);
+    }
+    function
+        .apply(target, &list)
+        .map_err(|error| RemoteError::Failed(describe(&error)))
+}
+
+/// The message from a thrown value, which is a string as often as an Error.
+fn describe(value: &JsValue) -> String {
+    value
+        .as_string()
+        .or_else(|| get(value, "message").ok().and_then(|m| m.as_string()))
+        .unwrap_or_else(|| "unknown error".to_string())
+}
+
+/// Load the vendored library, and install it as `window.RemoteStorage`.
+///
+/// Resolves immediately when it is already there, so this is safe to call before
+/// every remote command.
+pub async fn load_library() -> Result<JsValue, RemoteError> {
+    let window = window()?;
+    if let Ok(existing) = get(&window, "RemoteStorage")
+        && !existing.is_undefined()
+        && !existing.is_null()
+    {
+        return Ok(existing);
+    }
+
+    let document = get(&window, "document")?;
+    let script = call(&document, "createElement", &[JsValue::from_str("script")])?;
+    let script = script
+        .dyn_into::<web_sys::EventTarget>()
+        .map_err(|_| RemoteError::Library("could not create a script element".to_string()))?;
+    Reflect::set(&script, &JsValue::from_str("src"), &JsValue::from_str(LIBRARY))
+        .map_err(|_| RemoteError::Library("could not set the script source".to_string()))?;
+
+    let loaded = Promise::new(&mut |resolve, reject| {
+        let ok = Closure::once_into_js(move || {
+            let _ = resolve.call0(&JsValue::UNDEFINED);
+        });
+        let failed = Closure::once_into_js(move || {
+            let _ = reject.call1(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str("the script did not load"),
+            );
+        });
+        let _ = script.add_event_listener_with_callback(
+            "load",
+            ok.unchecked_ref::<Function>(),
+        );
+        let _ = script.add_event_listener_with_callback(
+            "error",
+            failed.unchecked_ref::<Function>(),
+        );
+    });
+
+    let head = get(&document, "head")?;
+    let _ = call(&head, "appendChild", &[script.into()]);
+    JsFuture::from(loaded)
+        .await
+        .map_err(|error| RemoteError::Library(describe(&error)))?;
+
+    let library = get(&window, "RemoteStorage")?;
+    if library.is_undefined() || library.is_null() {
+        return Err(RemoteError::Library(
+            "the script loaded but published nothing".to_string(),
+        ));
+    }
+    Ok(library)
+}
+
+/// A connected remoteStorage client with the app's category claimed.
+pub struct Account {
+    client: JsValue,
+    /// The scope client, so listing and reading do not repeat the prefix.
+    scope: JsValue,
+}
+
+impl Account {
+    /// Connect, or find out that the account is not connected yet.
+    ///
+    /// `access.claim` has to happen before the client is used, and `connect` is
+    /// what starts the OAuth dance — which is a redirect, so a caller that gets
+    /// `Ok` may be about to lose the page.
+    pub async fn open() -> Result<Account, RemoteError> {
+        let _ = load_library().await?;
+        let client = new_client()?;
+        Account::check_connected(&client)
+    }
+
+    fn check_connected(client: &JsValue) -> Result<Account, RemoteError> {
+        let connected = get(client, "connected")?.as_bool().unwrap_or(false);
+        if !connected {
+            return Err(RemoteError::NotConnected);
+        }
+        let scope = call(client, "scope", &[JsValue::from_str(CATEGORY)])?;
+        Ok(Account {
+            client: client.clone(),
+            scope,
+        })
+    }
+
+    /// The address the account belongs to, for saying which one is connected.
+    pub fn user_address(&self) -> Option<String> {
+        get(&self.client, "userAddress")
+            .ok()
+            .and_then(|value| value.as_string())
+    }
+
+    /// Start connecting to `address`.
+    ///
+    /// This returns as soon as the library has begun; the browser then leaves the
+    /// page for the provider's consent screen and comes back. Anything the caller
+    /// wants to say has to be said before this.
+    pub fn connect(address: &str) -> Result<(), RemoteError> {
+        let client = new_client()?;
+        let _ = call(&client, "connect", &[JsValue::from_str(address)])?;
+        Ok(())
+    }
+
+    /// Disconnect, leaving the local cache alone.
+    pub fn disconnect() -> Result<(), RemoteError> {
+        let client = new_client()?;
+        let _ = call(&client, "disconnect", &[])?;
+        Ok(())
+    }
+
+    /// List a folder.
+    pub async fn list(&self, directory: &str) -> Result<Vec<Entry>, RemoteError> {
+        let arguments = Array::new();
+        arguments.push(&JsValue::from_str(directory));
+        let listing = JsFuture::from(
+            call(&self.scope, "getListing", &[JsValue::from_str(directory)])?
+                .dyn_into::<Promise>()
+                .map_err(|_| RemoteError::Call("list a folder".to_string()))?,
+        )
+        .await
+        .map_err(|error| RemoteError::Failed(describe(&error)))?;
+        Ok(super::parse_listing(&json_value(&listing)))
+    }
+
+    /// Read one file.
+    pub async fn read(&self, path: &str) -> Result<String, RemoteError> {
+        let file = JsFuture::from(
+            call(&self.scope, "getFile", &[JsValue::from_str(path)])?
+                .dyn_into::<Promise>()
+                .map_err(|_| RemoteError::Call("read a file".to_string()))?,
+        )
+        .await
+        .map_err(|error| RemoteError::Failed(describe(&error)))?;
+        let data = get(&file, "data")?;
+        data.as_string()
+            .ok_or_else(|| RemoteError::Failed(format!("`{path}` is not text")))
+    }
+}
+
+/// A fresh client with the app's category claimed.
+///
+/// Claiming happens here, before any use, because the library refuses to touch a
+/// path whose access was not claimed — and claiming is what puts the scope into
+/// the OAuth request.
+fn new_client() -> Result<JsValue, RemoteError> {
+    let library = window().and_then(|window| get(&window, "RemoteStorage"))?;
+    let constructor: Function = library
+        .dyn_into()
+        .map_err(|_| RemoteError::Library("RemoteStorage is not a constructor".to_string()))?;
+    let client = Reflect::construct(&constructor, &Array::new())
+        .map_err(|error| RemoteError::Failed(describe(&error)))?;
+    let access = get(&client, "access")?;
+    let _ = call(
+        &access,
+        "claim",
+        &[JsValue::from_str(CLAIM), JsValue::from_str("rw")],
+    )?;
+    Ok(client)
+}
+
+/// A JS value as `serde_json`, through `JSON.stringify`.
+fn json_value(value: &JsValue) -> serde_json::Value {
+    js_sys::JSON::stringify(value)
+        .ok()
+        .and_then(|text| text.as_string())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(serde_json::Value::Null)
+}

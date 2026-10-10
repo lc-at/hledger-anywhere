@@ -139,6 +139,12 @@ pub enum Command<'a> {
     Alias(Option<&'a str>),
     /// `unalias name` removes one.
     Unalias(Option<&'a str>),
+    /// `connect user@host` connects a remoteStorage account.
+    Connect(Option<&'a str>),
+    /// `disconnect` forgets it.
+    Disconnect,
+    /// `remote [dir]` loads files from the connected account.
+    Remote(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -164,6 +170,9 @@ pub fn classify(line: &str) -> Command<'_> {
         "demo" => Command::Demo,
         "download" => Command::Download((!rest.is_empty()).then_some(rest)),
         "alias" => Command::Alias((!rest.is_empty()).then_some(rest)),
+        "connect" => Command::Connect((!rest.is_empty()).then_some(rest)),
+        "disconnect" => Command::Disconnect,
+        "remote" => Command::Remote((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -497,6 +506,9 @@ pub fn candidates(paths: &[String]) -> Vec<String> {
         "download",
         "alias",
         "unalias",
+        "connect",
+        "remote",
+        "disconnect",
     ]
         .iter()
         .map(|word| (*word).to_string())
@@ -909,9 +921,17 @@ pub fn resumed(count: usize, main: &str) -> String {
     )
 }
 
-/// What the terminal prints after an upload.
-pub fn uploaded(loaded: &[String], skipped: &[(String, String)], main: Option<&str>) -> String {
-    let mut text = format!("Uploaded {} file(s).\r\n", loaded.len());
+/// What the terminal prints after files arrive, from wherever they came.
+///
+/// `source` is the verb: files are uploaded, dropped or read from an account, and
+/// saying "Uploaded" after `remote` would be a lie about where they went.
+pub fn files_arrived(
+    source: &str,
+    loaded: &[String],
+    skipped: &[(String, String)],
+    main: Option<&str>,
+) -> String {
+    let mut text = format!("{source} {} file(s).\r\n", loaded.len());
     for path in loaded {
         text.push_str(&format!("  {path}\r\n"));
     }
@@ -954,17 +974,29 @@ pub fn file_list(files: &[String], main: Option<&str>) -> String {
 /// keystroke away and knows far more.
 pub fn help() -> String {
     "This is a terminal for hledger, running in your browser. Everything you type is\n\
-     passed to hledger unchanged, without needing -f — the uploaded files are mounted\n\
-     and LEDGER_FILE points at the one being read.\n\
+     passed to hledger unchanged, without needing -f: the loaded files are mounted and\n\
+     LEDGER_FILE points at the one being read.\n\
      \n\
-       upload            choose files to add (folders are not uploaded; pick the files)\n\
-       journal           list uploaded files and mark the one being read\n\
-       journal <path>    read a different uploaded file\n\
+       upload            choose files to add\n\
+       upload_dir        choose a folder to add, keeping the paths inside it\n\
+       demo              load a small built-in journal to try things on\n\
+       journal           list loaded files and mark the one being read\n\
+       journal <path>    read a different loaded file\n\
+       download <path>   save a file a command wrote with -o\n\
+       alias name=cmd    make `name` run `cmd` (`alias` lists, `unalias` removes)\n\
+       connect user@host connect a remoteStorage account, then `remote`\n\
+       remote [dir]      load every journal file under /hledger/ (or a folder in it)\n\
+       disconnect        forget the account (the files stay in the cache)\n\
+       /text             search the output; n and N repeat the search\n\
        clear             clear the screen\n\
        ?                 this help\n\
      \n\
-     Keys: Enter runs, Up/Down recall history, Tab completes, Ctrl+U or Ctrl+C clears\n\
-     the line. Try `hledger stats` or `hledger balance --tree`.\n"
+     Keys: Enter runs; Tab completes commands, flags, accounts, aliases and paths;\n\
+     Up/Down recall history; Ctrl+C stops a running command or clears the line.\n\
+     Emacs/readline keys work too: Ctrl+A/E line ends, Ctrl+B/F back and forward,\n\
+     Ctrl+K/U/W kill, Ctrl+Y yank, Ctrl+T transpose, Ctrl+D delete, Alt+B/F by word,\n\
+     Ctrl+L clear, Ctrl+R reverse search the history, Ctrl+= and Ctrl+- the font.\n\
+     Try `hledger stats` or `hledger balance --tree`.\n"
         .to_string()
 }
 
@@ -1266,7 +1298,8 @@ mod tests {
         assert!(back.contains('3'));
         assert!(back.contains("books/hledger.journal"));
 
-        let up = uploaded(
+        let up = files_arrived(
+            "Uploaded",
             &["hledger.journal".to_string()],
             &[("logo.png".to_string(), "binary".to_string())],
             Some("hledger.journal"),
@@ -1275,7 +1308,7 @@ mod tests {
         assert!(up.contains("skipped logo.png: binary"));
         assert!(up.contains("hledger balance"));
 
-        let nothing = uploaded(&["data.csv".to_string()], &[], None);
+        let nothing = files_arrived("Uploaded", &["data.csv".to_string()], &[], None);
         assert!(nothing.contains("None of those looks like a journal"));
     }
 
@@ -1499,6 +1532,18 @@ mod tests {
     }
 
     #[test]
+    fn the_remote_commands_are_the_apps_and_nothing_else_is_shadowed() {
+        assert_eq!(classify("connect user@5apps.com"), Command::Connect(Some("user@5apps.com")));
+        assert_eq!(classify("connect"), Command::Connect(None));
+        assert_eq!(classify("disconnect"), Command::Disconnect);
+        assert_eq!(classify("remote"), Command::Remote(None));
+        assert_eq!(classify("remote books"), Command::Remote(Some("books")));
+        // hledger's own `close` and `roi` are untouched, and so is `remote`-ish text.
+        assert_eq!(classify("remote-control"), Command::Hledger("remote-control"));
+        assert_eq!(classify("close"), Command::Hledger("close"));
+    }
+
+    #[test]
     fn an_alias_replaces_the_command_word_and_keeps_the_arguments() {
         let aliases = vec![
             ("bal".to_string(), "balance --tree".to_string()),
@@ -1605,6 +1650,19 @@ mod tests {
         let listing = download_list(&["out.csv".to_string()]);
         assert!(listing.contains("out.csv"));
         assert!(listing.contains("download <path>"));
+    }
+
+    #[test]
+    fn the_help_mentions_every_command_the_app_owns() {
+        // The help is the only place the vocabulary is written down, so a command
+        // that is classified but not documented is a command nobody will find.
+        let help = help();
+        for word in [
+            "upload", "upload_dir", "demo", "journal", "download", "alias", "unalias", "connect",
+            "remote", "disconnect", "clear", "?",
+        ] {
+            assert!(help.contains(word), "help does not mention `{word}`");
+        }
     }
 
     #[test]

@@ -25,6 +25,7 @@ mod upload;
 mod hledger;
 mod hledger_info;
 mod journal;
+mod remote;
 mod terminal;
 
 #[cfg(target_arch = "wasm32")]

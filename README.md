@@ -44,6 +44,9 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `demo` | Load a small built-in journal, so the app can be tried without uploading anything. |
 | `/text` | Search what commands have printed; `n` and `N` repeat it forwards and backwards, and it says which match you are on. |
 | `download <path>` | Save a file a command wrote with `-o`. |
+| `connect user@host` | Connect a [remoteStorage](https://remotestorage.io) account, so the journal follows you between devices. |
+| `remote [dir]` | Load every file under `/hledger/` (or a folder inside it) from that account. |
+| `disconnect` | Forget the account; the files already loaded stay loaded. |
 | `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
 | `unalias <name>` | Remove one. |
 | `clear` | Clear the screen. |
@@ -57,6 +60,16 @@ terminal to ask; the wasm build's `terminal-size` stub reads `$COLUMNS` and
 What hledger does with the width is hledger's business: `register` and `aregister`
 lay their columns out to fill it, while `balance` and `print` size themselves to
 their content and look the same at any width.
+
+**remoteStorage** is how the journal follows you between devices without this app
+running a server. `connect you@host` starts the provider's consent screen — your
+browser leaves the page and comes back, and the connection is remembered. Then
+`remote` walks `/hledger/` in your account, reads every file it finds, and mounts
+them exactly as an upload would: paths are re-rooted at the category, so an
+`include` between files in different folders still resolves. Files have to live
+under the `hledger` category, because remoteStorage grants access one category at
+a time; changing which one is a one-line change in `src/remote/mod.rs`. The library
+is 146 KB and is loaded the first time you use a remote command, not on page load.
 
 **Dropping files anywhere on the page** loads them, the same as `upload` — most
 people reach for a drag before they read a help text, so the whole page accepts one
