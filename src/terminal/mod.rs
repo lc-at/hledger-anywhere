@@ -153,6 +153,8 @@ pub enum Command<'a> {
     ScreenReader(Option<&'a str>),
     /// `chart [hledger args]` draws a report instead of printing it.
     Chart(Option<&'a str>),
+    /// `append <file>` types journal text into a file, a line at a time.
+    Append(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -185,6 +187,7 @@ pub fn classify(line: &str) -> Command<'_> {
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
         "chart" => Command::Chart((!rest.is_empty()).then_some(rest)),
+        "append" => Command::Append((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -426,16 +429,30 @@ impl Editor {
     /// Blank lines return `None` and are not remembered, so pressing Enter twice
     /// does not put an empty entry in the history.
     pub fn take(&mut self) -> Option<String> {
-        let line = self.line().trim().to_string();
+        // Deliberately untrimmed. Trimming looks harmless for a command and is
+        // not: a journal posting's leading whitespace is its syntax, and a
+        // transaction typed into the terminal lost exactly that until this
+        // stopped. Callers that want a command trim it, and the empty check below
+        // is the only place the trimmed form matters.
+        let line = self.line();
         self.clear_line();
         self.draft.clear();
-        if line.is_empty() {
+        if line.trim().is_empty() {
             return None;
         }
-        if self.history.last() != Some(&line) {
-            self.history.push(line.clone());
-        }
         Some(line)
+    }
+
+    /// Add a line to the history worth recalling as a command.
+    ///
+    /// Journal text typed into a file is not a command and does not belong here,
+    /// which is why this is the caller's decision rather than `take`'s.
+    pub fn remember(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() || self.history.last() == Some(&line.to_string()) {
+            return;
+        }
+        self.history.push(line.to_string());
     }
 
     /// The token under the cursor, for completion.
@@ -525,6 +542,7 @@ pub fn candidates(paths: &[String]) -> Vec<String> {
         "font",
         "screenreader",
         "chart",
+        "append",
     ]
         .iter()
         .map(|word| (*word).to_string())
@@ -710,6 +728,63 @@ pub fn redirect(line: &str) -> Redirect {
         command: command.to_string(),
         target: target.to_string(),
     }
+}
+
+/// Whether a line ends a block of typed journal text.
+///
+/// A single `.` on its own, as a here-document ends. A journal entry that is
+/// exactly one dot is not a thing, so this costs nothing to reserve.
+pub fn ends_block(line: &str) -> bool {
+    line.trim() == "."
+}
+
+/// What to say when a block of typed text starts.
+pub fn block_header(target: &str) -> String {
+    format!(
+        "Typing into {target}. Paste or type journal text, then `.` on its own to \
+         finish; Ctrl+C abandons it."
+    )
+}
+
+/// A paste, split into the lines it contains.
+///
+/// Terminals deliver a paste as one string with newlines in it, which otherwise
+/// ends up inserted into the line being edited — a journal snippet pasted into a
+/// single-line editor is how this was noticed. `rest` is what follows the last
+/// newline, if anything: it belongs on the line still being typed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Paste {
+    pub lines: Vec<String>,
+    pub rest: String,
+}
+
+/// Split `data` when it is a paste, or `None` when it is an ordinary keypress.
+///
+/// A single character is never a paste, however it looks, so Enter stays Enter.
+pub fn paste(data: &str) -> Option<Paste> {
+    if !data.contains(['\n', '\r']) || data.chars().count() < 2 {
+        return None;
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut characters = data.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\r' => {
+                // CRLF is one newline, not two.
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                lines.push(std::mem::take(&mut current));
+            }
+            '\n' => lines.push(std::mem::take(&mut current)),
+            _ => current.push(character),
+        }
+    }
+    Some(Paste {
+        lines,
+        rest: current,
+    })
 }
 
 /// The file a `>>` target names, as the app knows it.
@@ -1166,6 +1241,7 @@ pub fn help() -> String {
        screenreader on   turn the accessibility tree on (off turns it off)\n\
        chart [args]      draw a report instead of printing it, e.g. `chart expenses -M`\n\
        cmd >> file       run `cmd` and append its output to a loaded file\n\
+       append file       type or paste journal text into a file, ending with `.`\n\
        /text             search the output; n and N repeat the search\n\
        clear             clear the screen\n\
        ?                 this help\n\
@@ -1280,23 +1356,20 @@ mod tests {
     }
 
     #[test]
-    fn history_ignores_blank_lines_and_consecutive_repeats() {
+    fn taking_a_line_empties_the_editor_and_refuses_a_blank_one() {
+        // What goes into the history is the caller's decision now — see
+        // `only_commands_go_into_the_history` — so this is about the line itself.
         let mut e = Editor::with_history(Vec::new());
         e.insert("   ");
-        assert_eq!(e.take(), None);
-        assert!(e.history().is_empty());
+        assert_eq!(e.take(), None, "a blank line is not a command");
 
         e.insert("balance");
         assert_eq!(e.take().as_deref(), Some("balance"));
-        e.insert("balance");
-        assert_eq!(e.take().as_deref(), Some("balance"));
-        assert_eq!(e.history(), ["balance"], "a repeat is not remembered twice");
+        assert_eq!(e.line(), "");
+        assert_eq!(e.cursor(), 0);
 
         e.insert("print");
         assert_eq!(e.take().as_deref(), Some("print"));
-        assert_eq!(e.history(), ["balance", "print"]);
-        assert_eq!(e.line(), "");
-        assert_eq!(e.cursor(), 0);
     }
 
     #[test]
@@ -1581,6 +1654,36 @@ mod tests {
         assert_eq!(search_lines(&lines(&["alpha"]), "zebra", None, false), None);
         assert_eq!(search_lines(&lines(&["alpha"]), "   ", None, false), None);
         assert_eq!(search_lines(&[], "alpha", None, false), None);
+    }
+
+    #[test]
+    fn taken_lines_keep_their_indentation() {
+        // Four spaces are a posting, not noise: trimming here is what made a
+        // transaction typed into the terminal unreadable to hledger.
+        let mut e = Editor::default();
+        e.insert("    expenses:food  $4.00");
+        assert_eq!(e.take().as_deref(), Some("    expenses:food  $4.00"));
+
+        // A line of nothing but spaces is still nothing.
+        let mut e = Editor::default();
+        e.insert("   ");
+        assert_eq!(e.take(), None);
+
+        // And a command keeps its own spaces until whatever needs them trimmed
+        // asks for them.
+        let mut e = Editor::default();
+        e.insert("  balance --tree  ");
+        assert_eq!(e.take().as_deref(), Some("  balance --tree  "));
+    }
+
+    #[test]
+    fn only_commands_go_into_the_history() {
+        let mut e = Editor::default();
+        e.remember("balance");
+        e.remember("balance");
+        e.remember("   ");
+        e.remember("stats");
+        assert_eq!(e.history(), ["balance", "stats"]);
     }
 
     #[test]
@@ -1886,6 +1989,45 @@ mod tests {
         let complaint = parse_switch("maybe").expect_err("not a switch");
         assert!(complaint.contains("on or off"), "{complaint}");
         assert!(complaint.contains("screenreader on"), "{complaint}");
+    }
+
+    #[test]
+    fn a_paste_is_split_into_lines_and_a_remainder() {
+        // An ordinary keypress is not a paste, however many bytes it is.
+        assert_eq!(paste("a"), None);
+        assert_eq!(paste("balance --tree"), None);
+        assert_eq!(paste(""), None);
+
+        // A pasted snippet: complete lines, and whatever follows the last newline
+        // belongs on the line still being typed.
+        let pasted = paste("2024-01-01 * Coffee\n    expenses:food  $4\n").expect("a paste");
+        assert_eq!(
+            pasted.lines,
+            vec!["2024-01-01 * Coffee", "    expenses:food  $4"]
+        );
+        assert_eq!(pasted.rest, "");
+
+        let pasted = paste("first\r\nsecond\r\nthird").expect("a paste");
+        assert_eq!(pasted.lines, vec!["first", "second"]);
+        assert_eq!(pasted.rest, "third", "CRLF is one newline, not two");
+
+        // A blank line in the middle is a line of its own, not something to drop.
+        let pasted = paste("a\n\nb").expect("a paste");
+        assert_eq!(pasted.lines, vec!["a", ""]);
+        assert_eq!(pasted.rest, "b");
+    }
+
+    #[test]
+    fn a_block_ends_on_a_dot_alone_and_says_how_to_finish() {
+        assert!(ends_block("."));
+        assert!(ends_block("  .  "));
+        assert!(!ends_block(".."));
+        assert!(!ends_block(""));
+        assert!(!ends_block("2024-01-01 * ."));
+
+        let header = block_header("data/2024.journal");
+        assert!(header.contains("data/2024.journal"), "{header}");
+        assert!(header.contains("Ctrl+C"), "{header}");
     }
 
     #[test]

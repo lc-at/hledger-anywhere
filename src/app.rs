@@ -31,6 +31,9 @@ use crate::terminal::{self, Command, Completion, Editor};
 use crate::terminal::view::Screen;
 use crate::upload::{self, Picked};
 
+/// The prompt while journal text is being typed, as a shell continues a line.
+const BLOCK_PROMPT: &str = "> ";
+
 /// `localStorage` key for the terminal font size.
 const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
 
@@ -39,6 +42,18 @@ const ALIAS_KEY: &str = "hledger-anywhere.terminal.aliases.v1";
 
 /// `localStorage` key for the screen reader preference.
 const SCREEN_READER_KEY: &str = "hledger-anywhere.terminal.screenreader.v1";
+
+/// A block of journal text being typed into a file.
+///
+/// The line editor holds one line, and a journal entry is several, so this is the
+/// mode that collects them: `append <file>`, then lines, then `.` alone.
+struct Block {
+    /// The file as the app knows it.
+    path: String,
+    /// The file as the user wrote it, for the note.
+    target: String,
+    lines: Vec<String>,
+}
 
 /// An event listener the app keeps alive for as long as it runs.
 ///
@@ -277,6 +292,8 @@ struct App {
     chatter: RefCell<Vec<String>>,
     /// The Ctrl+R search in progress, if any.
     isearch: RefCell<Option<ISearch>>,
+    /// The block of typed journal text in progress, if any.
+    block: RefCell<Option<Block>>,
     /// The terminal font size, in pixels, kept between visits.
     font: Cell<u32>,
     /// Whether the terminal's accessibility tree is on, kept between visits.
@@ -308,6 +325,7 @@ impl App {
             accounts: RefCell::new(None),
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
+            block: RefCell::new(None),
             font: Cell::new(load_font()),
             screen_reader: Cell::new(load_screen_reader()),
             aliases: RefCell::new(load_aliases()),
@@ -328,6 +346,7 @@ impl App {
         let prompt = match self.isearch.borrow().as_ref() {
             Some(search) if search.failed => format!("(failed reverse-i-search)`{}': ", search.query),
             Some(search) => terminal::isearch_prompt(&search.query),
+            None if self.block.borrow().is_some() => BLOCK_PROMPT.to_string(),
             None => self.prompt_text(),
         };
         self.screen
@@ -395,6 +414,51 @@ impl App {
             terminal::step_font(self.font.get(), direction)
         };
         self.set_font_size(next);
+    }
+
+    /// `append <file>`: start collecting typed journal text.
+    fn start_block(self: &Rc<App>, target: &str) {
+        match terminal::append_target(target) {
+            Ok(path) => {
+                *self.block.borrow_mut() = Some(Block {
+                    path,
+                    target: target.to_string(),
+                    lines: Vec::new(),
+                });
+                self.announce(&terminal::block_header(target));
+                self.prompt();
+            }
+            Err(complaint) => self.announce(&complaint),
+        }
+    }
+
+    /// The `.`: append what was typed, as one well-formed file.
+    fn finish_block(self: &Rc<App>) {
+        let Some(block) = self.block.borrow_mut().take() else {
+            return;
+        };
+        if block.lines.is_empty() {
+            self.announce("Nothing was typed, so nothing was written.");
+            self.prompt();
+            return;
+        }
+
+        let addition = format!("{}\n", block.lines.join("\n"));
+        let existing = self
+            .files
+            .borrow()
+            .iter()
+            .find(|file| file.path == block.path)
+            .map(|file| file.contents.clone())
+            .unwrap_or_default();
+        let combined = terminal::append_text(&existing, &addition);
+        let lines = block.lines.len();
+        let total = combined.len();
+
+        let file = JournalFile::new(&block.path, &combined);
+        self.absorb(&[file]);
+        self.say(&terminal::append_note(&block.target, lines, total));
+        self.prompt();
     }
 
     /// `chart [args]`: run a report and draw it.
@@ -665,6 +729,19 @@ impl App {
     }
 
     fn handle(self: &Rc<App>, data: &str) {
+        // A paste is several lines in one event, and a line editor holds one. Each
+        // complete line is typed and entered in turn, exactly as if the user had
+        // typed them, so a pasted journal entry works and a pasted command runs.
+        if let Some(pasted) = terminal::paste(data) {
+            for line in &pasted.lines {
+                self.editor.borrow_mut().set_line(line);
+                self.handle("\r");
+            }
+            self.editor.borrow_mut().set_line(&pasted.rest);
+            self.prompt();
+            return;
+        }
+
         // While a reverse search is running, keys belong to it. This is what
         // makes it incremental rather than a dialog.
         if self.isearch.borrow().is_some() {
@@ -768,6 +845,10 @@ impl App {
             "\u{3}" => {
                 self.screen.write("^C\r\n");
                 *self.isearch.borrow_mut() = None;
+                // Abandoning a block keeps nothing: half an entry is not an entry.
+                if self.block.borrow_mut().take().is_some() {
+                    self.announce("Nothing was written.");
+                }
                 self.editor.borrow_mut().clear_line();
                 self.prompt();
             }
@@ -817,7 +898,26 @@ impl App {
     }
 
     fn submit(self: &Rc<App>) {
-        let Some(mut line) = self.editor.borrow_mut().take() else {
+        let taken = self.editor.borrow_mut().take();
+
+        // While journal text is being typed every line is content, not a command,
+        // and a blank one is content too: blank lines separate entries.
+        if self.block.borrow().is_some() {
+            let line = taken.unwrap_or_default();
+            self.remember_chatter(&format!("{BLOCK_PROMPT}{line}"));
+            self.screen.write("\r\n");
+            if terminal::ends_block(&line) {
+                self.finish_block();
+            } else {
+                if let Some(block) = self.block.borrow_mut().as_mut() {
+                    block.lines.push(line);
+                }
+                self.prompt();
+            }
+            return;
+        }
+
+        let Some(mut line) = taken else {
             // An empty line is a command too, and the one a terminal is most
             // often given: it prints a fresh prompt line, as a shell does.
             // Redrawing in place would be invisible — the prompt is already there
@@ -826,6 +926,10 @@ impl App {
             self.prompt();
             return;
         };
+
+        // Only now is it known to be a command, so only now does it belong in the
+        // history: journal text goes through `submit` too.
+        self.editor.borrow_mut().remember(&line);
         save_history(self.editor.borrow().history());
         // The echo is what was typed, `>>` and all, because that is what is on
         // screen and a search must not find it.
@@ -940,6 +1044,11 @@ impl App {
                 if self.screen_reader.get() { "on" } else { "off" },
                 if self.screen_reader.get() { "off" } else { "on" }
             )),
+            Command::Append(Some(target)) => self.start_block(target),
+            Command::Append(None) => self.announce(
+                "Which file? `append data/2024.journal` — then type or paste the \
+                 entries, and a line with just `.` to finish.",
+            ),
             Command::Chart(None) => self.run_chart(""),
             Command::Chart(Some(arguments)) => self.run_chart(arguments),
             Command::ScreenReader(Some(wanted)) => match terminal::parse_switch(wanted) {

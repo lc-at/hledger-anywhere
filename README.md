@@ -51,6 +51,7 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `font [size]` | Show or set the font size — the keyboard shortcuts need a keyboard, and a phone has none. |
 | `screenreader on` | Turn xterm's accessibility tree on or off, remembered between visits. |
 | `cmd >> file` | Run `cmd` and append what it prints to a loaded file. |
+| `append <file>` | Type or paste journal text into a file, one line at a time, ending with `.` on its own. |
 | `chart [args]` | Draw a report instead of printing it — `chart expenses -M`, `chart balance --depth 2`. |
 | `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
 | `unalias <name>` | Remove one. |
@@ -84,6 +85,30 @@ can walk line by line, instead of the canvas it otherwise sees. It is off by
 default because building and maintaining that second representation costs
 something, and the setting is remembered, so someone who needs it gets it from the
 first render of every visit rather than having to find a command first.
+
+**Journal text can be typed or pasted.** The line editor holds one line and a
+journal entry is several, so `append data/2024.journal` collects them:
+
+```
+$ append data/2024.journal
+Typing into data/2024.journal. Paste or type journal text, then `.` on its own to
+finish; Ctrl+C abandons it.
+> 2024-05-01 * Coffee
+>     expenses:food  $4.00
+>     assets:cash
+> .
+[appended 4 line(s) to data/2024.journal (57 bytes) — `print -f data/2024.journal` shows it]
+```
+
+The `> ` prompt is the mode; blank lines are kept, because they separate entries;
+`.` alone ends it; Ctrl+C abandons it without writing. A real paste arrives as one
+event with newlines in it, so it is split into lines and each is entered in turn —
+which is how a whole transaction gets in in one go.
+
+This found a bug worth naming: `Editor::take` trimmed every line it handed over.
+Harmless for a command, fatal for a posting, because a posting's leading whitespace
+*is* its syntax — so typed transactions failed to parse until the trimming stopped.
+Commands trim where they need to; the editor no longer does.
 
 **Output can be appended, not just printed.** The app is not a shell, but one
 piece of shell syntax is worth having, because it is how hledger is actually used:
