@@ -18,6 +18,8 @@
 //
 // Run with: node scripts/check-example-plugin.mjs
 
+import { readFile } from 'node:fs/promises';
+
 import Chart from '../assets/plugins/chart.js';
 
 const REAL_CSV = [
@@ -85,6 +87,39 @@ check('a failed run is reported', said.some((line) => line.includes('no journal 
 said.length = 0;
 await Chart.run('expenses', host({ window: () => null }));
 check('a blocked window is reported', said.some((line) => line.includes('blocked')), JSON.stringify(said));
+
+// The bundled repository is what a first visit gets, so its manifest is an invariant: both
+// gruvbox themes, colours the app can read, and a module that is actually there.
+const manifest = JSON.parse(
+  await readFile(new URL('../assets/plugins/plugins.json', import.meta.url), 'utf8'),
+);
+const themeNames = (manifest.themes || []).map((theme) => theme.name);
+check(
+  'the bundled manifest offers gruvbox dark and light',
+  themeNames.includes('gruvbox') && themeNames.includes('gruvbox-light'),
+  themeNames.join(', '),
+);
+const colours = (manifest.themes || []).flatMap((theme) => Object.entries(theme.colors || {}));
+check(
+  'every colour it declares is a hex colour',
+  colours.length > 0 && colours.every(([, value]) => /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)),
+  colours.map(([role, value]) => `${role}=${value}`).join(' '),
+);
+const roles = new Set(colours.map(([role]) => role));
+check(
+  'and every role is one the app knows',
+  [...roles].every((role) => ['background', 'foreground', 'cursor', 'accent', 'dim'].includes(role)),
+  [...roles].join(', '),
+);
+let modulesThere = true;
+for (const plugin of manifest.plugins || []) {
+  try {
+    await readFile(new URL(plugin.module, new URL('../assets/plugins/plugins.json', import.meta.url)));
+  } catch {
+    modulesThere = false;
+  }
+}
+check('and every plugin names a module that exists', modulesThere, manifest.plugins?.length + ' plugins');
 
 let failed = 0;
 for (const [what, ok, detail] of checks) {

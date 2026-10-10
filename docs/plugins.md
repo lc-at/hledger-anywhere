@@ -3,6 +3,12 @@
 A plugin adds commands to hledger-anywhere without rebuilding it. It is a JavaScript
 module, loaded from a **repository**, which is a manifest installed by URL or path.
 
+A repository may be **any URL this page can fetch**, including one on another host that
+lets it: you name it, so you trust it. A plugin is JavaScript running in the app's own page
+with the page's own reach, which is what lets it fetch, draw and open windows, and is also
+why installing a repository is trusting it. Nothing about a plugin is sandboxed, and the
+app says so when you add one.
+
 One repository is bundled and installed at every start, so it needs no installing at all:
 [`assets/plugins`](../assets/plugins), whose `chart` plugin opens a balance line chart in
 its own window and which carries the colour themes. Read it as the worked example of
@@ -128,7 +134,12 @@ by role:
 | `dim` | The app's own asides: the explanations under a command. |
 
 Colours are `#rrggbb` or `#rgb`. A role that is not set keeps the built-in colour, so a
-theme that sets one colour is still a theme. A role the app does not know is ignored, so a
+theme that sets one colour is still a theme. Two of those built-in colours are chosen by
+the background rather than fixed, because a dark theme and a light one need opposite
+answers: the selection highlight is a blend of the foreground into the background, and the
+red a failure is printed in is the dark `#9d0006` on a light background and the bright
+`#ff6b5e` on a dark one. So a light theme needs nothing but its own background and
+foreground to be readable; see `gruvbox-light` in [`assets/plugins`](../assets/plugins). A role the app does not know is ignored, so a
 theme written for a later version applies what this one understands. A colour that cannot
 be read is an error naming the role, reported when the theme is used rather than when the
 repository is installed, because a broken theme does not make the plugin unusable.

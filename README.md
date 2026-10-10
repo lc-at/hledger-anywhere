@@ -229,7 +229,8 @@ Plugins get a small API and nothing more: `host.hledger(command)` to run hledger
 The read-only rule applies to them exactly as it does to the command line, so a plugin
 cannot change a journal either.
 
-A plugin is code running in this page, so installing a repository is trusting it. See
+A repository may be any URL this page can fetch, including on another host, and a plugin
+is code running in this page with the page's own reach: you name it, so you trust it. See
 [docs/plugins.md](docs/plugins.md) for the manifest fields, the API, and a worked example.
 
 ## Themes
@@ -247,7 +248,8 @@ Themes
 theme <name> selects one and keeps it; plugin themes come from the repositories you install.
 ```
 
-The bundled repository carries **gruvbox**, dark and warm, and **midnight**, dark and blue.
+The bundled repository carries **gruvbox**, dark and warm, **gruvbox-light**, the same
+palette on cream, and **midnight**, dark and blue.
 `theme gruvbox` repaints the terminal, the page behind it, and the colours the app writes
 its own text in, without a reload: xterm takes colours as options, so the scrollback stays
 where it was. Text already on screen keeps the colours it was written with, since the app

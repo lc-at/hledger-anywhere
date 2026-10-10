@@ -1282,6 +1282,11 @@ pub fn plugin_installed(url: &str, registered: &[String], refused: &[String]) ->
     for complaint in refused {
         text.push_str(&format!("  {} {complaint}\r\n", dim("refused:")));
     }
+    // Said once, when a repository is added: a plugin is code running in this page.
+    text.push_str(&format!(
+        "{}\r\n",
+        dim("A plugin is code running in this page, so install repositories you trust.")
+    ));
     text
 }
 

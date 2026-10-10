@@ -67,9 +67,27 @@ impl Rgb {
         format!("\u{1b}[38;2;{};{};{}m", self.r, self.g, self.b)
     }
 
-    /// The escape that sets this as the foreground colour, faint.
-    pub fn ansi_dim(&self) -> String {
-        format!("\u{1b}[2;38;2;{};{};{}m", self.r, self.g, self.b)
+    /// Whether this colour is light, by its own brightness.
+    ///
+    /// Used for the colours a theme does not name. A selection highlight and the red a
+    /// failure is printed in have to go the right way on cream as well as on black, and
+    /// asking the background is the only way to know which way that is.
+    pub fn is_light(&self) -> bool {
+        // Rec. 601 luma: close enough to choose between two palettes.
+        (299 * self.r as u32 + 587 * self.g as u32 + 114 * self.b as u32) / 1000 >= 128
+    }
+
+    /// This colour with `other` mixed in, `percent` of the way.
+    pub fn mix(&self, other: Rgb, percent: u32) -> Rgb {
+        let percent = percent.min(100);
+        let blend = |mine: u8, theirs: u8| -> u8 {
+            ((mine as u32 * (100 - percent) + theirs as u32 * percent) / 100) as u8
+        };
+        Rgb {
+            r: blend(self.r, other.r),
+            g: blend(self.g, other.g),
+            b: blend(self.b, other.b),
+        }
     }
 }
 
@@ -119,6 +137,35 @@ impl Default for Theme {
 }
 
 impl Theme {
+    /// The colour a selection is drawn in.
+    ///
+    /// The foreground mixed into the background, so it is visible whichever way round the
+    /// theme is, rather than the dark amber that only worked on black.
+    pub fn selection(&self) -> String {
+        self.background.mix(self.foreground, 25).css()
+    }
+
+    /// The red a failure is printed in, and its brighter twin.
+    ///
+    /// Chosen from the background rather than named by the theme: a failure has to be
+    /// legible, and the coral that reads well on black disappears on cream.
+    pub fn red(&self) -> &'static str {
+        if self.background.is_light() {
+            "#9d0006"
+        } else {
+            "#ff6b5e"
+        }
+    }
+
+    /// The brighter of the two reds.
+    pub fn red_bright(&self) -> &'static str {
+        if self.background.is_light() {
+            "#cc241d"
+        } else {
+            "#ff8a80"
+        }
+    }
+
     /// The theme the app ships with, by name.
     pub fn built_in() -> Theme {
         Theme::default()
@@ -207,7 +254,36 @@ mod tests {
         let colour = Rgb::from_css("#7aa2f7").expect("a colour");
         assert_eq!(colour.css(), "#7aa2f7");
         assert_eq!(colour.ansi(), "\u{1b}[38;2;122;162;247m");
-        assert_eq!(colour.ansi_dim(), "\u{1b}[2;38;2;122;162;247m");
+    }
+
+    #[test]
+    fn a_colour_knows_whether_it_is_light() {
+        let light = Rgb::from_css("#fbf1c7").expect("a colour");
+        let dark = Rgb::from_css("#282828").expect("a colour");
+        assert!(light.is_light());
+        assert!(!dark.is_light());
+        // Mid grey, either way, is not a reason to crash.
+        let _ = Rgb::from_css("#808080").expect("a colour").is_light();
+    }
+
+    #[test]
+    fn what_a_theme_does_not_name_follows_its_background() {
+        let light = Theme::from_plugin(
+            "gruvbox-light",
+            &colors(&[("background", "#fbf1c7"), ("foreground", "#3c3836")]),
+        )
+        .expect("a usable theme");
+        let dark = Theme::built_in();
+
+        // A selection is between the two, so it shows on either.
+        let selection = Rgb::from_css(&light.selection()).expect("a colour");
+        assert!(selection.r < 0xfb && selection.r > 0x3c, "{}", light.selection());
+        assert!(selection.is_light());
+
+        // And the red a failure uses is legible on both.
+        assert_eq!(light.red(), "#9d0006");
+        assert_eq!(dark.red(), "#ff6b5e");
+        assert_ne!(light.red(), dark.red());
     }
 
     #[test]

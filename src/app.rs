@@ -1842,12 +1842,10 @@ impl App {
     /// Paint everything in a theme: the terminal, the page behind it, and the app's own
     /// accent and asides.
     fn apply_theme(self: &Rc<App>, theme: &Theme) {
-        self.screen.set_theme(
-            &theme.background.css(),
-            &theme.foreground.css(),
-            &theme.cursor.css(),
-        );
-        terminal::set_style(theme.accent.ansi(), theme.dim.ansi_dim());
+        self.screen.set_theme(theme);
+        // The colour dims it; the faint attribute used to, and faint makes text lighter,
+        // which is exactly wrong on a light theme.
+        terminal::set_style(theme.accent.ansi(), theme.dim.ansi());
 
         // The page behind the terminal has to move with it, or a resize, or the moment
         // before xterm paints, shows a stripe of the old colour.

@@ -21,6 +21,16 @@
         "accent": "#7aa2f7",
         "dim": "#6b7280"
       }
+    },
+    {
+      "name": "gruvbox-light",
+      "colors": {
+        "background": "#fbf1c7",
+        "foreground": "#3c3836",
+        "cursor": "#af3a03",
+        "accent": "#b57614",
+        "dim": "#7c6f64"
+      }
     }
   ],
   "plugins": [
@@ -28,7 +38,14 @@
       "name": "chart",
       "group": "Reports",
       "summary": "open a balance line chart in a window",
-      "completes": ["balance", "assets", "expenses", "income", "-M", "--monthly"],
+      "completes": [
+        "balance",
+        "assets",
+        "expenses",
+        "income",
+        "-M",
+        "--monthly"
+      ],
       "module": "./chart.js"
     }
   ]

@@ -142,7 +142,16 @@ impl Screen {
     ///
     /// xterm takes its colours as options and applies them live, so a theme change is a
     /// repaint rather than a reload, and the scrollback stays where it was.
-    pub fn set_theme(&self, background: &str, foreground: &str, cursor: &str) {
+    pub fn set_theme(&self, theme: &crate::theme::Theme) {
+        let (background, foreground, cursor) = (
+            theme.background.css(),
+            theme.foreground.css(),
+            theme.cursor.css(),
+        );
+        let (selection, red, red_bright) =
+            (theme.selection(), theme.red().to_string(), theme.red_bright().to_string());
+        let (background, foreground, cursor) =
+            (background.as_str(), foreground.as_str(), cursor.as_str());
         let Ok(options) = Reflect::get(&self.terminal, &JsValue::from_str("options")) else {
             return;
         };
@@ -150,9 +159,9 @@ impl Screen {
         set(&theme, "background", JsValue::from_str(background));
         set(&theme, "foreground", JsValue::from_str(foreground));
         set(&theme, "cursor", JsValue::from_str(cursor));
-        set(&theme, "selectionBackground", JsValue::from_str("#3a3021"));
-        set(&theme, "red", JsValue::from_str("#ff6b5e"));
-        set(&theme, "brightRed", JsValue::from_str("#ff8a80"));
+        set(&theme, "selectionBackground", JsValue::from_str(&selection));
+        set(&theme, "red", JsValue::from_str(&red));
+        set(&theme, "brightRed", JsValue::from_str(&red_bright));
         let _ = Reflect::set(&options, &JsValue::from_str("theme"), &theme);
     }
 
