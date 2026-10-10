@@ -77,7 +77,20 @@ re-rooted the same way in both directions: paths are re-rooted at the category, 
 `include` between files in different folders still resolves. Files have to live
 under the `hledger` category, because remoteStorage grants access one category at
 a time; changing which one is a one-line change in `src/remote/mod.rs`. The library
-is 146 KB and is loaded the first time you use a remote command, not on page load.
+is 146 KB and is loaded the first time you use a remote command, or immediately on
+the page that comes back from `connect` — the access token arrives in the URL
+fragment and has to be claimed before it is gone, and a connection that is never
+claimed is a connection silently lost.
+
+This is verified end to end against a real [armadietto](https://github.com/remotestorage/armadietto)
+server on `127.0.0.1`, not just against a stub: the consent screen shows the app's
+claim (*read/write access to /hledger*), the token survives the redirect, `put` lands
+on the server's disk, and a fresh browser with no local files can `remote` them back.
+Three real bugs came out of that, none of them visible to a stub: the token was never
+claimed, because the library only loaded when a remote command ran; `connected` is
+restored asynchronously, so asking a throwaway client straight after construction
+always answered "no"; and paths were doubled, because a client scoped at the
+category already knows about it.
 
 **A screen reader can read the terminal.** `screenreader on` turns on xterm's
 accessibility tree — a real text representation of the screen that a screen reader
