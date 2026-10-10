@@ -52,7 +52,7 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `screenreader on` | Turn xterm's accessibility tree on or off, remembered between visits. |
 | `cmd >> file` | Run `cmd` and append what it prints to a loaded file. |
 | `append <file>` | Type or paste journal text into a file, one line at a time, ending with `.` on its own. |
-| `chart [args]` | Draw a report instead of printing it — `chart expenses -M`, `chart balance --depth 2`. |
+| `chart [args]` | Draw a report instead of printing it — `chart balance expenses -M`, `chart balance --depth 2`. |
 | `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
 | `unalias <name>` | Remove one. |
 | `clear` | Clear the screen. |
@@ -180,10 +180,10 @@ runtime is seconds. So the answer is no: IndexedDB holds what is loaded, the wor
 gets a copy each run, and none of it is worth replacing. Recorded here because "why
 isn't this using OPFS" is a reasonable question with a measured answer.
 
-**A report can be drawn.** `chart` runs hledger for you — `chart expenses -M` runs
-`hledger expenses -M -O csv`, and with no arguments it asks the question a chart is
-usually asked, `balance -M expenses` — then draws the numbers instead of printing
-them:
+**A report can be drawn.** `chart` runs hledger for you — `chart balance expenses -M`
+runs `hledger balance expenses -M -O csv`, and with no arguments it asks the question
+a chart is usually asked, `balance -M expenses` — then draws the numbers instead of
+printing them:
 
 ```
 $ chart balance --depth 2

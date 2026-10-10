@@ -503,8 +503,16 @@ impl App {
         } else {
             arguments.trim().to_string()
         };
-        let mut argv = argv_for(&arguments);
-        if !arguments.contains("-O") && !arguments.contains("--output-format") {
+        let mut argv = match argv_for(&arguments) {
+            Ok(argv) => argv,
+            Err(complaint) => return self.announce(&complaint),
+        };
+        // Asked for in tokens rather than by searching the text, so `-O "csv"` and
+        // a `-O` inside a quoted argument are told apart.
+        let chosen_format = argv
+            .iter()
+            .any(|part| part == "-O" || part == "--output-format");
+        if !chosen_format {
             argv.push("-O".to_string());
             argv.push("csv".to_string());
         }
@@ -542,7 +550,7 @@ impl App {
                     } else {
                         self.say(&format!(
                             "Nothing to draw: `{command}` gave no amounts. Chart a \
-                             filtered report, like `chart expenses -M` or \
+                             filtered report, like `chart balance expenses -M` or \
                              `chart balance --depth 2`."
                         ));
                     }
@@ -1035,18 +1043,34 @@ impl App {
                 self.announce(&listing);
             }
             Command::Alias(Some(text)) => self.set_alias(text),
-            Command::Unalias(Some(name)) => self.remove_alias(name),
+            Command::Unalias(Some(name)) => {
+                if let Some(name) = self.single(name) {
+                    self.remove_alias(&name);
+                }
+            }
             Command::Unalias(None) => {
                 self.announce("Which one? `unalias <name>`, or `alias` to list them.");
             }
-            Command::Connect(Some(address)) => self.connect_remote(address),
+            Command::Connect(Some(address)) => {
+                if let Some(address) = self.single(address) {
+                    self.connect_remote(&address);
+                }
+            }
             Command::Connect(None) => self.announce(
                 "Which account? `connect user@host` — for example `connect you@5apps.com`.",
             ),
             Command::Disconnect => self.disconnect_remote(),
             Command::Remote(None) => self.load_remote(""),
-            Command::Remote(Some(path)) => self.load_remote(path),
-            Command::Put(Some(path)) => self.put_remote(path),
+            Command::Remote(Some(path)) => {
+                if let Some(path) = self.single(path) {
+                    self.load_remote(&path);
+                }
+            }
+            Command::Put(Some(path)) => {
+                if let Some(path) = self.single(path) {
+                    self.put_remote(&path);
+                }
+            }
             Command::Put(None) => {
                 let names: Vec<String> = self
                     .written
@@ -1074,27 +1098,43 @@ impl App {
                 if self.screen_reader.get() { "on" } else { "off" },
                 if self.screen_reader.get() { "off" } else { "on" }
             )),
-            Command::Append(Some(target)) => self.start_block(target),
+            Command::Append(Some(target)) => {
+                if let Some(target) = self.single(target) {
+                    self.start_block(&target);
+                }
+            }
             Command::Append(None) => self.announce(
                 "Which file? `append data/2024.journal` — then type or paste the \
                  entries, and a line with just `.` to finish.",
             ),
             Command::Chart(None) => self.run_chart(""),
             Command::Chart(Some(arguments)) => self.run_chart(arguments),
-            Command::ScreenReader(Some(wanted)) => match terminal::parse_switch(wanted) {
-                Ok(on) => self.set_screen_reader(on),
-                Err(complaint) => self.announce(&complaint),
-            },
-            Command::Font(Some(size)) => match terminal::font_size(size) {
-                Ok(size) => {
-                    self.set_font_size(size);
-                    self.announce(&format!("The font is now {}px.", self.font.get()));
+            Command::ScreenReader(Some(wanted)) => {
+                if let Some(wanted) = self.single(wanted) {
+                    match terminal::parse_switch(&wanted) {
+                        Ok(on) => self.set_screen_reader(on),
+                        Err(complaint) => self.announce(&complaint),
+                    }
                 }
-                Err(complaint) => self.announce(&complaint),
-            },
+            }
+            Command::Font(Some(size)) => {
+                if let Some(size) = self.single(size) {
+                    match terminal::font_size(&size) {
+                        Ok(size) => {
+                            self.set_font_size(size);
+                            self.announce(&format!("The font is now {}px.", self.font.get()));
+                        }
+                        Err(complaint) => self.announce(&complaint),
+                    }
+                }
+            }
             Command::Search(term) => self.search(term.unwrap_or("")),
             Command::SearchAgain(backwards) => self.search_again(backwards),
-            Command::Download(Some(path)) => self.download(path),
+            Command::Download(Some(path)) => {
+                if let Some(path) = self.single(path) {
+                    self.download(&path);
+                }
+            }
             Command::Download(None) => {
                 let names: Vec<String> =
                     self.written.borrow().iter().map(|file| file.path.clone()).collect();
@@ -1105,12 +1145,32 @@ impl App {
                 let text = terminal::file_list(&self.paths(), self.main.borrow().as_deref());
                 self.announce(&text);
             }
-            Command::Journal(Some(path)) => self.set_journal(path),
+            Command::Journal(Some(path)) => {
+                if let Some(path) = self.single(path) {
+                    self.set_journal(&path);
+                }
+            }
             Command::Hledger(command) => self.run_with(command, append),
         }
     }
 
     // -- commands -----------------------------------------------------------
+
+    /// One argument with its quoting removed, or a complaint about why not.
+    ///
+    /// The app's own commands take a single path, address or number. A path can
+    /// have a space in it — an uploaded file is named whatever it was named — so
+    /// `journal "my file.journal"` has to mean that file, and `journal a b` has to
+    /// say so rather than quietly reading `a`.
+    fn single(self: &Rc<App>, rest: &str) -> Option<String> {
+        match terminal::single_argument(rest) {
+            Ok(argument) => argument,
+            Err(complaint) => {
+                self.announce(&complaint);
+                None
+            }
+        }
+    }
 
     /// Files arrive three ways — picked, dropped, read from an account — and this
     /// is the one place that mounts them, so the states it sets (files, main
@@ -1224,7 +1284,10 @@ impl App {
 
     /// Run a command, optionally appending what it prints to a loaded file.
     fn run_with(self: &Rc<App>, command: &str, append: Option<(String, String)>) {
-        let argv = argv_for(command);
+        let argv = match argv_for(command) {
+            Ok(argv) => argv,
+            Err(complaint) => return self.announce(&complaint),
+        };
         let files = self.files.borrow().clone();
         self.busy.set(true);
 
@@ -1907,8 +1970,11 @@ async fn boot(app: Rc<App>) {
 /// The user's words, with a leading `hledger` accepted and dropped — that is how
 /// the command looks in a shell, and people paste commands. Nothing else is added:
 /// the journal comes from `$LEDGER_FILE`, so what runs is what was typed.
-fn argv_for(command: &str) -> Vec<String> {
-    let mut parts: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+fn argv_for(command: &str) -> Result<Vec<String>, String> {
+    // Quoting is the user's, and it is what makes a period expression with a space
+    // in it one argument: `balance -p "this year"`. Splitting on whitespace handed
+    // hledger `"this` and `year"`, which it could not parse.
+    let mut parts = terminal::tokenize(command)?;
     if parts
         .first()
         .is_some_and(|first| first == "hledger" || first == "hledger-wasm")
@@ -1919,7 +1985,7 @@ fn argv_for(command: &str) -> Vec<String> {
     // a better answer than doing nothing.
     let mut argv = vec!["hledger".to_string()];
     argv.extend(parts);
-    argv
+    Ok(argv)
 }
 
 // -- history ----------------------------------------------------------------
@@ -2013,17 +2079,49 @@ mod tests {
 
     #[test]
     fn the_users_words_are_the_argv_apart_from_the_program_name() {
-        assert_eq!(argv_for("balance --tree"), ["hledger", "balance", "--tree"]);
-        assert_eq!(argv_for("hledger balance"), ["hledger", "balance"]);
-        assert_eq!(argv_for("  print   date:thismonth  "), ["hledger", "print", "date:thismonth"]);
-        assert_eq!(argv_for("hledger"), ["hledger"], "a bare hledger prints its usage");
+        assert_eq!(
+            argv_for("balance --tree").expect("argv"),
+            ["hledger", "balance", "--tree"]
+        );
+        assert_eq!(argv_for("hledger balance").expect("argv"), ["hledger", "balance"]);
+        assert_eq!(
+            argv_for("  print   date:thismonth  ").expect("argv"),
+            ["hledger", "print", "date:thismonth"]
+        );
+        assert_eq!(
+            argv_for("hledger").expect("argv"),
+            ["hledger"],
+            "a bare hledger prints its usage"
+        );
+    }
+
+    #[test]
+    fn a_quoted_argument_reaches_hledger_whole_and_without_quotes() {
+        // The reason any of this exists: a period expression with a space in it is
+        // one argument, and hledger rejects it when it is not.
+        assert_eq!(
+            argv_for("balance -p \"this year\"").expect("argv"),
+            ["hledger", "balance", "-p", "this year"]
+        );
+        assert_eq!(
+            argv_for("register -p 'from 2024-01 to 2024-12'").expect("argv"),
+            ["hledger", "register", "-p", "from 2024-01 to 2024-12"]
+        );
+        assert_eq!(
+            argv_for("balance date:\"this year\"").expect("argv"),
+            ["hledger", "balance", "date:this year"]
+        );
+
+        // And an unclosed quote is reported rather than guessed at.
+        let complaint = argv_for("balance -p \"this year").expect_err("unclosed");
+        assert!(complaint.contains("not closed"), "{complaint}");
     }
 
     #[test]
     fn a_file_flag_is_left_alone() {
         // -f still works if someone wants it; the app does not add or remove one.
         assert_eq!(
-            argv_for("balance -f /data/other.journal"),
+            argv_for("balance -f /data/other.journal").expect("argv"),
             ["hledger", "balance", "-f", "/data/other.journal"]
         );
     }

@@ -698,19 +698,199 @@ pub enum Redirect {
     Bad(String),
 }
 
+/// Split a command line into arguments the way a shell does.
+///
+/// This exists because hledger's own documented syntax needs it: a period
+/// expression with a space in it is one argument — `balance -p "this year"` — and
+/// splitting on whitespace handed hledger `"this` and `year"`, which it could not
+/// parse. The app is not a shell, but its command line is one, and an argument the
+/// user quoted has to arrive whole and without its quotes.
+///
+/// Both quote styles are understood and both are removed. Outside quotes a
+/// backslash escapes the next character; inside double quotes it escapes `"` and
+/// `\`; single quotes are literal, as in a shell. An unclosed quote is an error
+/// rather than a guess — treating the rest of the line as one argument would run
+/// something the user did not write.
+pub fn tokenize(line: &str) -> Result<Vec<String>, String> {
+    let mut arguments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    // `""` is a real, empty argument, so what matters is whether a token has been
+    // started, not whether it has characters yet.
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    let mut characters = line.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        match quote {
+            Some('\'') => {
+                if character == '\'' {
+                    quote = None;
+                } else {
+                    current.push(character);
+                }
+            }
+            Some(_) => match character {
+                '"' => quote = None,
+                '\\' => match characters.next() {
+                    Some(escaped @ ('"' | '\\')) => current.push(escaped),
+                    // A backslash before anything else is a backslash.
+                    Some(other) => {
+                        current.push('\\');
+                        current.push(other);
+                    }
+                    None => current.push('\\'),
+                },
+                _ => current.push(character),
+            },
+            None => match character {
+                open @ ('\'' | '"') => {
+                    quote = Some(open);
+                    started = true;
+                }
+                '\\' => match characters.next() {
+                    Some(escaped) => {
+                        current.push(escaped);
+                        started = true;
+                    }
+                    None => return Err("A line ending in `\\` has nothing to escape.".to_string()),
+                },
+                space if space.is_whitespace() => {
+                    if started {
+                        arguments.push(std::mem::take(&mut current));
+                        started = false;
+                    }
+                }
+                _ => {
+                    current.push(character);
+                    started = true;
+                }
+            },
+        }
+    }
+
+    if let Some(open) = quote {
+        let (name, needed) = if open == '"' { ("double", "\"") } else { ("single", "'") };
+        return Err(format!(
+            "A {name} quote is not closed. Add the {needed} it needs."
+        ));
+    }
+    if started {
+        arguments.push(current);
+    }
+    Ok(arguments)
+}
+
+/// The first argument of a line, and everything after it, untouched.
+///
+/// Aliases replace the command word and nothing else, so the rest has to survive
+/// byte for byte: rebuilding it from tokens would throw away the user's quoting,
+/// and `bal -p "this year"` has to keep the quotes it was given.
+pub fn split_first_token(line: &str) -> (String, String) {
+    let trimmed = line.trim_start();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for (index, character) in trimmed.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some('"') => match character {
+                '\\' => escaped = true,
+                '"' => quote = None,
+                _ => {}
+            },
+            Some(_) => {
+                if character == '\'' {
+                    quote = None;
+                }
+            }
+            None => match character {
+                '\\' => escaped = true,
+                open @ ('\'' | '"') => quote = Some(open),
+                space if space.is_whitespace() => {
+                    let (head, rest) = trimmed.split_at(index);
+                    return (first_value(head), rest.trim_start().to_string());
+                }
+                _ => {}
+            },
+        }
+    }
+    (first_value(trimmed), String::new())
+}
+
+/// The unquoted value of a lone token.
+fn first_value(token: &str) -> String {
+    tokenize(token)
+        .ok()
+        .and_then(|arguments| arguments.into_iter().next())
+        .unwrap_or_default()
+}
+
+/// One argument, with any quoting removed.
+///
+/// The app's own commands take a single path, address or number, and a path can
+/// have a space in it — an uploaded file is named whatever it was named. Refusing
+/// two arguments rather than guessing which one was meant keeps `journal a b` from
+/// quietly reading `a`.
+pub fn single_argument(rest: &str) -> Result<Option<String>, String> {
+    let arguments = tokenize(rest)?;
+    if arguments.len() > 1 {
+        return Err(format!(
+            "`{rest}` is more than one argument. Quote it if it has a space."
+        ));
+    }
+    Ok(arguments.into_iter().next())
+}
+
+/// The byte index of the first `>>` that is not inside quotes.
+fn unquoted_redirect(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    let mut quote: Option<u8> = None;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match quote {
+            Some(open) => {
+                if byte == b'\\' && open == b'"' {
+                    index += 2;
+                    continue;
+                }
+                if byte == open {
+                    quote = None;
+                }
+            }
+            None => match byte {
+                b'\\' => {
+                    index += 2;
+                    continue;
+                }
+                b'\'' | b'"' => quote = Some(byte),
+                b'>' if bytes.get(index + 1) == Some(&b'>') => return Some(index),
+                _ => {}
+            },
+        }
+        index += 1;
+    }
+    None
+}
+
 /// Read `command >> target` from a line.
 ///
-/// Only the first `>>` counts and the target must be one word: a path with spaces
-/// would be indistinguishable from more arguments, and guessing would append a
-/// journal somewhere nobody meant. Quoting the target is not supported either — say
-/// `>> data/my file.journal` and you get told, rather than a surprise.
+/// Only the first `>>` counts, and only outside quotes: `print -p "a >> b"` is a
+/// command with a quoted argument, not a redirect. The target is one argument, so a
+/// file whose name has a space is written `>> "my file.journal"` — and named as a
+/// bare path until it is quoted, rather than guessed at.
 pub fn redirect(line: &str) -> Redirect {
     let trimmed = line.trim();
-    let Some((command, target)) = trimmed.split_once(">>") else {
+    let Some(at) = unquoted_redirect(trimmed) else {
         return Redirect::Plain(trimmed.to_string());
     };
-    let command = command.trim();
-    let target = target.trim();
+    let command = trimmed[..at].trim();
+    let target = trimmed[at + 2..].trim();
+
     if command.is_empty() {
         return Redirect::Bad("Nothing to run before `>>`.".to_string());
     }
@@ -719,14 +899,18 @@ pub fn redirect(line: &str) -> Redirect {
             "`{command} >>` needs a file to append to, like `>> data/2024.journal`."
         ));
     }
-    if target.split_whitespace().count() != 1 {
+    let mut arguments = match tokenize(target) {
+        Ok(arguments) => arguments,
+        Err(complaint) => return Redirect::Bad(complaint),
+    };
+    if arguments.len() != 1 {
         return Redirect::Bad(format!(
-            "`{target}` is more than one word. Write the file alone after `>>`."
+            "`{target}` is more than one file. Quote it if its name has a space."
         ));
     }
     Redirect::Append {
         command: command.to_string(),
-        target: target.to_string(),
+        target: arguments.remove(0),
     }
 }
 
@@ -830,8 +1014,9 @@ pub fn append_text(existing: &str, addition: &str) -> String {
 /// What the terminal says after appending.
 pub fn append_note(target: &str, added_lines: usize, total_bytes: usize) -> String {
     format!(
-        "[appended {added_lines} line(s) to {target} ({}) — `print -f {target}` shows it]",
-        bytes_label(total_bytes)
+        "[appended {added_lines} line(s) to {target} ({}) — `print -f {}` shows it]",
+        bytes_label(total_bytes),
+        quoted(target)
     )
 }
 
@@ -883,17 +1068,13 @@ pub fn expand_alias(
     line: &str,
     aliases: &[(String, String)],
 ) -> (String, Option<(String, String)>) {
-    let trimmed = line.trim();
-    let (head, rest) = match trimmed.split_once(char::is_whitespace) {
-        Some((head, rest)) => (head, rest),
-        None => (trimmed, ""),
-    };
+    let (head, rest) = split_first_token(line);
     let Some((name, expansion)) = aliases
         .iter()
-        .find(|(name, _)| name == head)
+        .find(|(name, _)| name == &head)
         .map(|(name, expansion)| (name.clone(), expansion.clone()))
     else {
-        return (trimmed.to_string(), None);
+        return (line.trim().to_string(), None);
     };
     let expanded = if rest.trim().is_empty() {
         expansion.clone()
@@ -1038,6 +1219,19 @@ pub fn isearch_prompt(query: &str) -> String {
 /// Writing instead of printing is what `-o` is for, and the file only exists
 /// inside the run's in-memory mount, so saying where it went matters more than
 /// usual: without this the command looks like it did nothing.
+/// A path as something the user can type back.
+///
+/// Quoted when it has a space in it, because every command the app suggests is one
+/// the user can paste straight back in: `download "spaced name.journal"`, not
+/// `download spaced name.journal`, which would be two arguments and refused.
+pub fn quoted(path: &str) -> String {
+    if path.chars().any(char::is_whitespace) {
+        format!("\"{path}\"")
+    } else {
+        path.to_string()
+    }
+}
+
 pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
     let mut text = String::from("[");
     for (index, (path, bytes, replaced)) in files.iter().enumerate() {
@@ -1054,7 +1248,7 @@ pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
     let names: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
     text.push_str(&format!(
         " — saved; `download {}` for a copy]",
-        names.first().copied().unwrap_or("")
+        quoted(names.first().copied().unwrap_or(""))
     ));
     text
 }
@@ -1239,7 +1433,7 @@ pub fn help() -> String {
        put <path>        save a loaded file (or one hledger wrote) to the account\n\
        font [size]       show or set the font size (Ctrl+= / Ctrl+- / Ctrl+0 too)\n\
        screenreader on   turn the accessibility tree on (off turns it off)\n\
-       chart [args]      draw a report instead of printing it, e.g. `chart expenses -M`\n\
+       chart [args]      draw a report instead of printing it, e.g. `chart balance expenses -M`\n\
        cmd >> file       run `cmd` and append its output to a loaded file\n\
        append file       type or paste journal text into a file, ending with `.`\n\
        /text             search the output; n and N repeat the search\n\
@@ -2045,17 +2239,129 @@ mod tests {
             Redirect::Plain("balance --tree".to_string())
         );
 
+        // A quoted target is a path with a space in it, and the quotes come off.
+        assert_eq!(
+            redirect("print expenses >> \"my file.journal\""),
+            Redirect::Append {
+                command: "print expenses".to_string(),
+                target: "my file.journal".to_string(),
+            }
+        );
+
+        // `>>` inside quotes is an argument, not a redirect: a period expression
+        // can contain anything.
+        assert_eq!(
+            redirect("balance -p \"a >> b\""),
+            Redirect::Plain("balance -p \"a >> b\"".to_string())
+        );
+
         // Each way it can be wrong says which part is wrong.
         for (line, expected) in [
             (">> data/x.journal", "before"),
             ("print >>", "append to"),
-            ("print >> two words", "more than one word"),
+            ("print >> two words", "more than one file"),
+            ("print >> \"unclosed", "not closed"),
         ] {
             match redirect(line) {
                 Redirect::Bad(message) => assert!(message.contains(expected), "{line}: {message}"),
                 other => panic!("{line} should be refused: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_quoted_argument_stays_one_argument_without_its_quotes() {
+        // The bug this exists for: hledger's periods have spaces in them, and only
+        // a quoted argument can carry one.
+        assert_eq!(
+            tokenize("balance -p \"this year\"").expect("tokens"),
+            ["balance", "-p", "this year"]
+        );
+        assert_eq!(
+            tokenize("balance -p 'from 2024-01 to 2024-12'").expect("tokens"),
+            ["balance", "-p", "from 2024-01 to 2024-12"]
+        );
+        // Quotes in the middle of a word are just concatenation.
+        assert_eq!(
+            tokenize("date:'this year'").expect("tokens"),
+            ["date:this year"]
+        );
+        assert_eq!(tokenize("  balance   --tree  ").expect("tokens"), ["balance", "--tree"]);
+        assert!(tokenize("").expect("tokens").is_empty());
+
+        // An empty quoted argument is an argument, and survives.
+        assert_eq!(tokenize("print \"\"").expect("tokens"), ["print", ""]);
+
+        // Escapes: outside quotes anything can be escaped, and inside double
+        // quotes the quote itself can.
+        assert_eq!(tokenize("a\\ b").expect("tokens"), ["a b"]);
+        assert_eq!(tokenize("\"a \\\"b\\\"\"").expect("tokens"), ["a \"b\""]);
+        // A single quote cannot be escaped inside single quotes — a shell cannot
+        // either, and this refuses rather than guessing at what was meant.
+        assert!(tokenize("'it\\'s'").is_err());
+        // A backslash in single quotes is literal, as in a shell.
+        assert_eq!(tokenize("'a\\b'").expect("tokens"), ["a\\b"]);
+        // And a backslash that escapes something ordinary keeps both characters.
+        assert_eq!(tokenize("\"a\\nb\"").expect("tokens"), ["a\\nb"]);
+
+        // An unclosed quote is an error that says which one it is, rather than a
+        // guess that runs something the user did not write.
+        for (line, expected) in [
+            ("balance -p \"this year", "double quote is not closed"),
+            ("balance -p 'this year", "single quote is not closed"),
+        ] {
+            let complaint = tokenize(line).expect_err(line);
+            assert!(complaint.contains(expected), "{line}: {complaint}");
+        }
+        assert!(tokenize("balance \\").is_err());
+    }
+
+    #[test]
+    fn the_first_argument_is_taken_without_disturbing_the_rest() {
+        assert_eq!(
+            split_first_token("bal -p \"this year\""),
+            ("bal".to_string(), "-p \"this year\"".to_string())
+        );
+        assert_eq!(
+            split_first_token("  balance  "),
+            ("balance".to_string(), String::new())
+        );
+        // Quotes around the command word do not survive into the name compared
+        // against the aliases.
+        assert_eq!(split_first_token("\"bal\" --tree").0, "bal");
+        // A quoted first argument keeps its spaces, and the rest is still verbatim.
+        assert_eq!(
+            split_first_token("\"two words\" rest").1,
+            "rest".to_string()
+        );
+    }
+
+    #[test]
+    fn an_apps_own_command_takes_one_argument_or_says_so() {
+        assert_eq!(single_argument("out.csv").expect("one"), Some("out.csv".to_string()));
+        assert_eq!(single_argument("").expect("none"), None);
+        // A quoted path with a space is one argument, which is how a file whose
+        // name has a space is named at all.
+        assert_eq!(
+            single_argument("\"my file.journal\"").expect("one"),
+            Some("my file.journal".to_string())
+        );
+        let complaint = single_argument("two files").expect_err("two");
+        assert!(complaint.contains("more than one argument"), "{complaint}");
+        assert!(single_argument("\"unclosed").is_err());
+    }
+
+    #[test]
+    fn an_alias_keeps_the_quoting_of_what_follows_it() {
+        let aliases = vec![("bal".to_string(), "balance --tree".to_string())];
+        let (line, used) = expand_alias("bal -p \"this year\"", &aliases);
+        assert_eq!(line, "balance --tree -p \"this year\"");
+        assert!(used.is_some());
+
+        // Without an alias the line is handed on exactly as written, quotes and all.
+        let (line, used) = expand_alias("balance -p \"this year\"", &aliases);
+        assert_eq!(line, "balance -p \"this year\"");
+        assert_eq!(used, None);
     }
 
     #[test]
@@ -2092,6 +2398,20 @@ mod tests {
         assert!(note.contains("12 line(s)"), "{note}");
         assert!(note.contains("2024.journal"), "{note}");
         assert!(note.contains("4.0 KB"), "{note}");
+    }
+
+    #[test]
+    fn a_suggested_command_quotes_a_path_that_needs_it() {
+        // A suggestion is something to paste back, so it has to be one argument:
+        // `download spaced name.journal` would be refused as more than one.
+        assert_eq!(quoted("out.csv"), "out.csv");
+        assert_eq!(quoted("my file.journal"), "\"my file.journal\"");
+
+        let note = wrote_note(&[("my file.csv".to_string(), 12, false)]);
+        assert!(note.contains("`download \"my file.csv\"`"), "{note}");
+
+        let appended = append_note("my file.journal", 2, 40);
+        assert!(appended.contains("`print -f \"my file.journal\"`"), "{appended}");
     }
 
     #[test]
