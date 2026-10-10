@@ -107,6 +107,11 @@ jobs:
         run: |
           set -eu
           test -f dist/wasm/hledger.wasm || { echo "::error::hledger.wasm missing from dist"; exit 1; }
+          # The service worker and manifest have to be at the site root to work;
+          # a service worker only controls its own directory and below.
+          for f in dist/sw.js dist/manifest.webmanifest dist/icons/icon-192.png; do
+            test -f "$f" || { echo "::error::$f missing from dist"; exit 1; }
+          done
           printf 'hledger.gru.fi\n' > dist/CNAME
           : > dist/.nojekyll
           du -sh dist

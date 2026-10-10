@@ -17,6 +17,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use js_sys::Reflect;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlElement;
@@ -28,8 +29,14 @@ use crate::terminal::{self, Command, Completion, Editor};
 use crate::terminal::view::Screen;
 use crate::upload::{self, Picked};
 
-/// What the user sees before the line.
-const PROMPT: &str = "$ ";
+/// `localStorage` key for the terminal font size.
+const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
+
+/// An event listener the app keeps alive for as long as it runs.
+///
+/// A `Closure` dropped by its creator stops firing, so a listener that outlives
+/// the call registering it has to be stored somewhere.
+type Listener<T> = RefCell<Option<wasm_bindgen::closure::Closure<T>>>;
 
 /// A Ctrl+R search in progress.
 ///
@@ -60,7 +67,7 @@ pub fn start() {
     let Some(element) = terminal_element() else {
         return;
     };
-    let screen = match Screen::mount(&element) {
+    let screen = match Screen::mount(&element, load_font()) {
         Ok(screen) => Rc::new(screen),
         Err(error) => {
             // Nothing to print to, so this is the one place a console message is
@@ -78,6 +85,11 @@ pub fn start() {
     app.screen.on_data(move |data| input.on_input(data));
 
     app.resize_handler();
+    // The font-size keys are the one thing xterm does not report through
+    // `onData`, so they are caught on the element instead.
+    app.font_keys(&element);
+
+    register_service_worker();
 
     let booting = Rc::clone(&app);
     spawn_local(async move { boot(booting).await });
@@ -111,6 +123,41 @@ fn save_to_disk(file: &JournalFile) -> Result<(), String> {
     anchor.set_download(file.path.rsplit('/').next().unwrap_or(&file.path));
     anchor.click();
     Ok(())
+}
+
+/// Offer the app to the browser as something that works offline.
+///
+/// Every failure is silent and expected: a service worker needs a secure context,
+/// and the development server on a LAN address is not one. The app works exactly
+/// the same without it, just with a network in the way.
+fn register_service_worker() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    // Asking on an insecure origin is not an error worth logging: the browser
+    // would refuse, and the development server is exactly that case.
+    if !window.is_secure_context() {
+        return;
+    }
+    let Ok(navigator) = Reflect::get(window.as_ref(), &JsValue::from_str("navigator")) else {
+        return;
+    };
+    let Ok(container) = Reflect::get(&navigator, &JsValue::from_str("serviceWorker")) else {
+        return;
+    };
+    if container.is_undefined() || container.is_null() {
+        return;
+    }
+    let Some(register) = Reflect::get(&container, &JsValue::from_str("register"))
+        .ok()
+        .and_then(|value| value.dyn_into::<js_sys::Function>().ok())
+    else {
+        return;
+    };
+    let _ = register.call1(
+        &container,
+        &JsValue::from_str(&crate::hledger_info::service_worker_url()),
+    );
 }
 
 /// The element the terminal lives in, from `index.html`.
@@ -151,8 +198,13 @@ struct App {
     chatter: RefCell<Vec<String>>,
     /// The Ctrl+R search in progress, if any.
     isearch: RefCell<Option<ISearch>>,
+    /// The terminal font size, in pixels, kept between visits.
+    font: Cell<u32>,
+    /// Kept alive for the lifetime of the app: the font-size keys, which xterm
+    /// sends nothing for and so cannot be seen through `onData`.
+    _keys: Listener<dyn FnMut(web_sys::KeyboardEvent)>,
     /// Kept alive for the lifetime of the app.
-    _resize: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut()>>>,
+    _resize: Listener<dyn FnMut()>,
 }
 
 impl App {
@@ -171,6 +223,8 @@ impl App {
             accounts: RefCell::new(None),
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
+            font: Cell::new(load_font()),
+            _keys: RefCell::new(None),
             _resize: RefCell::new(None),
         }
     }
@@ -186,7 +240,7 @@ impl App {
         let prompt = match self.isearch.borrow().as_ref() {
             Some(search) if search.failed => format!("(failed reverse-i-search)`{}': ", search.query),
             Some(search) => terminal::isearch_prompt(&search.query),
-            None => PROMPT.to_string(),
+            None => self.prompt_text(),
         };
         self.screen
             .write(&terminal::prompt_redraw(&prompt, &editor.line(), editor.cursor()));
@@ -207,6 +261,60 @@ impl App {
         if !self.busy.get() {
             self.prompt();
         }
+    }
+
+    /// What the prompt says right now: the journal being read, then `$ `.
+    ///
+    /// Used for drawing *and* for noting the command echo as the app's own line, so
+    /// the two can never disagree — a mismatch there would leave the echo
+    /// searchable and the match count would climb.
+    fn prompt_text(&self) -> String {
+        terminal::prompt_for(self.main.borrow().as_deref())
+    }
+
+    /// Keep the font-size keys. xterm sends nothing for Ctrl+=, Ctrl+- or Ctrl+0,
+    /// so they never reach `onData`; a key listener on the terminal's element is
+    /// the only place to see them.
+    fn font_keys(self: &Rc<App>, element: &HtmlElement) {
+        let app = Rc::clone(self);
+        let closure = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |event: web_sys::KeyboardEvent| {
+                if !event.ctrl_key() || event.alt_key() || event.meta_key() {
+                    return;
+                }
+                let direction = match event.key().as_str() {
+                    "=" | "+" => 1,
+                    "-" | "_" => -1,
+                    "0" => 0,
+                    _ => return,
+                };
+                event.prevent_default();
+                app.rescale(direction);
+            },
+        );
+        let _ = element.add_event_listener_with_callback(
+            "keydown",
+            closure.as_ref().unchecked_ref(),
+        );
+        *self._keys.borrow_mut() = Some(closure);
+    }
+
+    /// One step bigger, one smaller, or back to the default.
+    fn rescale(self: &Rc<App>, direction: i32) {
+        let next = if direction == 0 {
+            terminal::DEFAULT_FONT
+        } else {
+            terminal::step_font(self.font.get(), direction)
+        };
+        if next == self.font.get() {
+            return;
+        }
+        self.font.set(next);
+        save_font(next);
+        self.screen.set_font_size(next);
+        // The size is part of what hledger is told, so a resize means the next
+        // command formats to the new width.
+        self.configure();
     }
 
     /// Print what a command produced. Searchable.
@@ -463,7 +571,7 @@ impl App {
             return;
         };
         save_history(self.editor.borrow().history());
-        self.remember_chatter(&format!("{PROMPT}{line}"));
+        self.remember_chatter(&format!("{}{line}", self.prompt_text()));
 
         // The command is already on screen: the prompt redraw printed what was
         // typed, character by character. A shell does not echo it again, and
@@ -576,10 +684,17 @@ impl App {
     fn configure(self: &Rc<App>) {
         let ledger_file = self.main.borrow().as_deref().map(hledger::mounted_path);
         let (columns, lines) = self.screen.size();
+        let engine = crate::hledger_info::engine_url();
         spawn_local(async move {
             // A failure here only means the engine is unreachable, which the next
             // command will report in full.
-            let _ = hledger::configure(ledger_file.as_deref(), Some(columns), Some(lines)).await;
+            let _ = hledger::configure(
+                ledger_file.as_deref(),
+                Some(columns),
+                Some(lines),
+                Some(&engine),
+            )
+            .await;
         });
     }
 
@@ -1014,6 +1129,23 @@ fn load_history() -> Vec<String> {
     let excess = history.len().saturating_sub(MAX_HISTORY);
     history.drain(0..excess);
     history
+}
+
+/// The font size to start with: the last one chosen, or the default.
+fn load_font() -> u32 {
+    let stored = storage()
+        .and_then(|storage| storage.get_item(FONT_KEY).ok().flatten())
+        .and_then(|raw| raw.parse::<u32>().ok());
+    match stored {
+        Some(size) => size.clamp(terminal::MIN_FONT, terminal::MAX_FONT),
+        None => terminal::DEFAULT_FONT,
+    }
+}
+
+fn save_font(size: u32) {
+    if let Some(storage) = storage() {
+        let _ = storage.set_item(FONT_KEY, &size.to_string());
+    }
 }
 
 fn save_history(history: &[String]) {

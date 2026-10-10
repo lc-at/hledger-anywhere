@@ -62,9 +62,9 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// Create a terminal inside `element`.
-    pub fn mount(element: &HtmlElement) -> Result<Screen, String> {
-        let terminal = Xterm::new(&options());
+    /// Create a terminal inside `element`, at `font` pixels.
+    pub fn mount(element: &HtmlElement, font: u32) -> Result<Screen, String> {
+        let terminal = Xterm::new(&options(font));
 
         let fit = addon("FitAddon");
         if let Some(addon) = &fit {
@@ -98,6 +98,21 @@ impl Screen {
     /// [`Screen::size`]'s callers and `hledger-wasm/terminal-size-stub`.
     pub fn size(&self) -> (u32, u32) {
         (self.terminal.cols(), self.terminal.rows())
+    }
+
+    /// Change the font size and resize to match.
+    ///
+    /// The rows and columns have to be recomputed afterwards: a bigger font fits
+    /// fewer of both, and hledger is told the count on the next command.
+    pub fn set_font_size(&self, font: u32) {
+        if let Ok(options) = Reflect::get(&self.terminal, &JsValue::from_str("options")) {
+            let _ = Reflect::set(
+                &options,
+                &JsValue::from_str("fontSize"),
+                &JsValue::from_f64(f64::from(font)),
+            );
+        }
+        self.fit();
     }
 
     /// Resize the terminal to its element.
@@ -220,11 +235,11 @@ fn addon(name: &str) -> Option<JsValue> {
 ///
 /// Black and amber, like the trading terminals this kind of tool grew up beside,
 /// with enough contrast for a monospace report to be read for a long time.
-fn options() -> JsValue {
+fn options(font: u32) -> JsValue {
     let options = Object::new();
     set(&options, "cursorBlink", JsValue::TRUE);
     set(&options, "cursorStyle", JsValue::from_str("block"));
-    set(&options, "fontSize", JsValue::from_f64(14.0));
+    set(&options, "fontSize", JsValue::from_f64(f64::from(font)));
     set(
         &options,
         "fontFamily",

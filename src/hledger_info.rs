@@ -37,6 +37,29 @@ pub fn describe() -> String {
     format!("hledger {} · wasm sha256 {short}…", version())
 }
 
+/// The engine's URL, with its checksum as a version.
+///
+/// A URL that changes when the bytes change is what lets the service worker serve
+/// 13 MB from the cache without ever asking the network: for an immutable URL
+/// there is no such thing as a stale answer. Without it, either every visit
+/// revalidates the whole engine or a new one can be missed.
+pub fn engine_url() -> String {
+    if SHA256.is_empty() {
+        "/wasm/hledger.wasm".to_string()
+    } else {
+        format!("/wasm/hledger.wasm?v={SHA256}")
+    }
+}
+
+/// The service worker's URL, carrying the same version, so its cache is named
+/// after the engine it is caching and old caches are dropped.
+pub fn service_worker_url() -> String {
+    format!(
+        "/sw.js?v={}",
+        if SHA256.is_empty() { "dev" } else { SHA256 }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +83,18 @@ mod tests {
     #[test]
     fn a_missing_version_says_so_rather_than_being_blank() {
         assert!(!version().is_empty());
+    }
+
+    #[test]
+    fn the_engine_and_the_worker_are_both_versioned_by_the_checksum() {
+        let engine = engine_url();
+        assert!(engine.starts_with("/wasm/hledger.wasm"), "{engine}");
+        let worker = service_worker_url();
+        assert!(worker.starts_with("/sw.js?v="), "{worker}");
+        if !SHA256.is_empty() {
+            assert!(engine.ends_with(SHA256), "the engine URL must carry the checksum");
+            assert!(worker.ends_with(SHA256), "the worker URL must carry it too");
+        }
     }
 
     #[test]

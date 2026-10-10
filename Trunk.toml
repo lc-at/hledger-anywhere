@@ -23,3 +23,4 @@ watch = ["src", "assets/css", "assets/js", "assets/wasm", "index.html"]
 stage = "pre_build"
 command = "sh"
 command_arguments = ["scripts/fetch-hledger-wasm.sh"]
+

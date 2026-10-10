@@ -13,6 +13,25 @@
 #[cfg(target_arch = "wasm32")]
 pub mod view;
 
+/// The smallest and largest font the terminal will use, in pixels.
+///
+/// A terminal that can be shrunk to nothing or grown past the window is worse
+/// than one that cannot be resized at all, so the ends are pinned.
+pub const MIN_FONT: u32 = 8;
+pub const MAX_FONT: u32 = 32;
+pub const DEFAULT_FONT: u32 = 14;
+
+/// The next font size in `direction` (+1 bigger, -1 smaller), clamped.
+pub fn step_font(current: u32, direction: i32) -> u32 {
+    let step = 2;
+    let next = if direction >= 0 {
+        current.saturating_add(step)
+    } else {
+        current.saturating_sub(step)
+    };
+    next.clamp(MIN_FONT, MAX_FONT)
+}
+
 /// The largest stdout written to the terminal, in bytes.
 ///
 /// `hledger print` on a real journal is tens of megabytes, and writing that to
@@ -750,6 +769,25 @@ pub fn download_list(files: &[String]) -> String {
     text
 }
 
+/// The prompt for the journal being read.
+///
+/// A terminal that shows only `$ ` makes "which journal is this?" a question you
+/// have to ask. The file's own name is enough to answer it and short enough not to
+/// eat the line; `(no journal)` says plainly that nothing is loaded.
+pub fn prompt_for(main: Option<&str>) -> String {
+    match main {
+        Some(path) => {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            if name.is_empty() {
+                "$ ".to_string()
+            } else {
+                format!("{name} $ ")
+            }
+        }
+        None => "(no journal) $ ".to_string(),
+    }
+}
+
 /// What the terminal prints after loading the demo.
 pub fn demo_loaded(files: usize, main: &str) -> String {
     format!(
@@ -1362,6 +1400,30 @@ mod tests {
 
         // Case-insensitive, like the other search.
         assert!(reverse_search(&history, "BALANCE", None).is_some());
+    }
+
+    #[test]
+    fn the_prompt_names_the_journal_without_eating_the_line() {
+        assert_eq!(prompt_for(Some("hledger.journal")), "hledger.journal $ ");
+        assert_eq!(prompt_for(Some("books/2024.journal")), "2024.journal $ ");
+        assert_eq!(prompt_for(Some("/data/deep/path.journal")), "path.journal $ ");
+        assert_eq!(prompt_for(None), "(no journal) $ ");
+        // A path with no name in it falls back to the plain prompt rather than a
+        // dangling separator.
+        assert_eq!(prompt_for(Some("books/")), "$ ");
+    }
+
+    #[test]
+    fn the_font_steps_between_limits_and_stops_there() {
+        assert_eq!(step_font(14, 1), 16);
+        assert_eq!(step_font(14, -1), 12);
+        assert_eq!(step_font(MAX_FONT, 1), MAX_FONT);
+        assert_eq!(step_font(MIN_FONT, -1), MIN_FONT);
+        // Never past either end, from any starting point.
+        assert_eq!(step_font(MAX_FONT - 1, 1), MAX_FONT);
+        assert_eq!(step_font(MIN_FONT + 1, -1), MIN_FONT);
+        assert_eq!(step_font(0, -1), MIN_FONT);
+        const { assert!(MIN_FONT < DEFAULT_FONT && DEFAULT_FONT < MAX_FONT) };
     }
 
     #[test]

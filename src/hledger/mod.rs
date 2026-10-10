@@ -140,8 +140,9 @@ pub async fn configure(
     ledger_file: Option<&str>,
     columns: Option<u32>,
     lines: Option<u32>,
+    wasm_path: Option<&str>,
 ) -> Result<(), EngineError> {
-    bridge::configure(ledger_file, columns, lines).await
+    bridge::configure(ledger_file, columns, lines, wasm_path).await
 }
 
 /// Run one invocation.
@@ -175,6 +176,7 @@ pub async fn configure(
     _ledger_file: Option<&str>,
     _columns: Option<u32>,
     _lines: Option<u32>,
+    _wasm_path: Option<&str>,
 ) -> Result<(), EngineError> {
     Err(native_error())
 }

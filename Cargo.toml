@@ -30,6 +30,7 @@ features = [
     "Blob",
     "Event",
     "EventTarget",
+    "KeyboardEvent",
     "Storage",
     "Url",
     "HtmlAnchorElement",

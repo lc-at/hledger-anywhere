@@ -189,6 +189,7 @@ pub async fn configure(
     ledger_file: Option<&str>,
     columns: Option<u32>,
     lines: Option<u32>,
+    wasm_path: Option<&str>,
 ) -> Result<(), EngineError> {
     let bridge = bridge().await?;
 
@@ -200,6 +201,10 @@ pub async fn configure(
         ),
         ("columns", number(columns)),
         ("lines", number(lines)),
+        (
+            "wasmPath",
+            wasm_path.map(JsValue::from_str).unwrap_or(JsValue::UNDEFINED),
+        ),
     ] {
         Reflect::set(&options, &JsValue::from_str(key), &value)
             .map_err(|error| classify(error, "configure"))?;
