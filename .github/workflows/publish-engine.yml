@@ -1,0 +1,57 @@
+name: Publish the pinned engine
+
+# Attaches assets/wasm/hledger.wasm to a GitHub release, so the engine can be
+# fetched instead of carried in the repository, and so what CI ends up running can
+# be checked against the SHA-256 in wasm.lock.
+#
+#   git tag wasm-v2 && git push origin wasm-v2
+#
+# The release is created with the runner's own GITHUB_TOKEN, so no maintainer
+# credentials are involved. Re-running for the same tag replaces the asset.
+#
+# After publishing, set `url` in wasm.lock to the asset URL (the commands in that
+# file spell it out) and the artifact no longer needs to be committed.
+
+on:
+  push:
+    tags: ["wasm-*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to publish under
+        required: true
+        default: wasm-v2
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the engine against wasm.lock
+        # The artifact must match the lock before it is published: a release is
+        # handed to every clone, and the fetch script rejects a mismatch, so
+        # publishing an unverified binary would break builds rather than fix them.
+        run: sh scripts/fetch-hledger-wasm.sh
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          test -f assets/wasm/hledger.wasm || { echo "::error::no engine to publish"; exit 1; }
+          version="$(awk -F'"' '/^hledger_version/ {print $2}' wasm.lock)"
+          sha="$(awk -F'"' '/^sha256/ {print $2}' wasm.lock)"
+          notes="hledger ${version} for wasm32-wasi. Pinned by wasm.lock (sha256 ${sha})."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" assets/wasm/hledger.wasm --clobber
+          else
+            gh release create "$TAG" assets/wasm/hledger.wasm \
+              --title "hledger ${version} for wasm32-wasi (${TAG})" --notes "$notes"
+          fi
+          echo "--- published ---"
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name): \(.size) bytes"'
