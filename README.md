@@ -111,6 +111,7 @@ Everything that is not in this table is passed to hledger verbatim.
 | `clear` | Clear the screen. |
 | `plugins [add\|remove\|reload]` | List the installed plugins, or install a repository by URL or path. |
 | `settings [export\|import <path>]` | Show what is remembered, or move it between instances as a file. |
+| `theme [name]` | List the colour themes, or select one. Plugin themes are listed too. |
 | `?` | The app's own help, the engine's version and its checksum. |
 
 ### Keys
@@ -212,6 +213,33 @@ cannot change a journal either.
 
 A plugin is code running in this page, so installing a repository is trusting it. See
 [docs/plugins.md](docs/plugins.md) for the manifest fields, the API, and a worked example.
+
+## Themes
+
+The terminal is painted by a theme, and plugins can contribute one. `theme` lists what is
+on offer, marked with the one in use:
+
+```
+hledger.journal » theme
+Themes
+ * default       built in (in use)
+   midnight      from chart
+
+theme <name> selects one and keeps it; plugin themes come from the repositories you install.
+```
+
+`theme midnight` repaints the terminal, the page behind it, and the colours the app writes
+its own text in, without a reload: xterm takes colours as options, so the scrollback stays
+where it was. Text already on screen keeps the colours it was written with, since the app
+writes those explicitly; the palette behind it changes, and everything after it arrives in
+the new theme. The choice is in the settings, so the next visit starts in it, and
+`settings export` carries it to another instance.
+
+A theme is a handful of colours by role: `background`, `foreground`, `cursor`, `accent`
+(the prompt marker and the selected line) and `dim` (the app's asides). A role that is not
+set keeps the built-in colour, so a plugin that sets one colour gets a usable theme rather
+than a half-painted terminal, and a colour that cannot be read is reported with the role
+that got it wrong.
 
 ## Settings, and moving them
 

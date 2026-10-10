@@ -31,16 +31,44 @@ pub const DEFAULT_FONT: u32 = 14;
 
 /// Bold. Used for anything the user can type.
 const BOLD: &str = "\u{1b}[1m";
-/// Dim. Used for explanation, and for the parts of a message that are not the point.
-pub const DIM: &str = "\u{1b}[2m";
+/// Dim, as the app ships with it: faint, in the terminal's own foreground colour.
+const DEFAULT_DIM: &str = "\u{1b}[2m";
 /// Red, for failures.
 pub const RED: &str = "\u{1b}[31m";
 /// Dim red, for the exit status of a command that failed.
 pub const DIM_RED: &str = "\u{1b}[2;31m";
 /// The accent colour the rest of the interface uses, as a 256-colour amber.
-const ACCENT: &str = "\u{1b}[38;5;214m";
+pub const DEFAULT_ACCENT: &str = "\u{1b}[38;5;214m";
 /// Back to normal.
 pub const RESET: &str = "\u{1b}[0m";
+
+thread_local! {
+    /// The escapes the app writes its own accent and asides in.
+    ///
+    /// A theme replaces these. They live here rather than being passed to every message
+    /// function, because none of those functions care where the colour came from, and
+    /// threading a theme through all of them would be noise.
+    static STYLE: std::cell::RefCell<(String, String)> =
+        std::cell::RefCell::new((DEFAULT_ACCENT.to_string(), DEFAULT_DIM.to_string()));
+}
+
+/// Paint the app's own text in a theme's colours.
+///
+/// Both arguments are the escape that starts the colour, so a theme can be any colour a
+/// terminal understands, not only the ones this file knows how to build.
+pub fn set_style(accent: String, dim: String) {
+    STYLE.with(|style| *style.borrow_mut() = (accent, dim));
+}
+
+/// The escape that starts the app's accent colour, for a whole line of its own.
+pub fn accent_escape() -> String {
+    STYLE.with(|style| style.borrow().0.clone())
+}
+
+/// The escape that starts the app's dim colour, for a whole line of its own.
+pub fn dim_escape() -> String {
+    STYLE.with(|style| style.borrow().1.clone())
+}
 
 /// A command, or any other text worth the user's eye.
 pub fn bold(text: &str) -> String {
@@ -49,12 +77,12 @@ pub fn bold(text: &str) -> String {
 
 /// An aside: how to use something, or what just happened.
 pub fn dim(text: &str) -> String {
-    format!("{DIM}{text}{RESET}")
+    format!("{}{text}{RESET}", dim_escape())
 }
 
 /// The accent colour, for the prompt's marker and little else.
 pub fn accent(text: &str) -> String {
-    format!("{ACCENT}{text}{RESET}")
+    format!("{}{text}{RESET}", accent_escape())
 }
 
 /// What a line looks like once the terminal has rendered it.
@@ -220,6 +248,8 @@ pub enum Command<'a> {
     Plugins(Option<&'a str>),
     /// `settings` shows what is remembered; `export` and `import` move it between visits.
     Settings(Option<&'a str>),
+    /// `theme [name]` lists the themes on offer, or selects one.
+    Theme(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -252,6 +282,7 @@ pub fn classify(line: &str) -> Command<'_> {
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
         "plugins" => Command::Plugins((!rest.is_empty()).then_some(rest)),
         "settings" => Command::Settings((!rest.is_empty()).then_some(rest)),
+        "theme" => Command::Theme((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -734,6 +765,7 @@ pub const COMMANDS: &[&str] = &[
     "screenreader",
     "plugins",
     "settings",
+    "theme",
 ];
 
 pub fn candidates(paths: &[String]) -> Vec<String> {
@@ -1120,6 +1152,63 @@ pub fn output_over(paths: &[String], argv: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// What `theme` prints: the themes on offer, and which one is in use.
+pub fn theme_list(themes: &[(String, String)], current: &str) -> String {
+    let mut text = format!("{}\r\n", bold("Themes"));
+    let width = themes
+        .iter()
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(current.chars().count());
+    for (name, from) in themes {
+        let marker = if name == current { "*" } else { " " };
+        let running = if name == current {
+            format!(" {}", dim("(in use)"))
+        } else {
+            String::new()
+        };
+        text.push_str(&format!(
+            " {} {}  {}{running}\r\n",
+            accent(marker),
+            bold(&format!("{name:<width$}")),
+            dim(from)
+        ));
+    }
+    text.push_str(&format!(
+        "\r\n{} selects one and keeps it; plugin themes come from the repositories you install.\r\n",
+        bold("theme <name>")
+    ));
+    text
+}
+
+/// What `theme <name>` prints when a theme is applied.
+pub fn theme_applied(name: &str, from: &str) -> String {
+    format!(
+        "Theme {}{}. {}\r\n",
+        bold(name),
+        if from.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", dim(from))
+        },
+        dim("The terminal, the page behind it, and the app's own text.")
+    )
+}
+
+/// What `theme` says about a name nothing offers.
+pub fn theme_usage(name: &str, available: &[String]) -> String {
+    format!(
+        "There is no theme called {}. {}\r\n",
+        bold(name),
+        if available.is_empty() {
+            "None are installed: {} lists them.".to_string()
+        } else {
+            format!("{} lists them; available now: {}.", bold("theme"), available.join(", "))
+        }
+    )
 }
 
 /// What `plugins` prints: what is installed, and the repositories it came from.
@@ -1844,6 +1933,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("unalias <name>", "remove one"),
             ("plugins", "list the installed plugins, or add and remove repositories"),
             ("settings", "show what is remembered, or export and import it as a file"),
+            ("theme [name]", "list the colour themes, or select one; plugin themes included"),
             ("clear", "clear the screen"),
         ],
     ),
@@ -2338,6 +2428,12 @@ mod tests {
             settings_exported("hledger-anywhere-settings.json", 1024),
             settings_imported(&["font".to_string()], &["font 900 is outside 8 to 32".to_string()]),
             settings_usage("nonsense"),
+            theme_list(
+                &[("default".to_string(), "built in".to_string())],
+                "default"
+            ),
+            theme_applied("midnight", "from chart"),
+            theme_usage("nonsense", &["default".to_string()]),
             match parse_alias("nonsense") {
                 AliasEdit::Bad(message) => message,
                 other => panic!("{other:?}"),
@@ -2366,7 +2462,10 @@ mod tests {
         assert!(visible.contains("demo"), "the sample journal must be discoverable");
         assert!(visible.contains("No journal is loaded yet."), "{visible}");
         // A banner, not a sentence: the title carries weight, the asides recede.
-        assert!(cold.contains(BOLD) && cold.contains(DIM), "{cold:?}");
+        assert!(
+            cold.contains(BOLD) && cold.contains(&dim_escape()),
+            "{cold:?}"
+        );
 
         let back = plain(&resumed(3, "books/hledger.journal"));
         assert!(back.contains("Resumed 3 files"), "{back}");
@@ -2730,7 +2829,10 @@ mod tests {
         // Dim for what is being read, the accent colour for the marker to type
         // after: a flat `$ ` was the whole complaint.
         let prompt = prompt_for(Some("2024.journal"));
-        assert!(prompt.contains(DIM) && prompt.contains(ACCENT), "{prompt:?}");
+        assert!(
+            prompt.contains(&dim_escape()) && prompt.contains(&accent_escape()),
+            "{prompt:?}"
+        );
     }
 
     #[test]

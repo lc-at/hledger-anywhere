@@ -23,6 +23,7 @@ features = [
     "Window",
     "Document",
     "HtmlElement",
+    "CssStyleDeclaration",
     "HtmlInputElement",
     "FileList",
     "File",

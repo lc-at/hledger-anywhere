@@ -95,6 +95,35 @@ Two things worth knowing:
 - **Open the window before you await anything.** A window opened after an `await` is
   blocked by the browser, which is why `host.window` returns a handle to fill in later.
 
+## Colour themes
+
+A plugin may offer themes in its manifest. Each is a name and some colours by role:
+
+```json
+"themes": [
+  { "name": "midnight", "colors": {
+      "background": "#0b1021", "foreground": "#c9d1d9", "cursor": "#7aa2f7",
+      "accent": "#7aa2f7", "dim": "#6b7280" } }
+]
+```
+
+| role | what it paints |
+| --- | --- |
+| `background` | The terminal, and the page behind it. |
+| `foreground` | The terminal's default text. |
+| `cursor` | The cursor block. |
+| `accent` | The prompt marker, and the selected line in a listing. |
+| `dim` | The app's own asides: the explanations under a command. |
+
+Colours are `#rrggbb` or `#rgb`. A role that is not set keeps the built-in colour, so a
+theme that sets one colour is still a theme. A role the app does not know is ignored, so a
+theme written for a later version applies what this one understands. A colour that cannot
+be read is an error naming the role, reported when the theme is used rather than when the
+repository is installed, because a broken theme does not make the plugin unusable.
+
+The user selects one with `theme <name>`, and the choice is saved in the settings, so it
+travels to another instance with `settings export`.
+
 ## Managing repositories
 
 | command | what it does |

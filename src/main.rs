@@ -38,6 +38,7 @@ mod plugins;
 mod remote;
 mod settings;
 mod terminal;
+mod theme;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {

@@ -138,6 +138,24 @@ impl Screen {
     }
 
     /// Resize the terminal to its element.
+    /// Repaint the terminal in a theme.
+    ///
+    /// xterm takes its colours as options and applies them live, so a theme change is a
+    /// repaint rather than a reload, and the scrollback stays where it was.
+    pub fn set_theme(&self, background: &str, foreground: &str, cursor: &str) {
+        let Ok(options) = Reflect::get(&self.terminal, &JsValue::from_str("options")) else {
+            return;
+        };
+        let theme = Object::new();
+        set(&theme, "background", JsValue::from_str(background));
+        set(&theme, "foreground", JsValue::from_str(foreground));
+        set(&theme, "cursor", JsValue::from_str(cursor));
+        set(&theme, "selectionBackground", JsValue::from_str("#3a3021"));
+        set(&theme, "red", JsValue::from_str("#ff6b5e"));
+        set(&theme, "brightRed", JsValue::from_str("#ff8a80"));
+        let _ = Reflect::set(&options, &JsValue::from_str("theme"), &theme);
+    }
+
     pub fn fit(&self) {
         let Some(addon) = &self.fit else {
             return;

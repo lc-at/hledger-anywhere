@@ -28,6 +28,7 @@ use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFi
 use crate::journal;
 use crate::plugins::{self, Registry};
 use crate::settings::{Alias, Settings};
+use crate::theme::Theme;
 use crate::remote;
 use crate::store::{Session, Store};
 use crate::terminal::{self, Command, Completion, Editor};
@@ -102,6 +103,9 @@ pub fn start() {
     };
 
     let app = Rc::new(App::new(screen));
+    // Before anything is written: the greeting should arrive in the colours that were
+    // chosen last time, not be repainted a moment later.
+    app.restore_theme();
     app.screen
         .write(&terminal::to_terminal_text(&terminal::welcome(crate::hledger_info::version())));
 
@@ -838,7 +842,7 @@ impl App {
             let (columns, _) = self.screen.size();
             for line in terminal::format_columns(&options, columns as usize) {
                 self.remember_chatter(&line);
-                self.block(&line, Some(terminal::DIM));
+                self.block(&line, Some(&terminal::dim_escape()));
             }
         }
         self.prompt();
@@ -960,6 +964,12 @@ impl App {
                 terminal::bold("screenreader"),
                 if self.screen_reader.get() { "off" } else { "on" }
             )),
+            Command::Theme(None) => self.select_theme(None),
+            Command::Theme(Some(name)) => {
+                if let Some(name) = self.single(name) {
+                    self.select_theme(Some(&name));
+                }
+            }
             Command::Settings(None) => self.list_settings(),
             Command::Settings(Some(arguments)) => self.settings_command(arguments),
             Command::Plugins(None) => self.list_plugins(),
@@ -1419,6 +1429,9 @@ impl App {
                     app.announce(&format!("{}: {error}", terminal::bold(&url)));
                 }
             }
+            // A theme contributed by a plugin could not be applied before its repository
+            // was read, which only happens here.
+            app.restore_theme();
             app.title("");
             app.prompt();
         });
@@ -1669,10 +1682,128 @@ impl App {
                     app.announce(&format!("{}: {error}", terminal::bold(url)));
                 }
             }
+            // The imported theme may come from a repository that was just installed.
+            app.restore_theme();
             app.title("");
             app.say(&terminal::settings_imported(&applied, &dropped));
             app.settle();
         });
+    }
+
+    /// A theme by name: the built-in one, or a plugin's.
+    ///
+    /// A plugin's theme is built when it is asked for rather than stored ready-made, so a
+    /// colour that cannot be read is reported by the command that tried to use it.
+    fn theme(self: &Rc<App>, name: &str) -> Option<(Theme, String)> {
+        if name == crate::theme::Theme::built_in().name {
+            return Some((Theme::built_in(), "built in".to_string()));
+        }
+        let declared = self
+            .registry
+            .borrow()
+            .themes()
+            .into_iter()
+            .find(|(_, theme)| theme.name == name)
+            .map(|(plugin, theme)| (plugin.to_string(), theme.colors.clone()))?;
+        match Theme::from_plugin(name, &declared.1) {
+            Ok(theme) => Some((theme, format!("from {}", declared.0))),
+            Err(error) => {
+                self.announce(&error);
+                None
+            }
+        }
+    }
+
+    /// Every theme on offer, and anything a plugin's theme got wrong.
+    fn themes(self: &Rc<App>) -> (Vec<(Theme, String)>, Vec<String>) {
+        let mut list = vec![(Theme::built_in(), "built in".to_string())];
+        let mut problems = Vec::new();
+        let declared: Vec<(String, String, BTreeMap<String, String>)> = self
+            .registry
+            .borrow()
+            .themes()
+            .into_iter()
+            .map(|(plugin, theme)| {
+                (
+                    theme.name.clone(),
+                    plugin.to_string(),
+                    theme.colors.clone(),
+                )
+            })
+            .collect();
+        for (name, plugin, colors) in declared {
+            match Theme::from_plugin(&name, &colors) {
+                Ok(theme) => list.push((theme, format!("from {plugin}"))),
+                Err(error) => problems.push(error),
+            }
+        }
+        (list, problems)
+    }
+
+    /// `theme`: what there is, or which one to use.
+    fn select_theme(self: &Rc<App>, name: Option<&str>) {
+        let (themes, problems) = self.themes();
+        for problem in &problems {
+            self.announce(problem);
+        }
+
+        let Some(name) = name else {
+            let rows: Vec<(String, String)> = themes
+                .iter()
+                .map(|(theme, from)| (theme.name.clone(), from.clone()))
+                .collect();
+            let current = settings(|settings| settings.theme.clone());
+            self.say(&terminal::theme_list(&rows, &current));
+            return self.prompt();
+        };
+
+        match self.theme(name) {
+            Some((theme, from)) => {
+                self.apply_theme(&theme);
+                update_settings(|settings| settings.theme = theme.name.clone());
+                self.say(&terminal::theme_applied(&theme.name, &from));
+            }
+            None => {
+                let available: Vec<String> = themes
+                    .iter()
+                    .map(|(theme, _)| theme.name.clone())
+                    .collect();
+                self.say(&terminal::theme_usage(name, &available));
+            }
+        }
+        self.prompt();
+    }
+
+    /// Paint everything in a theme: the terminal, the page behind it, and the app's own
+    /// accent and asides.
+    fn apply_theme(self: &Rc<App>, theme: &Theme) {
+        self.screen.set_theme(
+            &theme.background.css(),
+            &theme.foreground.css(),
+            &theme.cursor.css(),
+        );
+        terminal::set_style(theme.accent.ansi(), theme.dim.ansi_dim());
+
+        // The page behind the terminal has to move with it, or a resize, or the moment
+        // before xterm paints, shows a stripe of the old colour.
+        let root = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.document_element());
+        if let Some(element) = root.as_ref().and_then(|root| root.dyn_ref::<HtmlElement>()) {
+            let style = element.style();
+            let _ = style.set_property("--term-bg", &theme.background.css());
+            let _ = style.set_property("--term-accent", &theme.accent.css());
+            let _ = style.set_property("--term-dim", &theme.dim.css());
+        }
+    }
+
+    /// Apply the theme the settings name, without saying so: this is the start of a visit,
+    /// not a command.
+    fn restore_theme(self: &Rc<App>) {
+        let wanted = settings(|settings| settings.theme.clone());
+        if let Some((theme, _)) = self.theme(&wanted) {
+            self.apply_theme(&theme);
+        }
     }
 
     fn settle(self: &Rc<App>) {
