@@ -31,6 +31,7 @@ features = [
     "Event",
     "EventTarget",
     "KeyboardEvent",
+    "TextDecoder",
     "DragEvent",
     "DataTransfer",
     "DomTokenList",

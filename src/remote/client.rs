@@ -242,11 +242,40 @@ impl Account {
     }
 
     /// List a folder.
+    ///
+    /// An empty listing is asked for again before it is believed. The first read
+    /// after an OAuth return can come back empty while the library is still
+    /// bringing its wire client up, and an empty answer is indistinguishable from
+    /// an empty account — so `remote` reported having found nothing while the
+    /// account held two journals and the include between them was then missing.
     pub async fn list(&self, directory: &str) -> Result<Vec<Entry>, RemoteError> {
+        for attempt in 0..3 {
+            let entries = self.list_once(directory).await?;
+            if !entries.is_empty() || attempt == 2 {
+                return Ok(entries);
+            }
+            tick().await;
+        }
+        Ok(Vec::new())
+    }
+
+    /// One look at a folder, going to the network rather than the cache.
+    async fn list_once(&self, directory: &str) -> Result<Vec<Entry>, RemoteError> {
         let listing = JsFuture::from(
-            call(&self.scope, "getListing", &[JsValue::from_str(&super::scoped(directory))])?
-                .dyn_into::<Promise>()
-                .map_err(|_| RemoteError::Call("list a folder".to_string()))?,
+            call(
+                &self.scope,
+                "getListing",
+                &[
+                    JsValue::from_str(&super::scoped(directory)),
+                    // A number is a maximum age, so zero means "not older than
+                    // now": a sync should look. (`false` is not the same thing —
+                    // it means the cache is all that may be used, which is how
+                    // this first returned nothing at all.)
+                    JsValue::from_f64(0.0),
+                ],
+            )?
+            .dyn_into::<Promise>()
+            .map_err(|_| RemoteError::Call("list a folder".to_string()))?,
         )
         .await
         .map_err(|error| RemoteError::Failed(describe(&error)))?;
@@ -288,17 +317,40 @@ impl Account {
     }
 
     /// Read one file.
+    ///
+    /// Fresh for the same reason as [`Account::list`]: `remote` is a sync, and a
+    /// sync that quietly returns yesterday's file is worse than one that takes a
+    /// moment.
     pub async fn read(&self, path: &str) -> Result<String, RemoteError> {
         let file = JsFuture::from(
-            call(&self.scope, "getFile", &[JsValue::from_str(&super::scoped(path))])?
-                .dyn_into::<Promise>()
-                .map_err(|_| RemoteError::Call("read a file".to_string()))?,
+            call(
+                &self.scope,
+                "getFile",
+                &[
+                    JsValue::from_str(&super::scoped(path)),
+                    JsValue::from_f64(0.0),
+                ],
+            )?
+            .dyn_into::<Promise>()
+            .map_err(|_| RemoteError::Call("read a file".to_string()))?,
         )
         .await
         .map_err(|error| RemoteError::Failed(describe(&error)))?;
         let data = get(&file, "data")?;
-        data.as_string()
-            .ok_or_else(|| RemoteError::Failed(format!("`{path}` is not text")))
+        if let Some(text) = data.as_string() {
+            return Ok(text);
+        }
+        // A file the library calls binary still has to come back as text: a journal
+        // is text, and a CSV is text with commas in it. Only the extension makes one
+        // of them look like bytes.
+        if let Ok(bytes) = data.dyn_into::<js_sys::Uint8Array>() {
+            let decoder = web_sys::TextDecoder::new()
+                .map_err(|_| RemoteError::Failed("no text decoder".to_string()))?;
+            return decoder
+                .decode_with_u8_array(&bytes.to_vec())
+                .map_err(|_| RemoteError::Failed(format!("`{path}` is not text")));
+        }
+        Err(RemoteError::Failed(format!("`{path}` is not text")))
     }
 }
 

@@ -1236,7 +1236,7 @@ pub fn help() -> String {
        connect user@host connect a remoteStorage account, then `remote`\n\
        remote [dir]      load every journal file under /hledger/ (or a folder in it)\n\
        disconnect        forget the account (the files stay in the cache)\n\
-       put <path>        save a file hledger wrote into the connected account\n\
+       put <path>        save a loaded file (or one hledger wrote) to the account\n\
        font [size]       show or set the font size (Ctrl+= / Ctrl+- / Ctrl+0 too)\n\
        screenreader on   turn the accessibility tree on (off turns it off)\n\
        chart [args]      draw a report instead of printing it, e.g. `chart expenses -M`\n\

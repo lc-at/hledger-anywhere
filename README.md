@@ -46,7 +46,7 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `download <path>` | Save a file a command wrote with `-o`. |
 | `connect user@host` | Connect a [remoteStorage](https://remotestorage.io) account, so the journal follows you between devices. |
 | `remote [dir]` | Load every file under `/hledger/` (or a folder inside it) from that account. |
-| `put <path>` | Save a file a command wrote with `-o` into that account. |
+| `put <path>` | Save a loaded file — or one a command wrote with `-o` — into that account. |
 | `disconnect` | Forget the account; the files already loaded stay loaded. |
 | `font [size]` | Show or set the font size — the keyboard shortcuts need a keyboard, and a phone has none. |
 | `screenreader on` | Turn xterm's accessibility tree on or off, remembered between visits. |
@@ -86,11 +86,20 @@ This is verified end to end against a real [armadietto](https://github.com/remot
 server on `127.0.0.1`, not just against a stub: the consent screen shows the app's
 claim (*read/write access to /hledger*), the token survives the redirect, `put` lands
 on the server's disk, and a fresh browser with no local files can `remote` them back.
-Three real bugs came out of that, none of them visible to a stub: the token was never
+The whole shape is verified against it, not just the connection: `put hledger.journal`
+and `put demo-prices.journal` land on the server, and a fresh browser with no local
+files runs `remote` and gets them back — `Read 3 file(s)`, the include between the two
+journals resolving, and `balance` producing the report. A file that cannot be read is
+skipped and named rather than stopping the sync.
+
+Five real bugs came out of that, none of them visible to a stub: the token was never
 claimed, because the library only loaded when a remote command ran; `connected` is
 restored asynchronously, so asking a throwaway client straight after construction
-always answered "no"; and paths were doubled, because a client scoped at the
-category already knows about it.
+always answered "no"; paths were doubled, because a client scoped at the category
+already knows about it; the first listing after the return can come back empty while
+the library is still coming up, which is indistinguishable from an empty account; and
+a file the library classifies as binary still has to be decoded as text, because a
+CSV is text with commas in it.
 
 **A screen reader can read the terminal.** `screenreader on` turns on xterm's
 accessibility tree — a real text representation of the screen that a screen reader

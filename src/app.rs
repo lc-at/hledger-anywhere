@@ -161,6 +161,7 @@ async fn read_remote(
     let mut queue = vec![directory.to_string()];
     let mut visited: Vec<String> = Vec::new();
     let mut bytes = 0usize;
+    let mut skipped: Vec<String> = Vec::new();
 
     while let Some(here) = queue.pop() {
         if visited.contains(&here) {
@@ -180,7 +181,16 @@ async fn read_remote(
             if picked.files.iter().any(|file| file.path == path) {
                 continue;
             }
-            let contents = account.read(&entry.path).await?;
+            // One file that cannot be read is not a reason to abandon the journal
+            // next to it: an account may hold anything, and the point of `remote`
+            // is the journals in it.
+            let contents = match account.read(&entry.path).await {
+                Ok(contents) => contents,
+                Err(error) => {
+                    skipped.push(format!("{} ({})", path, error.message()));
+                    continue;
+                }
+            };
             bytes += contents.len();
             if bytes > MAX_REMOTE_BYTES {
                 return Err(remote::client::RemoteError::Failed(format!(
@@ -193,6 +203,13 @@ async fn read_remote(
     }
 
     picked.files.sort_by(|left, right| left.path.cmp(&right.path));
+    if !skipped.is_empty() {
+        picked.skipped.extend(
+            skipped
+                .into_iter()
+                .map(|entry| (entry, "could not be read".to_string())),
+        );
+    }
     Ok((picked, address))
 }
 
@@ -1552,23 +1569,37 @@ impl App {
         }
     }
 
-    /// `put <path>`: save a file a command wrote into the connected account.
+    /// `put <path>`: save a file into the connected account.
+    ///
+    /// Either a file a command wrote this session, or anything loaded. The second
+    /// half matters: putting a loaded journal into an account is how a journal gets
+    /// *there* in the first place, and accepting only what hledger wrote would mean
+    /// nothing could ever be uploaded.
     fn put_remote(self: &Rc<App>, path: &str) {
         let file = self
             .written
             .borrow()
             .iter()
             .find(|file| file.path == path)
-            .cloned();
+            .cloned()
+            .or_else(|| {
+                self.files
+                    .borrow()
+                    .iter()
+                    .find(|file| file.path == path)
+                    .cloned()
+            });
         let Some(file) = file else {
-            let names: Vec<String> = self
-                .written
+            let mut names: Vec<String> = self
+                .files
                 .borrow()
                 .iter()
                 .map(|file| file.path.clone())
                 .collect();
+            names.sort();
+            names.dedup();
             self.announce(&format!(
-                "Nothing called `{path}` was written this session.\n{}",
+                "Nothing called `{path}` is loaded. `journal` lists what is.\n{}",
                 terminal::download_list(&names)
             ));
             return;
