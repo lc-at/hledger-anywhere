@@ -31,10 +31,6 @@ use crate::terminal::{self, Command, Completion, Editor};
 use crate::terminal::view::Screen;
 use crate::upload::{self, Picked};
 
-/// The prompt while journal text is being typed, as a shell continues a line.
-fn block_prompt() -> String {
-    format!("{} {} ", terminal::dim("..."), terminal::accent("»"))
-}
 
 /// `localStorage` key for the terminal font size.
 const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
@@ -52,18 +48,6 @@ const REMOTE_PENDING_KEY: &str = "hledger-anywhere.remote.pending.v1";
 
 /// `localStorage` key for the screen reader preference.
 const SCREEN_READER_KEY: &str = "hledger-anywhere.terminal.screenreader.v1";
-
-/// A block of journal text being typed into a file.
-///
-/// The line editor holds one line, and a journal entry is several, so this is the
-/// mode that collects them: `append <file>`, then lines, then `.` alone.
-struct Block {
-    /// The file as the app knows it.
-    path: String,
-    /// The file as the user wrote it, for the note.
-    target: String,
-    lines: Vec<String>,
-}
 
 /// An event listener the app keeps alive for as long as it runs.
 ///
@@ -129,23 +113,6 @@ pub fn start() {
 
     let booting = Rc::clone(&app);
     spawn_local(async move { boot(booting).await });
-}
-
-/// Save a file hledger wrote into the connected account.
-///
-/// This is the other half of `remote`: what was read from an account can be
-/// written back to it, under the same category and at the same relative path, so
-/// an exported report lands beside the journal it came from.
-async fn write_remote(
-    file: &JournalFile,
-) -> Result<String, remote::client::RemoteError> {
-    let account = remote::client::Account::open().await?;
-    let path = remote::remote_path(&file.path);
-    account.write(&path, &file.contents).await?;
-    Ok(match account.user_address() {
-        Some(address) => format!("{path} in {address}"),
-        None => path,
-    })
 }
 
 /// Walk a remoteStorage directory and read every file in it.
@@ -326,8 +293,6 @@ struct App {
     chatter: RefCell<Vec<String>>,
     /// The Ctrl+R search in progress, if any.
     isearch: RefCell<Option<ISearch>>,
-    /// The block of typed journal text in progress, if any.
-    block: RefCell<Option<Block>>,
     /// Whether the connection coming back has already been reported.
     remote_reported: Cell<bool>,
     /// The terminal font size, in pixels, kept between visits.
@@ -363,7 +328,6 @@ impl App {
             accounts: RefCell::new(None),
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
-            block: RefCell::new(None),
             remote_reported: Cell::new(false),
             font: Cell::new(load_font()),
             screen_reader: Cell::new(load_screen_reader()),
@@ -384,7 +348,6 @@ impl App {
         let editor = self.editor.borrow();
         let prompt = match self.isearch.borrow().as_ref() {
             Some(search) => terminal::isearch_prompt(&search.query, search.failed),
-            None if self.block.borrow().is_some() => block_prompt(),
             None => self.prompt_text(),
         };
         self.screen
@@ -454,50 +417,6 @@ impl App {
         self.set_font_size(next);
     }
 
-    /// `append <file>`: start collecting typed journal text.
-    fn start_block(self: &Rc<App>, target: &str) {
-        match terminal::append_target(target) {
-            Ok(path) => {
-                *self.block.borrow_mut() = Some(Block {
-                    path,
-                    target: target.to_string(),
-                    lines: Vec::new(),
-                });
-                self.announce(&terminal::block_header(target));
-                self.prompt();
-            }
-            Err(complaint) => self.announce(&complaint),
-        }
-    }
-
-    /// The `.`: append what was typed, as one well-formed file.
-    fn finish_block(self: &Rc<App>) {
-        let Some(block) = self.block.borrow_mut().take() else {
-            return;
-        };
-        if block.lines.is_empty() {
-            self.announce("Nothing was typed, so nothing was written.");
-            self.prompt();
-            return;
-        }
-
-        let addition = format!("{}\n", block.lines.join("\n"));
-        let existing = self
-            .files
-            .borrow()
-            .iter()
-            .find(|file| file.path == block.path)
-            .map(|file| file.contents.clone())
-            .unwrap_or_default();
-        let combined = terminal::append_text(&existing, &addition);
-        let lines = block.lines.len();
-        let total = combined.len();
-
-        let file = JournalFile::new(&block.path, &combined);
-        self.absorb(&[file]);
-        self.say(&terminal::append_note(&block.target, lines, total));
-        self.prompt();
-    }
 
     /// Run what a plugin asked for.
     ///
@@ -525,6 +444,16 @@ impl App {
             Ok(argv) => argv,
             Err(complaint) => return self.announce(&complaint),
         };
+        // The same rule for anything a plugin runs on hledger's behalf.
+        if let Some(clash) = terminal::output_over(&self.paths(), &argv) {
+            return self.announce(&format!(
+                "{} would write over the loaded file {}. This session is read-only, so an \
+                 output file needs a new name.",
+                terminal::bold("-o"),
+                terminal::bold(&clash)
+            ));
+        }
+
         let command = command.to_string();
         let files = self.files.borrow().clone();
         self.busy.set(true);
@@ -606,7 +535,11 @@ impl App {
         self.settle();
     }
 
-    /// Keep what a run wrote, whatever the app did with its output.
+    /// Keep what a run wrote, for `download`, in this visit only.
+    ///
+    /// The app is read-only: what a command writes goes into the engine's filesystem
+    /// and into the list `download` reads, and is deliberately not stored. A loaded
+    /// journal cannot be changed by running something.
     fn record_writes(self: &Rc<App>, output: &HledgerOutput) {
         let sizes = self.absorb(&output.written);
         if sizes.is_empty() {
@@ -656,9 +589,10 @@ impl App {
             }
         }
 
-        // Stored and re-sent, so the next command reads the new contents rather
-        // than the ones it started with.
-        self.remember();
+        // Re-sent, so the next command reads the new contents rather than the ones
+        // it started with. Deliberately not stored: this session is read-only, so a
+        // file a command wrote belongs to the visit that wrote it, and a loaded
+        // journal cannot be changed by running something.
         self.configure();
         sizes
     }
@@ -941,10 +875,6 @@ impl App {
             "\u{3}" => {
                 self.screen.write("^C\r\n");
                 *self.isearch.borrow_mut() = None;
-                // Abandoning a block keeps nothing: half an entry is not an entry.
-                if self.block.borrow_mut().take().is_some() {
-                    self.announce("Nothing was written.");
-                }
                 self.editor.borrow_mut().clear_line();
                 self.prompt();
             }
@@ -1024,24 +954,7 @@ impl App {
     fn submit(self: &Rc<App>) {
         let taken = self.editor.borrow_mut().take();
 
-        // While journal text is being typed every line is content, not a command,
-        // and a blank one is content too: blank lines separate entries.
-        if self.block.borrow().is_some() {
-            let line = taken.unwrap_or_default();
-            self.remember_chatter(&format!("{}{line}", block_prompt()));
-            self.screen.write("\r\n");
-            if terminal::ends_block(&line) {
-                self.finish_block();
-            } else {
-                if let Some(block) = self.block.borrow_mut().as_mut() {
-                    block.lines.push(line);
-                }
-                self.prompt();
-            }
-            return;
-        }
-
-        let Some(mut line) = taken else {
+        let Some(line) = taken else {
             // An empty line is a command too, and the one a terminal is most
             // often given: it prints a fresh prompt line, as a shell does.
             // Redrawing in place would be invisible, the prompt is already there
@@ -1055,34 +968,8 @@ impl App {
         // history: journal text goes through `submit` too.
         self.editor.borrow_mut().remember(&line);
         save_history(self.editor.borrow().history());
-        // The echo is what was typed, `>>` and all, because that is what is on
-        // screen and a search must not find it.
+        // The echo is what was typed, so the search does not find it.
         self.remember_chatter(&format!("{}{line}", self.prompt_text()));
-
-        // One piece of shell syntax, read before anything else: `cmd >> file`.
-        let append = match terminal::redirect(&line) {
-            terminal::Redirect::Plain(command) => {
-                line = command;
-                None
-            }
-            terminal::Redirect::Append { command, target } => match terminal::append_target(&target)
-            {
-                Ok(path) => {
-                    line = command;
-                    // Both forms matter: the app files under `path`, and the note
-                    // has to name the file the way a command would.
-                    Some((path, target))
-                }
-                Err(complaint) => {
-                    self.announce(&complaint);
-                    return;
-                }
-            },
-            terminal::Redirect::Bad(message) => {
-                self.announce(&message);
-                return;
-            }
-        };
 
         // The command is already on screen: the prompt redraw printed what was
         // typed, character by character. A shell does not echo it again, and
@@ -1104,16 +991,6 @@ impl App {
             }
             _ => line,
         };
-
-        // An append only means something for a command that prints journal text.
-        // Saying so beats silently ignoring the `>>`, which would lose the output.
-        if append.is_some() && !matches!(terminal::classify(&line), Command::Hledger(_)) {
-            self.announce(&format!(
-                "{} appends what an hledger command prints. Give it one to run.",
-                terminal::bold(">>")
-            ));
-            return;
-        }
 
         match terminal::classify(&line) {
             Command::Clear => {
@@ -1165,26 +1042,6 @@ impl App {
                     self.load_remote(&path);
                 }
             }
-            Command::Put(Some(path)) => {
-                if let Some(path) = self.single(path) {
-                    self.put_remote(&path);
-                }
-            }
-            Command::Put(None) => {
-                let names: Vec<String> = self
-                    .written
-                    .borrow()
-                    .iter()
-                    .map(|file| file.path.clone())
-                    .collect();
-                // The list message already explains an empty session, so it is
-                // not repeated here.
-                self.announce(&format!(
-                    "Which file? {}.\n{}",
-                    terminal::bold("put <path>"),
-                    terminal::download_list(&names)
-                ));
-            }
             Command::Font(None) => self.announce(&format!(
                 "The font is {}px, between {} and {}. {} changes it, and so do \
                  Ctrl+=, Ctrl+- and Ctrl+0.",
@@ -1199,17 +1056,6 @@ impl App {
                 if self.screen_reader.get() { "on" } else { "off" },
                 terminal::bold("screenreader"),
                 if self.screen_reader.get() { "off" } else { "on" }
-            )),
-            Command::Append(Some(target)) => {
-                if let Some(target) = self.single(target) {
-                    self.start_block(&target);
-                }
-            }
-            Command::Append(None) => self.announce(&format!(
-                "Which file? For example {}, then type or paste the entries, and \
-                 finish with a line containing only {}.",
-                terminal::bold("append data/2024.journal"),
-                terminal::bold(".")
             )),
             Command::ScreenReader(Some(wanted)) => {
                 if let Some(wanted) = self.single(wanted) {
@@ -1253,17 +1099,19 @@ impl App {
                 }
             }
             Command::Hledger(command) => {
+                // hledger's own writers are refused before anything runs: this session
+                // is read-only, and a command that changed a journal would change what
+                // every report after it reads.
+                if let Some(refusal) = terminal::read_only_refusal(command) {
+                    self.announce(&refusal);
+                    return;
+                }
+
                 // A plugin gets first refusal on the word. The core does not know
                 // their names, which is what makes them plugins.
                 match plugins::owner(command) {
-                    Some(plugin) if append.is_some() => self.announce(&format!(
-                        "{} appends what an hledger command prints. {} is a plugin, so \
-                         there is nothing to append.",
-                        terminal::bold(">>"),
-                        terminal::bold(plugin.name())
-                    )),
                     Some(plugin) => self.run_plan(command, plugin),
-                    None => self.run_with(command, append),
+                    None => self.run_with(command),
                 }
             }
         }
@@ -1400,11 +1248,23 @@ impl App {
     }
 
     /// Run a command, optionally appending what it prints to a loaded file.
-    fn run_with(self: &Rc<App>, command: &str, append: Option<(String, String)>) {
+    fn run_with(self: &Rc<App>, command: &str) {
         let argv = match argv_for(command) {
             Ok(argv) => argv,
             Err(complaint) => return self.announce(&complaint),
         };
+        // A report may be saved to a new file, but not over a loaded journal: that
+        // would be an edit, and there are none here.
+        if let Some(clash) = terminal::output_over(&self.paths(), &argv) {
+            return self.announce(&format!(
+                "{} would write over the loaded file {}. This session is read-only, so an \
+                 output file needs a new name, like {}.",
+                terminal::bold("-o"),
+                terminal::bold(&clash),
+                terminal::bold("balance -O csv -o balance.csv")
+            ));
+        }
+
         let files = self.files.borrow().clone();
         self.busy.set(true);
         self.waiting_note();
@@ -1413,25 +1273,16 @@ impl App {
         let app = Rc::clone(self);
         spawn_local(async move {
             let result = hledger::run(HledgerRequest::new(argv, files)).await;
-            app.finish(result, append);
+            app.finish(result);
         });
     }
 
     fn finish(
         self: &Rc<App>,
         result: Result<HledgerOutput, EngineError>,
-        append: Option<(String, String)>,
     ) {
         match result {
             Ok(output) => {
-                // Redirected output goes to the file, not the screen: showing it
-                // as well would be the print you asked not to have. Nothing is
-                // appended from a run that failed.
-                if let (Some((path, target)), false) = (append.as_ref(), output.is_failure()) {
-                    self.append_output(path, target, &output);
-                    return self.settle();
-                }
-
                 let (visible, note) = terminal::visible_output(&output.stdout);
                 if !visible.trim().is_empty() {
                     self.output(&visible, None);
@@ -1524,27 +1375,6 @@ impl App {
         }
     }
 
-    /// Append what a command printed to a loaded file.
-    ///
-    /// The command ran against the files as they were, and its output is journal
-    /// text, that is what `import`, `print` and `rewrite` produce, so the file
-    /// grows by exactly what was on stdout, well-formed at the join.
-    fn append_output(self: &Rc<App>, path: &str, target: &str, output: &HledgerOutput) {
-        let existing = self
-            .files
-            .borrow()
-            .iter()
-            .find(|file| file.path == path)
-            .map(|file| file.contents.clone())
-            .unwrap_or_default();
-        let combined = terminal::append_text(&existing, &output.stdout);
-        let added = output.stdout.lines().count();
-        let total = combined.len();
-
-        let file = JournalFile::new(path, &combined);
-        self.absorb(&[file]);
-        self.say(&terminal::append_note(target, added, total));
-    }
 
     /// Load the built-in sample journal.
     ///
@@ -1779,16 +1609,12 @@ impl App {
         }
         match address {
             Some(address) => self.announce(&format!(
-                "Connected to {address}. {} loads your journals, and {} saves files \
-                 back to the account.",
-                terminal::bold("remote"),
-                terminal::bold("put")
+                "Connected to {address}. {} loads the journals in the account.",
+                terminal::bold("remote")
             )),
             None => self.announce(&format!(
-                "Connected to your storage account. {} loads your journals, and {} \
-                 saves files back to it.",
-                terminal::bold("remote"),
-                terminal::bold("put")
+                "Connected to your storage account. {} loads the journals in it.",
+                terminal::bold("remote")
             )),
         }
         self.prompt();
@@ -1807,60 +1633,6 @@ impl App {
         }
     }
 
-    /// `put <path>`: save a file into the connected account.
-    ///
-    /// Either a file a command wrote this session, or anything loaded. The second
-    /// half matters: putting a loaded journal into an account is how a journal gets
-    /// *there* in the first place, and accepting only what hledger wrote would mean
-    /// nothing could ever be uploaded.
-    fn put_remote(self: &Rc<App>, path: &str) {
-        let file = self
-            .written
-            .borrow()
-            .iter()
-            .find(|file| file.path == path)
-            .cloned()
-            .or_else(|| {
-                self.files
-                    .borrow()
-                    .iter()
-                    .find(|file| file.path == path)
-                    .cloned()
-            });
-        let Some(file) = file else {
-            let mut names: Vec<String> = self
-                .files
-                .borrow()
-                .iter()
-                .map(|file| file.path.clone())
-                .collect();
-            names.sort();
-            names.dedup();
-            self.announce(&format!(
-                "Nothing called {} is loaded. {} lists what is.\n{}",
-                terminal::bold(path),
-                terminal::bold("journal"),
-                terminal::download_list(&names)
-            ));
-            return;
-        };
-
-        let app = Rc::clone(self);
-        self.announce(&format!(
-            "Saving {} ({} bytes) to your storage account…",
-            terminal::bold(&file.path),
-            file.contents.len()
-        ));
-        spawn_local(async move {
-            match write_remote(&file).await {
-                Ok(where_to) => app.announce(&format!(
-                    "Saved {} to {where_to}.",
-                    terminal::bold(&file.path)
-                )),
-                Err(error) => app.announce(&error.message()),
-            }
-        });
-    }
 
     /// `remote [dir]`: walk the account and mount what is there.
     ///

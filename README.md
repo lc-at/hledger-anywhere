@@ -46,7 +46,6 @@ copied from a real session, not written by hand.
 - [Using it](#using-it), commands, keys, quoting, search
 - [Loading a journal](#loading-a-journal)
 - [Editing, and getting data out](#editing-and-getting-data-out)
-- [Charts](#charts)
 - [remoteStorage](#remotestorage)
 - [Offline and installable](#offline-and-installable)
 - [How it works](#how-it-works)
@@ -72,7 +71,7 @@ own syntax needs it: **a period expression with a space in it is one argument.**
 balance -p "this year"                      one argument: this year
 balance -p 'from 2024-01 to 2024-12'        single quotes work too
 balance date:"this year"                    quotes inside a word
-print expenses >> "2024 statement.journal"  a path with a space
+print -o "my report.csv"                a path with a space
 ```
 
 Both quote styles are understood, and the quotes are removed. Outside quotes a
@@ -99,9 +98,6 @@ Everything that is not in this table is passed to hledger verbatim.
 | `journal` | List the loaded files and mark the one being read. |
 | `journal <path>` | Read a different loaded file. |
 | `download <path>` | Save a file into your browser's downloads. |
-| `chart [args]` | Draw a report instead of printing it. See [Charts](#charts). |
-| `cmd >> file` | Run `cmd` and append what it prints to a loaded file. |
-| `append <file>` | Type or paste journal text into a file, a line at a time. |
 | `alias` | List your aliases. |
 | `alias name=cmd` | Make `name` run `cmd`. The app says which alias expanded when a command runs. |
 | `unalias <name>` | Remove one. |
@@ -109,7 +105,6 @@ Everything that is not in this table is passed to hledger verbatim.
 | `n` / `N` | Repeat that search forwards / backwards. |
 | `connect user@host` | Connect a remoteStorage account. |
 | `remote [dir]` | Load every file under `/hledger/` (or a folder inside it) from that account. |
-| `put <path>` | Save a loaded file, or one hledger wrote, into that account. |
 | `disconnect` | Forget the account; the files already loaded stay loaded. |
 | `font [size]` | Show or set the font size, 8 to 32 px. |
 | `screenreader` | Turn xterm's accessibility tree `on` or `off`. |
@@ -175,108 +170,38 @@ What is loaded is remembered in IndexedDB, so the next visit resumes it and says
 That cache is a convenience, never the source of truth: a browser that will not store
 anything (private mode) behaves exactly like a first visit.
 
-## Editing, and getting data out
+## Getting data out
 
-**A command's output can become a file.** `-o FILE` writes into the mount, and the
-app keeps what a command wrote as part of the loaded files, replacing one that was
-already there, keeping it for next time, and re-reading it on the next command. So
-`-o` onto a loaded file is an edit rather than a report you have to catch.
+**A report can be written to a file.** `-o FILE` writes into the mount, and the app
+keeps what a command wrote as part of the loaded files, so the next command can read
+it.
 
-**`>>` appends instead**, which is what `import`, `print` and `rewrite` need, since
-they print what they computed:
+**Getting a file out of the browser** is `download <path>`, which saves it through the
+browser's own download. Everything loaded is also in IndexedDB, and a journal synced
+through [remoteStorage](#remotestorage) is in your own account.
 
-```
-hledger.journal » print expenses >> "2024 statement.journal"
-[appended 16 lines to 2024 statement.journal (410 bytes). Read it back with
-print -f "2024 statement.journal"]
-```
+**What a command writes lasts for this visit.** The file is in the engine's filesystem
+and in the list `download` reads, and it is deliberately not stored: an exported report
+is something you take away, not something that joins your journal.
 
-The target is a loaded file, named either as the engine sees it (`data/2024.journal`)
-or as the app does (`2024.journal`). Nothing is appended from a command that failed,
-and the join is made well-formed in both directions, so two entries can never become
-one broken one. A target that is a directory, climbs out of the mount, or is more than
-one file is refused with the reason.
+## Read-only, for now
 
-**`append <file>` types journal text**, because the line editor holds one line and an
-entry is several:
+This session cannot change a journal, and that is on purpose. The job here is to read
+and report, and a report is easier to trust when nothing it read has changed underneath
+it.
 
-```
-hledger.journal » append data/2024.journal
-Typing into data/2024.journal. Paste or type journal text, then a line with just .
-to finish. Ctrl+C abandons it.
-... 2024-05-01 * Coffee
-...     expenses:food  $4.00
-...     assets:cash
-... .
-[appended 4 lines to data/2024.journal (57 bytes). Read it back with print -f data/2024.journal]
-```
+What that means:
 
-The `... ` prompt is the mode. Blank lines are kept, because they separate entries;
-a line with a single `.` ends it; Ctrl+C abandons it without writing. A paste arrives
-as one event with newlines in it and is split into lines, so a whole transaction can
-be pasted in at once.
+- **`add` and `import` are refused**, with a message saying so. They are the two
+  hledger commands that write to the journal it reads. `add` could not work here in any
+  case: the engine is one run with no way to prompt for an entry.
+- **`-o` may not write over a loaded file.** A new name is how a report is saved; the
+  name of a loaded journal is refused, because that would be an edit to it.
+- **`>>`, `append` and `put` are gone.** Loading files, running reports, saving a
+  report with `-o`, and `download` all still work.
 
-**Importing a statement needs nothing special.** This is the main way data gets in.
-Upload the journal, the CSV, and its rules file:
-
-```
-hledger.journal » import data/statement.csv
-imported 3 new transactions from statement.csv to /data/2024.journal
-[changed 2024.journal (386 bytes); wrote .latest.statement.csv (11 bytes), saved.
-Take a copy with download 2024.journal]
-hledger.journal » balance
-           $2,995.50  assets:bank:checking
-          $-1,000.00  equity:opening
-          $-1,995.50  expenses:unknown
---------------------
-                   0
-```
-
-`import` appends to the journal itself: no `-o`, no `>>`. And hledger tracks what it
-has already imported in a state file it writes *into the mount*, so the app keeps that
-too, which is why running the same import again reports `no new transactions found`
-and leaves the balance alone rather than doubling it.
-
-**Getting a file out of the browser** is `download <path>`; everything loaded is also
-in IndexedDB, and a journal synced through [remoteStorage](#remotestorage) is in your
-own account.
-
-One gap: a command that *deletes* a file is not noticed. No hledger command deletes
-one today, so nothing does it yet.
-
-## Charts
-
-`chart` runs hledger for you and draws the result instead of printing it. With no
-arguments it asks the question a chart is usually asked, `balance -M expenses`.
-
-```
-hledger.journal » chart balance --depth 2
-[chart of balance --depth 2, drawn from hledger's numbers]
-assets:bank              ████████████████████████████████████████   $9278.61
-equity:opening balances  ██████████████████████████████████▋        $-7520.00
-income:salary            ███████████████████████▊                   $-3200.00
-expenses:housing         ███████████▉                               $1200.00
-expenses:food            █                                         $98.90
-```
-
-The shape follows the question. A report with one amount per row is a **ranking**:
-horizontal bars, longest first, which is how "where did the money go" is read. A
-report over time is a **series**: vertical bars, one per period. Values are drawn with
-eighth-width blocks, so a bar ends where the value does instead of rounding to a cell.
-
-Charts are drawn from hledger's own numbers, the command that produced them is
-printed above them, so a chart can never quietly disagree with the report. And they
-are drawn from the CSV hledger prints with `-O csv`, which is added for you if you did
-not ask for a format:
-
-```
-chart balance expenses -M          monthly expenses
-chart balance --depth 2            where the money went
-chart balance -p "this year"       a period expression
-```
-
-`chart` will not draw zeroes: summing every account of a balanced journal is zero,
-which is why it wants a filtered report and says so when it gets nothing.
+Nothing a run writes is kept, so no command can leave a loaded file different from how
+it arrived.
 
 ## remoteStorage
 
@@ -286,12 +211,9 @@ and the browser talks to it directly.
 
 ```
 no journal » connect you@host     leaves for the consent screen, and comes back
-Connected to your storage account. remote loads your journals, and put saves files
-back to it.
+Connected to your storage account. remote loads the journals in it.
 no journal » remote               walks /hledger/, mounts every file like an upload
 Read 4 files from /hledger/.
-no journal » put hledger.journal  writes a file back, including one the engine wrote
-Saved hledger.journal to /hledger/hledger.journal.
 ```
 
 Paths are re-rooted at the category, so `/hledger/books/2024.journal` becomes
@@ -341,9 +263,7 @@ assets/wasm/                hledger.wasm, fetched at build time, verified agains
 assets/icons/               drawn by scripts/make-icons.py
 src/terminal/mod.rs         the line editor, commands, quoting, search (pure)
 src/terminal/view.rs        xterm.js, wrapped (wasm)
-src/plugins/mod.rs          the plugin contract and the bundled plugins (pure)
-src/plugins/chart.rs        chart, as a plugin (pure)
-src/chart.rs                drawing a report, used by the chart plugin (pure)
+src/plugins/mod.rs          the plugin contract (pure)
 src/remote/mod.rs           remoteStorage paths and listings (pure)
 src/remote/client.rs        the remoteStorage library, glued in (wasm)
 src/hledger/                the engine's request/response types, and the JS bridge
@@ -357,20 +277,20 @@ scripts/                    build/fetch the engine, run it natively, draw the ic
 
 The crate is split along a wasm boundary, enforced by `cfg`: the pure modules compile
 for the host and are covered by `cargo test`, and no `web_sys` import can leak into
-them. That is why the line editor, the quoting rules, the search matcher, the chart
-renderer and the remoteStorage path handling are all testable without a browser.
+them. That is why the line editor, the quoting rules, the search matcher, the
+read-only rules and the remoteStorage path handling are all testable without a
+browser.
 
-**Plugins are how commands beyond the core's own are added.** The core is a
-terminal, a set of loaded files, and a way to run hledger on them. A plugin declares a
-word, how it reads in the help, what it adds to completion, and what to do with the
-text typed after it; it never touches the app, which is what keeps it testable. It can
-also say how to present the output it caused, or return nothing and get the ordinary
-terminal.
+**Plugins are how commands beyond the core's own are added.** The core is a terminal,
+a set of loaded files, and a way to run hledger on them. A plugin declares a word, how
+it reads in the help, what it adds to completion, and what to do with the text typed
+after it; it never touches the app, which is what keeps it testable. It can also say
+how to present the output it caused, or return nothing and get the ordinary terminal.
 
-`chart` is a plugin, and was the test case: it used to be a command in the core, with
-its own word in the vocabulary, its own branch in the dispatch, its own note and its
-own finish. Now it is `src/plugins/chart.rs`, and the app knows only that a plugin may
-want to present output itself. Adding another is a file and a line in `bundled()`.
+Nothing is bundled today. The first plugin was `chart`, which drew a report in the
+terminal, and the tool it drew has been removed: a picture belongs in the plugin that
+wants one, not in the core that runs reports. The contract is being reworked so a
+plugin can be installed at runtime, from a repository, without rebuilding the app.
 
 Three decisions worth knowing:
 
@@ -383,8 +303,9 @@ Three decisions worth knowing:
   that never settles. See `src/upload.rs`.
 - **The mount is rebuilt from the app's files before every command**, and the worker
   reports what the run changed. The app is the source of truth; the engine's
-  filesystem is a copy of it. That is what makes `-o` and `import` keep their results
-  without the engine knowing anything about storage.
+  filesystem is a copy of it. That is what makes `-o` work without the engine knowing
+  anything about storage, and what makes it possible to refuse a run that would write
+  over a loaded file.
 
 **Reports are as wide as the terminal, as far as hledger makes them.** hledger normally
 asks the operating system how wide the terminal is, and WASI has no terminal to ask;
@@ -434,17 +355,21 @@ HLEDGER_NO_FILE_ARG=1 node --experimental-wasi-unstable-preview1 \
 CI runs the tests, both lints, that engine smoke test, and then the build.
 
 Beyond the tests, the behaviour in this README was verified by driving the running
-app in a browser: an interrupted long command, offline mode with the network actually
-off, a real `ClipboardEvent` paste, chart output read off the screen, and the whole
-remoteStorage round trip, connect, `put`, and reading the journals back into a fresh
-browser, against a real [armadietto](https://github.com/remotestorage/armadietto)
-server on `127.0.0.1`.
+app in a browser: a first run with the session cleared, completion read off the
+screen, an interrupted long command, offline mode with the network actually off, a real
+`ClipboardEvent` paste, and the whole remoteStorage round trip, connect, `put`, and
+reading the journals back into a fresh browser, against a real
+[armadietto](https://github.com/remotestorage/armadietto) server on `127.0.0.1`. The
+`put` half of that is gone with the other writers; the reading half still stands.
 
 ## Known limitations
 
+- **Read-only.** Nothing changes a journal: `add` and `import` are refused, `-o` may
+  not write over a loaded file, and files a command writes last only for the visit.
+  Loading a journal and running reports on it is the whole of it for now.
 - **No interactive commands.** The engine is a single synchronous `_start()` call, so
-  nothing can be prompted part-way through: `hledger add` cannot work. `append`,
-  `import` and `>>` are how you get text and transactions in.
+  nothing can be prompted part-way through, which is the other reason `hledger add`
+  cannot work.
 - **A cancelled command restarts the engine.** Ctrl+C throws the worker away; the next
   command starts a fresh one and recompiles the module (from the HTTP cache, so it
   costs a compile rather than a download).

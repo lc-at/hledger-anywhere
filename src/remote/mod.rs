@@ -87,15 +87,6 @@ pub fn mount_path(remote: &str) -> Option<String> {
         .filter(|rest| !rest.is_empty())
 }
 
-/// Where a file from the mount goes in the account.
-///
-/// The inverse of [`mount_path`]: `bal.csv` becomes `/hledger/bal.csv`, so a file
-/// hledger wrote with `-o` lands beside the journal it came from rather than in a
-/// directory of its own making.
-pub fn remote_path(local: &str) -> String {
-    format!("{CATEGORY}{}", local.trim_start_matches('/'))
-}
-
 /// A path as the scoped client wants it.
 ///
 /// The client is scoped at the category, so it already knows about `/hledger/` and
@@ -291,17 +282,6 @@ mod tests {
         assert_eq!(joined("/hledger/books/", ""), "/hledger/books/");
     }
 
-    #[test]
-    fn a_local_path_goes_back_under_the_category() {
-        assert_eq!(remote_path("bal.csv"), "/hledger/bal.csv");
-        assert_eq!(remote_path("books/2024.journal"), "/hledger/books/2024.journal");
-        assert_eq!(remote_path("/bal.csv"), "/hledger/bal.csv");
-        // Round trip: what was mounted comes back to where it came from.
-        for path in ["a.journal", "books/deep/2025.journal"] {
-            let remote = remote_path(path);
-            assert_eq!(mount_path(&remote).as_deref(), Some(path));
-        }
-    }
 
     #[test]
     fn a_folder_is_recognised_by_its_trailing_slash_alone() {

@@ -12,9 +12,10 @@
 //! app, so a plugin can be tested on its own, and adding one is adding a file and a
 //! line in [`bundled`].
 
-// Natively this module exists for its tests: the only code that drives it is
-// wasm-gated, so its items look unused to `cargo test`'s build.
-#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+// The plugin contract is an extension point with nothing behind it yet: no plugin is
+// bundled, so nothing in a build constructs these types until one is added or the
+// registry is filled at runtime. The tests exercise every part of it.
+#![allow(dead_code)]
 
 use crate::terminal;
 
@@ -67,10 +68,12 @@ pub trait Plugin: Sync {
 
 /// The bundled plugins, in the order the help lists them.
 ///
-/// Bundled means built in and always available, not part of the core: nothing
-/// outside this module knows what they do.
+/// Bundled means built in and always available, not part of the core: nothing outside
+/// this module knows what they do. Nothing is bundled today. `chart` was the first
+/// one, and the tool it drew is gone; the list is empty until a plugin is added, and
+/// the machinery stays because it is what a plugin plugs into.
 pub fn bundled() -> &'static [&'static dyn Plugin] {
-    &[&chart::Chart]
+    &[]
 }
 
 /// The plugin that answers to `name`, if one does.
@@ -94,8 +97,6 @@ pub fn help_entries() -> Vec<(&'static str, &'static str, &'static str)> {
         .map(|plugin| (plugin.group(), plugin.name(), plugin.summary()))
         .collect()
 }
-
-pub mod chart;
 
 #[cfg(test)]
 mod tests {
@@ -137,17 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn a_plugin_is_found_by_its_word_and_by_the_line_that_uses_it() {
-        let chart = find("chart").expect("chart is bundled");
-        assert_eq!(chart.name(), "chart");
-        assert!(find("no-such-plugin").is_none());
-
-        // The whole line, not just a name: this is how the app decides.
-        assert!(owner("chart balance expenses -M").is_some());
-        assert!(owner("  chart").is_some());
+    fn nothing_is_bundled_and_the_registry_says_so() {
+        assert!(bundled().is_empty(), "a plugin is bundled: {}", bundled().len());
+        // With nothing bundled, nothing is claimed, and looking one up is not a
+        // panic: this is the state the app starts in.
+        assert!(find("chart").is_none());
+        assert!(owner("chart balance expenses -M").is_none());
         assert!(owner("balance").is_none());
-        // A word that merely starts the same is a different word.
-        assert!(owner("charting").is_none());
+        assert!(help_entries().is_empty());
     }
 
     #[test]
@@ -178,20 +176,46 @@ mod tests {
         }
     }
 
+    /// A plugin that presents its own output, so that half of the contract is
+    /// exercised even while nothing is bundled.
+    struct Drawn;
+
+    impl Plugin for Drawn {
+        fn name(&self) -> &'static str {
+            "drawn"
+        }
+        fn group(&self) -> &'static str {
+            "Reports"
+        }
+        fn summary(&self) -> &'static str {
+            "present output itself"
+        }
+        fn plan(&self, arguments: &str) -> Plan {
+            Plan::Run {
+                command: format!("balance {arguments}").trim_end().to_string(),
+            }
+        }
+        fn present(&self, output: &str, _width: usize, _height: usize) -> Option<Vec<String>> {
+            let lines: Vec<String> = output.lines().map(|line| line.to_string()).collect();
+            (!lines.is_empty()).then_some(lines)
+        }
+        fn note(&self, command: &str) -> String {
+            format!("[{command}]")
+        }
+    }
+
     #[test]
-    fn a_plan_is_what_the_app_needs_to_carry_it_out() {
-        let chart = find("chart").expect("chart is bundled");
-        match chart.plan("balance expenses -M") {
-            Plan::Run { command } => assert!(command.starts_with("balance expenses -M"), "{command}"),
+    fn a_plugin_that_presents_its_own_output_says_how() {
+        match Drawn.plan("expenses") {
+            Plan::Run { command } => assert_eq!(command, "balance expenses"),
             other => panic!("{other:?}"),
         }
-        // A report with something in it is presented; a header with no rows is not,
-        // and the app says so rather than showing blank space.
-        assert!(
-            chart
-                .present("account,balance\n\"assets:bank\",\"$100.00\"\n", 80, 24)
-                .is_some()
+        // Something to show is shown; nothing to show is reported by the app.
+        assert_eq!(
+            Drawn.present("a\nb\n", 80, 24),
+            Some(vec!["a".to_string(), "b".to_string()])
         );
-        assert!(chart.present("account,balance\n", 80, 24).is_none());
+        assert!(Drawn.present("", 80, 24).is_none());
+        assert_eq!(Drawn.note("balance"), "[balance]");
     }
 }

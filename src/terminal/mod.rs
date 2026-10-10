@@ -178,6 +178,10 @@ const FLAGS: [&str; 32] = [
 ];
 
 /// What a typed line means.
+///
+/// A few words are the app's own: loading files, the terminal itself, and the account
+/// it can read. Everything else is hledger's, verbatim, which is the point of putting a
+/// real CLI in a browser.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command<'a> {
     /// Open the file picker and mount the files chosen.
@@ -208,14 +212,10 @@ pub enum Command<'a> {
     Disconnect,
     /// `remote [dir]` loads files from the connected account.
     Remote(Option<&'a str>),
-    /// `put <path>` saves a file a command wrote into the connected account.
-    Put(Option<&'a str>),
     /// `font [size]` shows or sets the terminal font size.
     Font(Option<&'a str>),
     /// `screenreader [on|off]` shows or sets the accessibility tree.
     ScreenReader(Option<&'a str>),
-    /// `append <file>` types journal text into a file, a line at a time.
-    Append(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -244,10 +244,8 @@ pub fn classify(line: &str) -> Command<'_> {
         "connect" => Command::Connect((!rest.is_empty()).then_some(rest)),
         "disconnect" => Command::Disconnect,
         "remote" => Command::Remote((!rest.is_empty()).then_some(rest)),
-        "put" => Command::Put((!rest.is_empty()).then_some(rest)),
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
-        "append" => Command::Append((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -726,10 +724,8 @@ const COMMANDS: &[&str] = &[
     "connect",
     "remote",
     "disconnect",
-    "put",
     "font",
     "screenreader",
-    "append",
 ];
 
 pub fn candidates(paths: &[String]) -> Vec<String> {
@@ -868,22 +864,6 @@ P 2024-02-01 EUR $1.08
 P 2024-02-01 GBP $1.27
 ";
 
-/// What a submitted line asks for.
-///
-/// The app is not a shell, but one piece of shell syntax is worth having: hledger
-/// prints what it computed, and appending that to a journal is how `import`,
-/// `print` and `rewrite` are actually used. Without it, the only way to keep a
-/// command's output is `-o`, which overwrites, and appending is the operation a
-/// journal needs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Redirect {
-    /// A command, with nothing redirected.
-    Plain(String),
-    /// Run `command` and append its output to `target`.
-    Append { command: String, target: String },
-    /// Something to tell the user about instead.
-    Bad(String),
-}
 
 /// Split a command line into arguments the way a shell does.
 ///
@@ -1037,96 +1017,6 @@ pub fn single_argument(rest: &str) -> Result<Option<String>, String> {
     Ok(arguments.into_iter().next())
 }
 
-/// The byte index of the first `>>` that is not inside quotes.
-fn unquoted_redirect(line: &str) -> Option<usize> {
-    let bytes = line.as_bytes();
-    let mut index = 0;
-    let mut quote: Option<u8> = None;
-
-    while index < bytes.len() {
-        let byte = bytes[index];
-        match quote {
-            Some(open) => {
-                if byte == b'\\' && open == b'"' {
-                    index += 2;
-                    continue;
-                }
-                if byte == open {
-                    quote = None;
-                }
-            }
-            None => match byte {
-                b'\\' => {
-                    index += 2;
-                    continue;
-                }
-                b'\'' | b'"' => quote = Some(byte),
-                b'>' if bytes.get(index + 1) == Some(&b'>') => return Some(index),
-                _ => {}
-            },
-        }
-        index += 1;
-    }
-    None
-}
-
-/// Read `command >> target` from a line.
-///
-/// Only the first `>>` counts, and only outside quotes: `print -p "a >> b"` is a
-/// command with a quoted argument, not a redirect. The target is one argument, so a
-/// file whose name has a space is written `>> "my file.journal"`, and named as a
-/// bare path until it is quoted, rather than guessed at.
-pub fn redirect(line: &str) -> Redirect {
-    let trimmed = line.trim();
-    let Some(at) = unquoted_redirect(trimmed) else {
-        return Redirect::Plain(trimmed.to_string());
-    };
-    let command = trimmed[..at].trim();
-    let target = trimmed[at + 2..].trim();
-
-    if command.is_empty() {
-        return Redirect::Bad(format!("Nothing to run before {}.", bold(">>")));
-    }
-    if target.is_empty() {
-        return Redirect::Bad(format!(
-            "{} needs a file to append to, like {}.",
-            bold(&format!("{command} >>")),
-            bold(">> data/2024.journal")
-        ));
-    }
-    let mut arguments = match tokenize(target) {
-        Ok(arguments) => arguments,
-        Err(complaint) => return Redirect::Bad(complaint),
-    };
-    if arguments.len() != 1 {
-        return Redirect::Bad(format!(
-            "{} is more than one file. Quote it if its name has a space.",
-            bold(target)
-        ));
-    }
-    Redirect::Append {
-        command: command.to_string(),
-        target: arguments.remove(0),
-    }
-}
-
-/// Whether a line ends a block of typed journal text.
-///
-/// A single `.` on its own, as a here-document ends. A journal entry that is
-/// exactly one dot is not a thing, so this costs nothing to reserve.
-pub fn ends_block(line: &str) -> bool {
-    line.trim() == "."
-}
-
-/// What to say when a block of typed text starts.
-pub fn block_header(target: &str) -> String {
-    format!(
-        "Typing into {}. Paste or type journal text, then a line with just {} to finish. {} abandons it.",
-        bold(target),
-        bold("."),
-        bold("Ctrl+C")
-    )
-}
 
 /// A paste, split into the lines it contains.
 ///
@@ -1169,61 +1059,59 @@ pub fn paste(data: &str) -> Option<Paste> {
     })
 }
 
-/// The file a `>>` target names, as the app knows it.
+
+/// Commands that change the journal hledger reads, refused while the app is
+/// read-only.
 ///
-/// The engine sees the journal directory mounted at `data/`, so people write
-/// `data/2024.journal`; the app's own files are named without it. Both are accepted
-/// and neither is guessed at: a target outside the mount is not a file this app can
-/// append to.
-pub fn append_target(target: &str) -> Result<String, String> {
-    let path = target.trim().trim_start_matches("./");
-    let path = path.strip_prefix("data/").unwrap_or(path);
-    let path = path.trim_start_matches('/');
-    if path.is_empty() {
-        return Err(format!(
-            "{} needs a file name, not a directory.",
-            bold(">>")
-        ));
+/// hledger writes to a journal in exactly two places: `add`, which prompts for entries
+/// and cannot work here because the engine gets no input, and `import`, which appends
+/// the transactions found in a file. Refusing them with a reason beats letting them
+/// report success and then discarding what they wrote.
+const WRITERS: &[&str] = &["add", "import"];
+
+/// Why `command` cannot run, when it is one of hledger's writers.
+pub fn read_only_refusal(command: &str) -> Option<String> {
+    let (head, _) = split_first_token(command);
+    if !WRITERS.contains(&head.as_str()) {
+        return None;
     }
-    if path.ends_with('/') {
-        return Err(format!(
-            "{} is a directory. Append to a file inside it.",
-            bold(target)
-        ));
-    }
-    if path.split('/').any(|part| part == "..") {
-        return Err(format!(
-            "{} is outside the journal directory.",
-            bold(target)
-        ));
-    }
-    Ok(path.to_string())
+    Some(format!(
+        "{} writes to the journal, and this session is read-only. Reports, {} and {} all \
+         work; the journal itself is never changed.",
+        bold(&head),
+        bold("-o FILE"),
+        bold("download")
+    ))
 }
 
-/// `existing` with `addition` on the end, as one well-formed file.
+/// The loaded file an `-o` in `argv` would write over, if any.
 ///
-/// Both sides are made to end in a newline, because appending to a file that does
-/// not end in one is how two journal entries become one broken one.
-pub fn append_text(existing: &str, addition: &str) -> String {
-    let mut text = existing.to_string();
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text.push_str(addition);
-    if !text.is_empty() && !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text
-}
+/// Writing a report to a file is how data gets out, and is allowed. Writing it over a
+/// loaded journal is not: a report that replaced the journal would change every report
+/// after it, and this session is read-only.
+pub fn output_over(paths: &[String], argv: &[String]) -> Option<String> {
+    // The engine sees the mount at `data/`; the app names the same file without it.
+    let mounted = |target: &str| {
+        let path = target.trim().trim_start_matches("./");
+        let path = path.strip_prefix("data/").unwrap_or(path);
+        path.trim_start_matches('/').to_string()
+    };
 
-/// What the terminal says after appending.
-pub fn append_note(target: &str, added_lines: usize, total_bytes: usize) -> String {
-    format!(
-        "[appended {added_lines} {} to {target} ({}). Read it back with {}]",
-        count(added_lines, "line"),
-        bytes_label(total_bytes),
-        bold(&format!("print -f {}", quoted(target)))
-    )
+    for (index, argument) in argv.iter().enumerate() {
+        let target = match argument.as_str() {
+            "-o" | "--output-file" => argv.get(index + 1).map(String::as_str),
+            other => other
+                .strip_prefix("--output-file=")
+                .or_else(|| other.strip_prefix("-o").filter(|rest| !rest.is_empty())),
+        };
+        if let Some(target) = target {
+            let wanted = mounted(target);
+            if let Some(clash) = paths.iter().find(|path| **path == wanted) {
+                return Some(clash.clone());
+            }
+        }
+    }
+    None
 }
 
 /// What `alias name=expansion` means.
@@ -1466,7 +1354,7 @@ pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
     }
     let names: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
     text.push_str(&format!(
-        ", saved. Take a copy with {}]",
+        ". Take a copy with {} while this visit lasts]",
         bold(&format!(
             "download {}",
             quoted(names.first().copied().unwrap_or(""))
@@ -1492,8 +1380,8 @@ fn bytes_label(bytes: usize) -> String {
 /// What the terminal prints for `download` with no argument.
 pub fn download_list(files: &[String]) -> String {
     if files.is_empty() {
-        // "Written" rather than "downloaded": `put` shows this list too, and the
-        // file has not been saved anywhere yet either way.
+        // "Written" rather than "downloaded": the file is in the engine's
+        // filesystem and has not been saved anywhere yet.
         return format!(
             "Nothing has been written yet. {} on a command writes a file, for example {}.\r\n",
             bold("-o FILE"),
@@ -1780,14 +1668,12 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("upload_dir", "add a folder, keeping its structure"),
             ("demo", "load the sample journal"),
             ("journal [path]", "list the loaded files, or read a different one"),
-            ("append <file>", "type or paste journal text into a file, ending with a dot"),
             ("download <path>", "save a file into your browser's downloads"),
         ],
     ),
     (
         "Reports",
         &[
-            ("cmd >> file", "run a command and append what it prints to a file"),
             ("/text", "search the output; n and N repeat the search"),
             ("alias name=cmd", "make a name run a command; alias lists them"),
             ("unalias <name>", "remove one"),
@@ -1799,7 +1685,6 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("connect user@host", "connect a remoteStorage account"),
             ("remote [dir]", "load the files under /hledger/ from that account"),
-            ("put <path>", "save a loaded file into that account"),
             ("disconnect", "forget the account; the loaded files stay loaded"),
         ],
     ),
@@ -2191,6 +2076,51 @@ mod tests {
     }
 
     #[test]
+    fn the_writers_are_refused_with_a_reason() {
+        assert!(read_only_refusal("balance").is_none());
+        assert!(read_only_refusal("balance --depth 2").is_none());
+        // A word that merely starts the same is a different word.
+        assert!(read_only_refusal("importing").is_none());
+        assert!(read_only_refusal("adding value").is_none());
+
+        for command in ["add", "import data/statement.csv", "   import"] {
+            let refusal = read_only_refusal(command).expect(command);
+            assert!(refusal.contains("read-only"), "{refusal}");
+            assert!(refusal.contains("journal"), "{refusal}");
+        }
+    }
+
+    #[test]
+    fn a_report_may_not_be_written_over_a_loaded_journal() {
+        let paths = vec![
+            "hledger.journal".to_string(),
+            "books/2024.journal".to_string(),
+        ];
+        let argv = |parts: &[&str]| parts.iter().map(|part| (*part).to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            output_over(&paths, &argv(&["hledger", "balance", "-o", "hledger.journal"])),
+            Some("hledger.journal".to_string())
+        );
+        // The engine's own view of the same file is the same file.
+        assert_eq!(
+            output_over(
+                &paths,
+                &argv(&["hledger", "print", "--output-file", "data/books/2024.journal"])
+            ),
+            Some("books/2024.journal".to_string())
+        );
+        // A name nobody loaded is a new file, which is allowed.
+        assert!(output_over(&paths, &argv(&["hledger", "print", "--output-file=x.journal"])).is_none());
+
+        // A new name is the ordinary case, and so is no output file at all.
+        assert!(output_over(&paths, &argv(&["hledger", "balance", "-o", "out.csv"])).is_none());
+        assert!(output_over(&paths, &argv(&["hledger", "balance", "--output-file=out.csv"])).is_none());
+        assert!(output_over(&paths, &argv(&["hledger", "balance"])).is_none());
+        assert!(output_over(&paths, &argv(&["hledger", "balance", "-o"])).is_none());
+    }
+
+    #[test]
     fn what_the_terminal_says_has_no_backticks_and_no_em_dashes() {
         // Two house rules, of the kind that rot silently: a command in a message is
         // bold rather than quoted, and there are no em dashes in anything the user
@@ -2216,14 +2146,9 @@ mod tests {
             download_list(&[]),
             download_list(&["out.csv".to_string()]),
             wrote_note(&[("out.csv".to_string(), 12, false)]),
-            append_note("2024.journal", 2, 40),
-            block_header("2024.journal"),
             alias_list(&[]),
             alias_list(&[("bal".to_string(), "balance".to_string())]),
             alias_note("bal", "balance"),
-            crate::plugins::find("chart")
-                .expect("chart is bundled")
-                .note("balance"),
             quoted("my file.journal"),
         ];
         // The refusals matter as much as the greetings: they are read at the moment
@@ -2231,23 +2156,11 @@ mod tests {
         let refusals = [
             tokenize("balance 'this year").expect_err("unclosed"),
             single_argument("two files").expect_err("two"),
-            append_target("data/").expect_err("a directory"),
             parse_switch("maybe").expect_err("a switch"),
             font_size("large").expect_err("a number"),
-            match redirect("print >>") {
-                Redirect::Bad(message) => message,
-                other => panic!("{other:?}"),
-            },
-            match redirect("print >> two files") {
-                Redirect::Bad(message) => message,
-                other => panic!("{other:?}"),
-            },
+            read_only_refusal("import data/statement.csv").expect("a writer"),
             match parse_alias("nonsense") {
                 AliasEdit::Bad(message) => message,
-                other => panic!("{other:?}"),
-            },
-            match redirect("print >> \"unclosed") {
-                Redirect::Bad(message) => message,
                 other => panic!("{other:?}"),
             },
         ];
@@ -2694,9 +2607,10 @@ mod tests {
         ]);
         assert!(note.contains("wrote bal.csv (326 bytes)"), "{note}");
         assert!(note.contains("changed data/2024.journal (4.0 KB)"), "{note}");
-        // And that it was kept, with the command that gets a copy.
-        assert!(note.contains("saved"), "{note}");
+        // And that it is available, with the command that gets a copy, and how long
+        // it lasts: nothing a command writes is kept beyond the visit.
         assert!(plain(&note).contains("download bal.csv"), "{note}");
+        assert!(note.contains("while this visit lasts"), "{note}");
     }
 
     #[test]
@@ -2775,63 +2689,7 @@ mod tests {
         assert_eq!(pasted.rest, "b");
     }
 
-    #[test]
-    fn a_block_ends_on_a_dot_alone_and_says_how_to_finish() {
-        assert!(ends_block("."));
-        assert!(ends_block("  .  "));
-        assert!(!ends_block(".."));
-        assert!(!ends_block(""));
-        assert!(!ends_block("2024-01-01 * ."));
 
-        let header = block_header("data/2024.journal");
-        assert!(header.contains("data/2024.journal"), "{header}");
-        assert!(header.contains("Ctrl+C"), "{header}");
-    }
-
-    #[test]
-    fn a_redirect_is_read_from_the_line() {
-        assert_eq!(
-            redirect("hledger import data/2024.csv >> data/2024.journal"),
-            Redirect::Append {
-                command: "hledger import data/2024.csv".to_string(),
-                target: "data/2024.journal".to_string(),
-            }
-        );
-        // No redirect at all is the ordinary case and must pass through untouched.
-        assert_eq!(
-            redirect("  balance --tree  "),
-            Redirect::Plain("balance --tree".to_string())
-        );
-
-        // A quoted target is a path with a space in it, and the quotes come off.
-        assert_eq!(
-            redirect("print expenses >> \"my file.journal\""),
-            Redirect::Append {
-                command: "print expenses".to_string(),
-                target: "my file.journal".to_string(),
-            }
-        );
-
-        // `>>` inside quotes is an argument, not a redirect: a period expression
-        // can contain anything.
-        assert_eq!(
-            redirect("balance -p \"a >> b\""),
-            Redirect::Plain("balance -p \"a >> b\"".to_string())
-        );
-
-        // Each way it can be wrong says which part is wrong.
-        for (line, expected) in [
-            (">> data/x.journal", "before"),
-            ("print >>", "append to"),
-            ("print >> two words", "more than one file"),
-            ("print >> \"unclosed", "not closed"),
-        ] {
-            match redirect(line) {
-                Redirect::Bad(message) => assert!(message.contains(expected), "{line}: {message}"),
-                other => panic!("{line} should be refused: {other:?}"),
-            }
-        }
-    }
 
     #[test]
     fn a_quoted_argument_stays_one_argument_without_its_quotes() {
@@ -2928,41 +2786,8 @@ mod tests {
         assert_eq!(used, None);
     }
 
-    #[test]
-    fn a_redirect_target_is_understood_the_way_people_write_it() {
-        // The engine's view and the app's view of the same file.
-        assert_eq!(append_target("data/2024.journal").as_deref(), Ok("2024.journal"));
-        assert_eq!(append_target("2024.journal").as_deref(), Ok("2024.journal"));
-        assert_eq!(
-            append_target("data/books/2024.journal").as_deref(),
-            Ok("books/2024.journal")
-        );
-        assert_eq!(append_target("./data/x.journal").as_deref(), Ok("x.journal"));
 
-        assert!(append_target("data/").is_err());
-        assert!(append_target("../outside.journal").is_err());
-        assert!(append_target("data/books/").is_err());
-    }
 
-    #[test]
-    fn appending_keeps_the_file_well_formed() {
-        // Either side missing its newline must not join two entries together.
-        assert_eq!(append_text("a\n", "b\n"), "a\nb\n");
-        assert_eq!(append_text("a", "b\n"), "a\nb\n");
-        assert_eq!(append_text("a\n", "b"), "a\nb\n");
-        assert_eq!(append_text("a", "b"), "a\nb\n");
-        // An empty file is not a special case that needs a leading newline.
-        assert_eq!(append_text("", "b\n"), "b\n");
-        assert_eq!(append_text("", ""), "");
-    }
-
-    #[test]
-    fn the_append_note_says_what_landed_where() {
-        let note = append_note("2024.journal", 12, 4096);
-        assert!(note.contains("12 lines"), "{note}");
-        assert!(note.contains("2024.journal"), "{note}");
-        assert!(note.contains("4.0 KB"), "{note}");
-    }
 
     #[test]
     fn a_suggested_command_quotes_a_path_that_needs_it() {
@@ -2973,28 +2798,20 @@ mod tests {
 
         let note = wrote_note(&[("my file.csv".to_string(), 12, false)]);
         assert!(plain(&note).contains("download \"my file.csv\""), "{note}");
-
-        let appended = append_note("my file.journal", 2, 40);
-        assert!(
-            plain(&appended).contains("print -f \"my file.journal\""),
-            "{appended}"
-        );
     }
 
     #[test]
-    fn a_plugin_command_is_handed_over_untouched() {
-        // The vocabulary no longer knows about charts: a plugin's word reaches the
-        // app as an ordinary hledger command line, and the plugin takes it from
-        // there. `charting` is a different word, and hledger's own.
-        assert_eq!(classify("chart balance expenses -M"), Command::Hledger("chart balance expenses -M"));
-        assert_eq!(classify("chart"), Command::Hledger("chart"));
-        assert_eq!(classify("charting"), Command::Hledger("charting"));
-
-        // And the plugin that owns it says so, which is how the app decides.
-        let chart = crate::plugins::owner("chart balance -M").expect("chart owns this");
-        assert_eq!(chart.name(), "chart");
+    fn a_word_no_plugin_owns_is_hledger_s() {
+        // The vocabulary is the app's own words only. Everything else, including a
+        // word a plugin would own, reaches the app as an hledger command line, and
+        // the app asks the registry before handing it on.
+        assert_eq!(
+            classify("balance expenses -M"),
+            Command::Hledger("balance expenses -M")
+        );
+        assert_eq!(classify("reporting"), Command::Hledger("reporting"));
+        assert!(crate::plugins::owner("reporting").is_none());
         assert!(crate::plugins::owner("balance -M").is_none());
-        assert!(crate::plugins::owner("charting").is_none());
     }
 
     #[test]

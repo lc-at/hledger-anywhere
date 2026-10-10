@@ -31,7 +31,6 @@ mod store;
 #[cfg(target_arch = "wasm32")]
 mod upload;
 
-mod chart;
 mod hledger;
 mod hledger_info;
 mod journal;
