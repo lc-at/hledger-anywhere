@@ -122,7 +122,9 @@ Everything that is not in this table is passed to hledger verbatim.
 aliases, and the paths of loaded files. When there is more than one option left, a
 second Tab lists them in columns and puts the first on the line; every Tab after that
 steps to the next one, Shift+Tab steps back, and Escape puts back what you typed. The
-choice is made by pressing Tab, not by typing the rest of it. **↑/↓** recall history (the last 100
+choice is made by pressing Tab, not by typing the rest of it. While a command runs, the
+window title says which one, since a report on a large journal takes a few seconds and
+the terminal is silent until it has something to print. **↑/↓** recall history (the last 100
 commands, kept between visits). **Ctrl+C** stops a running command, or clears the
 line.
 
