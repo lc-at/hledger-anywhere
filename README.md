@@ -196,12 +196,19 @@ at every start, so its commands are simply there:
 
 ```
 hledger.journal » chart expenses
-chart: 3 months of expenses, $1200.00 last, in a new window.
+chart: 2 periods of expenses, $47.49, down $1,238.91, in a new window.
 ```
 
 The bundled repository is `/plugins/plugins.json`, and its `chart` plugin opens a balance
-line chart in a window of its own, using hledger's own numbers from
-`balance expenses -M -O csv`. It also carries the colour themes. Nothing about it is in the
+chart in a window of its own, using hledger's own numbers from `balance expenses -M -O csv`:
+
+- **A line over time** when the report has several periods: `chart expenses` asks for months
+  and charts them, with round axis labels, a dot per period, the value on hover, and the data
+  in a table underneath for reading or copying.
+- **A ranking** when the report has one column, largest first, because that is how "where did
+  it go" is read: `chart expenses -p 2024`.
+- **In the app's own colours**, from the theme in use, so a chart opened from gruvbox light
+  is cream rather than a dark window beside a light terminal. It also carries the colour themes. Nothing about it is in the
 app's core: remove it with `plugins remove /plugins/plugins.json` and it is back on the next
 visit, because bundled is where it came from, not what it is.
 
@@ -225,7 +232,8 @@ Read 2 plugins from https://example.invalid/plugins.json: chart, forecast.
 The manifest is authoritative for the words, the help text and the completion, so an
 installed repository costs one fetch and runs no code until one of its commands is used.
 Plugins get a small API and nothing more: `host.hledger(command)` to run hledger,
-`host.say(text)` to print, `host.window(title)` to open a window, and their own settings.
+`host.say(text)` to print, `host.window(title)` to open a window, `host.colors()` for the
+theme in use, and their own settings.
 The read-only rule applies to them exactly as it does to the command line, so a plugin
 cannot change a journal either.
 

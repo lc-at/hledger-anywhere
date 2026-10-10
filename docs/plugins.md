@@ -97,6 +97,7 @@ promise, is reported as the plugin failing.
 | `host.hledger(command)` | Runs hledger and resolves with its standard output. Rejects with the reason it could not run. |
 | `host.say(text)` | Prints a line, the way the app prints its own. |
 | `host.window(title)` | Opens a window and returns a handle with `write(html)` and `close()`, or `null` if the browser blocked it. |
+| `host.colors()` | The colours of the theme in use: `background`, `foreground`, `cursor`, `accent`, `dim`. Read on each call, so a window a plugin opens matches the terminal it came from. |
 | `host.setting(key)` | A setting this plugin remembered, or `null`. |
 | `host.remember(key, value)` | Remembers it, in the app's settings. |
 
@@ -106,6 +107,13 @@ fails rejects rather than resolving with an empty string, so a plugin cannot mis
 failure for no data.
 
 Two things worth knowing:
+
+- **A window is a blank document until you write to it.** Opening it early and writing
+  "loading" is better than a window that appears with nothing in it; `chart` in
+  [`assets/plugins`](../assets/plugins) does exactly that, and then writes the real page.
+- **`host.colors()` makes a window look like the app.** The bundled chart plugin uses it for
+  its background, its text, its bars and its gridlines, so it is gruvbox when the terminal
+  is gruvbox and cream when the terminal is cream.
 
 - **`-O csv` is usually what you want.** It is the only hledger output that keeps
   accounts, periods and amounts apart without parsing a laid-out table.

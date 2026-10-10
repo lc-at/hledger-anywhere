@@ -18,7 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use js_sys::{Promise, Reflect};
+use js_sys::{Object, Promise, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
@@ -1361,6 +1361,31 @@ impl App {
         });
         let _ = Reflect::set(&host, &"hledger".into(), hledger.as_ref().unchecked_ref());
         hledger.forget();
+
+        // colors(): the colours of the theme in use. Read on each call rather than baked
+        // in, because the theme can change while a plugin is installed, and a window a
+        // plugin opens should look like the terminal it came from.
+        let app = Rc::clone(self);
+        let colors = Closure::<dyn FnMut() -> JsValue>::new(move || {
+            let name = settings(|settings| settings.theme.clone());
+            let theme = app
+                .theme(&name)
+                .map(|(theme, _)| theme)
+                .unwrap_or_else(Theme::built_in);
+            let colors = Object::new();
+            for (role, value) in [
+                ("background", theme.background.css()),
+                ("foreground", theme.foreground.css()),
+                ("cursor", theme.cursor.css()),
+                ("accent", theme.accent.css()),
+                ("dim", theme.dim.css()),
+            ] {
+                let _ = Reflect::set(&colors, &JsValue::from_str(role), &JsValue::from_str(&value));
+            }
+            colors.into()
+        });
+        let _ = Reflect::set(&host, &"colors".into(), colors.as_ref().unchecked_ref());
+        colors.forget();
 
         // setting(key) and remember(key, value): what this plugin asked to keep.
         let plugin = name.to_string();
