@@ -1,5 +1,5 @@
 /**
- * hledger-anywhere — main-thread WASI bridge.
+ * hledger-anywhere, main-thread WASI bridge.
  *
  * Publishes `window.hledgerWasi`, which is the entire surface `src/hledger/
  * bridge.rs` talks to:
@@ -16,7 +16,7 @@
  *
  * A `window` global rather than an ES module import on the Rust side is a
  * deliberate choice: it avoids coupling wasm-bindgen's generated module
- * specifiers to Trunk's output layout, and it keeps the boundary debuggable —
+ * specifiers to Trunk's output layout, and it keeps the boundary debuggable , 
  * `window.hledgerWasi.run([...], [...])` works from the browser console.
  *
  * Requests are serialised through a queue. hledger runs synchronously inside the
@@ -137,8 +137,8 @@ class HledgerWasi {
    *
    * The engine is one synchronous `_start()` inside the worker, so there is
    * nothing to signal and no way to ask it to stop: the only way is to throw the
-   * worker away. The next run creates a new one and recompiles the module — the
-   * bytes come from the HTTP cache, so that costs a compile, not a download — and
+   * worker away. The next run creates a new one and recompiles the module, the
+   * bytes come from the HTTP cache, so that costs a compile, not a download, and
    * the caller must reconfigure it, because a fresh worker starts with the
    * default environment and no journal.
    */

@@ -4,7 +4,7 @@
 //! takes individual files, which all land at the root of the mount; adding
 //! `webkitdirectory` takes a whole directory and keeps the paths inside it, which
 //! is what a journal split into `2024.journal`, `2025.journal` and a `prices/`
-//! directory needs — an `include` graph is only a graph if the paths survive.
+//! directory needs, an `include` graph is only a graph if the paths survive.
 //!
 //! The picker is driven imperatively rather than through the rendered tree
 //! because it is a modal browser dialog whose result is a one-shot event.
@@ -106,8 +106,8 @@ pub struct PendingPick {
 ///
 /// **This is deliberately not `async fn`.** Browsers gate opening a file picker on
 /// transient user activation, so the `.click()` has to happen while the user's
-/// gesture is still being handled. Awaiting anything first — or routing this
-/// through `spawn_local`, which defers it to a later task — makes the browser
+/// gesture is still being handled. Awaiting anything first, or routing this
+/// through `spawn_local`, which defers it to a later task, makes the browser
 /// refuse the dialog *silently*: no error, no dialog, and a promise that never
 /// settles. That failure looks exactly like a dead command.
 pub fn open_picker(mode: Mode) -> Result<PendingPick, PickError> {
@@ -133,8 +133,8 @@ pub fn open_picker(mode: Mode) -> Result<PendingPick, PickError> {
 
     if mode == Mode::Directory {
         // `webkitdirectory` is what makes this a *directory* picker. web-sys
-        // exposes no setter, so set the content attribute — which is what the
-        // behaviour keys on — as well as the IDL property. The legacy `directory`
+        // exposes no setter, so set the content attribute, which is what the
+        // behaviour keys on, as well as the IDL property. The legacy `directory`
         // attribute is set too, for engines that predate the standardised name.
         let _ = input.set_attribute("webkitdirectory", "");
         let _ = input.set_attribute("directory", "");
@@ -230,8 +230,8 @@ fn picker_promise(input: &HtmlInputElement) -> Promise {
 
 /// Read files handed over by a drop, the same way the picker reads them.
 ///
-/// Dropped files have no `webkitRelativePath` — a drop carries files, not a
-/// directory — so they land at the root exactly as `upload` puts them.
+/// Dropped files have no `webkitRelativePath`, a drop carries files, not a
+/// directory, so they land at the root exactly as `upload` puts them.
 pub async fn read_dropped(files: &[File]) -> Result<Picked, PickError> {
     read_files(files, Mode::Files).await
 }
@@ -313,8 +313,8 @@ async fn read_files(files: &[File], mode: Mode) -> Result<Picked, PickError> {
 
 /// Where a file sat inside the picked directory.
 ///
-/// `webkitRelativePath` is the only thing that carries this — the `File` API has
-/// no directory walk — and it includes the directory the user chose, so a pick of
+/// `webkitRelativePath` is the only thing that carries this, the `File` API has
+/// no directory walk, and it includes the directory the user chose, so a pick of
 /// `~/books` yields `books/hledger.journal`.
 fn relative_path(file: &File) -> String {
     let raw = js_sys::Reflect::get(file.as_ref(), &JsValue::from_str("webkitRelativePath"))

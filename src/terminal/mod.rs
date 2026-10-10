@@ -21,6 +21,69 @@ pub const MIN_FONT: u32 = 8;
 pub const MAX_FONT: u32 = 32;
 pub const DEFAULT_FONT: u32 = 14;
 
+// -- style ------------------------------------------------------------------
+//
+// The terminal is a terminal, so it can say things with weight and colour instead
+// of quoting them with punctuation. Commands in a message are bold, explanations
+// are dim, and the prompt's marker carries the accent colour: the same information
+// that backticks and capitals were carrying, in the form a terminal user already
+// reads without thinking about it.
+
+/// Bold. Used for anything the user can type.
+pub const BOLD: &str = "\u{1b}[1m";
+/// Dim. Used for explanation, and for the parts of a message that are not the point.
+pub const DIM: &str = "\u{1b}[2m";
+/// Red, for failures.
+pub const RED: &str = "\u{1b}[31m";
+/// Dim red, for the exit status of a command that failed.
+pub const DIM_RED: &str = "\u{1b}[2;31m";
+/// The accent colour the rest of the interface uses, as a 256-colour amber.
+pub const ACCENT: &str = "\u{1b}[38;5;214m";
+/// Back to normal.
+pub const RESET: &str = "\u{1b}[0m";
+
+/// A command, or any other text worth the user's eye.
+pub fn bold(text: &str) -> String {
+    format!("{BOLD}{text}{RESET}")
+}
+
+/// An aside: how to use something, or what just happened.
+pub fn dim(text: &str) -> String {
+    format!("{DIM}{text}{RESET}")
+}
+
+/// The accent colour, for the prompt's marker and little else.
+pub fn accent(text: &str) -> String {
+    format!("{ACCENT}{text}{RESET}")
+}
+
+/// What a line looks like once the terminal has rendered it.
+///
+/// The app records what it printed so that searching the scrollback can skip its own
+/// messages. Those records have to be the *visible* text, because that is what
+/// xterm's buffer holds: an escape sequence in the record would never match the
+/// screen and the messages would start being searchable again.
+pub fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != '\u{1b}' {
+            out.push(character);
+            continue;
+        }
+        // CSI: parameters and intermediates, then a final byte in @ to ~. Anything
+        // else after an escape is a two-character sequence, which is dropped too.
+        if let Some('[') = characters.next() {
+            for next in characters.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&next) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The next font size in `direction` (+1 bigger, -1 smaller), clamped.
 pub fn step_font(current: u32, direction: i32) -> u32 {
     let step = 2;
@@ -39,7 +102,7 @@ pub fn step_font(current: u32, direction: i32) -> u32 {
 /// freezing is not.
 pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
-/// hledger's commands, for completion. Not exhaustive — completion is a
+/// hledger's commands, for completion. Not exhaustive, completion is a
 /// convenience, and anything missing can still be typed out.
 const HLEDGER_COMMANDS: [&str; 34] = [
     "accounts",
@@ -129,11 +192,11 @@ pub enum Command<'a> {
     Help,
     /// Load a small built-in journal, so the app can be tried without one.
     Demo,
-    /// `/term` — find `term` in the scrollback, or the last term when blank.
+    /// `/term`, find `term` in the scrollback, or the last term when blank.
     Search(Option<&'a str>),
-    /// `n` / `N` — repeat the last search, forwards / backwards.
+    /// `n` / `N`, repeat the last search, forwards / backwards.
     SearchAgain(bool),
-    /// `download <path>` — save a file hledger wrote in the last run.
+    /// `download <path>`, save a file hledger wrote in the last run.
     Download(Option<&'a str>),
     /// `alias` lists them; `alias name=expansion` sets one.
     Alias(Option<&'a str>),
@@ -313,7 +376,7 @@ impl Editor {
         self.kill(killed);
     }
 
-    /// Ctrl+W: kill the word before the cursor, as a shell does — whitespace
+    /// Ctrl+W: kill the word before the cursor, as a shell does, whitespace
     /// separates words, so a path or an account name goes in one keystroke.
     pub fn kill_word_backward(&mut self) {
         let start = self.word_start();
@@ -500,7 +563,7 @@ impl Editor {
     /// Replace the token under the cursor, keeping the rest of the line.
     ///
     /// The cursor moves to just after the replacement, so completing a token in
-    /// the middle of a command line — a query term, say — leaves the arguments
+    /// the middle of a command line, a query term, say, leaves the arguments
     /// that follow it alone and still editable.
     fn replace_token(&mut self, replacement: &str) {
         let token_length = self.token().chars().count();
@@ -594,7 +657,7 @@ pub fn visible_output(stdout: &str) -> (String, Option<String>) {
     (
         stdout[..cut].to_string(),
         Some(format!(
-            "[output truncated after {} MB of {megabytes:.1} MB — `-o out.csv` writes the \
+            "[output truncated after {} MB of {megabytes:.1} MB, `-o out.csv` writes the \
              whole thing, and `download out.csv` saves it]",
             MAX_OUTPUT_BYTES / (1024 * 1024)
         )),
@@ -649,7 +712,7 @@ pub fn prompt_redraw(prompt: &str, line: &str, cursor: usize) -> String {
 /// `include` resolution is exercised too, and covers a few commodities, tags and
 /// a price so that reports which group by those have something to group.
 pub const DEMO_JOURNAL: &str = "\
-; Demo journal — loaded by the `demo` command. Replace it with `upload`.
+; Demo journal, loaded by the `demo` command. Replace it with `upload`.
 include demo-prices.journal
 
 2024-01-01 * Opening balances
@@ -690,7 +753,7 @@ P 2024-02-01 GBP $1.27
 /// The app is not a shell, but one piece of shell syntax is worth having: hledger
 /// prints what it computed, and appending that to a journal is how `import`,
 /// `print` and `rewrite` are actually used. Without it, the only way to keep a
-/// command's output is `-o`, which overwrites — and appending is the operation a
+/// command's output is `-o`, which overwrites, and appending is the operation a
 /// journal needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Redirect {
@@ -705,7 +768,7 @@ pub enum Redirect {
 /// Split a command line into arguments the way a shell does.
 ///
 /// This exists because hledger's own documented syntax needs it: a period
-/// expression with a space in it is one argument — `balance -p "this year"` — and
+/// expression with a space in it is one argument, `balance -p "this year"`, and
 /// splitting on whitespace handed hledger `"this` and `year"`, which it could not
 /// parse. The app is not a shell, but its command line is one, and an argument the
 /// user quoted has to arrive whole and without its quotes.
@@ -713,7 +776,7 @@ pub enum Redirect {
 /// Both quote styles are understood and both are removed. Outside quotes a
 /// backslash escapes the next character; inside double quotes it escapes `"` and
 /// `\`; single quotes are literal, as in a shell. An unclosed quote is an error
-/// rather than a guess — treating the rest of the line as one argument would run
+/// rather than a guess, treating the rest of the line as one argument would run
 /// something the user did not write.
 pub fn tokenize(line: &str) -> Result<Vec<String>, String> {
     let mut arguments: Vec<String> = Vec::new();
@@ -756,7 +819,12 @@ pub fn tokenize(line: &str) -> Result<Vec<String>, String> {
                         current.push(escaped);
                         started = true;
                     }
-                    None => return Err("A line ending in `\\` has nothing to escape.".to_string()),
+                    None => {
+                        return Err(format!(
+                            "A line ending in {} has nothing to escape.",
+                            bold("\\")
+                        ))
+                    }
                 },
                 space if space.is_whitespace() => {
                     if started {
@@ -835,14 +903,15 @@ fn first_value(token: &str) -> String {
 /// One argument, with any quoting removed.
 ///
 /// The app's own commands take a single path, address or number, and a path can
-/// have a space in it — an uploaded file is named whatever it was named. Refusing
+/// have a space in it, an uploaded file is named whatever it was named. Refusing
 /// two arguments rather than guessing which one was meant keeps `journal a b` from
 /// quietly reading `a`.
 pub fn single_argument(rest: &str) -> Result<Option<String>, String> {
     let arguments = tokenize(rest)?;
     if arguments.len() > 1 {
         return Err(format!(
-            "`{rest}` is more than one argument. Quote it if it has a space."
+            "{} is more than one argument. Quote it if it has a space.",
+            bold(rest)
         ));
     }
     Ok(arguments.into_iter().next())
@@ -885,7 +954,7 @@ fn unquoted_redirect(line: &str) -> Option<usize> {
 ///
 /// Only the first `>>` counts, and only outside quotes: `print -p "a >> b"` is a
 /// command with a quoted argument, not a redirect. The target is one argument, so a
-/// file whose name has a space is written `>> "my file.journal"` — and named as a
+/// file whose name has a space is written `>> "my file.journal"`, and named as a
 /// bare path until it is quoted, rather than guessed at.
 pub fn redirect(line: &str) -> Redirect {
     let trimmed = line.trim();
@@ -896,11 +965,13 @@ pub fn redirect(line: &str) -> Redirect {
     let target = trimmed[at + 2..].trim();
 
     if command.is_empty() {
-        return Redirect::Bad("Nothing to run before `>>`.".to_string());
+        return Redirect::Bad(format!("Nothing to run before {}.", bold(">>")));
     }
     if target.is_empty() {
         return Redirect::Bad(format!(
-            "`{command} >>` needs a file to append to, like `>> data/2024.journal`."
+            "{} needs a file to append to, like {}.",
+            bold(&format!("{command} >>")),
+            bold(">> data/2024.journal")
         ));
     }
     let mut arguments = match tokenize(target) {
@@ -909,7 +980,8 @@ pub fn redirect(line: &str) -> Redirect {
     };
     if arguments.len() != 1 {
         return Redirect::Bad(format!(
-            "`{target}` is more than one file. Quote it if its name has a space."
+            "{} is more than one file. Quote it if its name has a space.",
+            bold(target)
         ));
     }
     Redirect::Append {
@@ -929,15 +1001,17 @@ pub fn ends_block(line: &str) -> bool {
 /// What to say when a block of typed text starts.
 pub fn block_header(target: &str) -> String {
     format!(
-        "Typing into {target}. Paste or type journal text, then `.` on its own to \
-         finish; Ctrl+C abandons it."
+        "Typing into {}. Paste or type journal text, then a line with just {} to finish. {} abandons it.",
+        bold(target),
+        bold("."),
+        bold("Ctrl+C")
     )
 }
 
 /// A paste, split into the lines it contains.
 ///
 /// Terminals deliver a paste as one string with newlines in it, which otherwise
-/// ends up inserted into the line being edited — a journal snippet pasted into a
+/// ends up inserted into the line being edited, a journal snippet pasted into a
 /// single-line editor is how this was noticed. `rest` is what follows the last
 /// newline, if anything: it belongs on the line still being typed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -986,15 +1060,22 @@ pub fn append_target(target: &str) -> Result<String, String> {
     let path = path.strip_prefix("data/").unwrap_or(path);
     let path = path.trim_start_matches('/');
     if path.is_empty() {
-        return Err("`>>` needs a file name, not a directory.".to_string());
+        return Err(format!(
+            "{} needs a file name, not a directory.",
+            bold(">>")
+        ));
     }
     if path.ends_with('/') {
         return Err(format!(
-            "`{target}` is a directory. Append to a file inside it."
+            "{} is a directory. Append to a file inside it.",
+            bold(target)
         ));
     }
     if path.split('/').any(|part| part == "..") {
-        return Err(format!("`{target}` is outside the journal directory."));
+        return Err(format!(
+            "{} is outside the journal directory.",
+            bold(target)
+        ));
     }
     Ok(path.to_string())
 }
@@ -1018,9 +1099,10 @@ pub fn append_text(existing: &str, addition: &str) -> String {
 /// What the terminal says after appending.
 pub fn append_note(target: &str, added_lines: usize, total_bytes: usize) -> String {
     format!(
-        "[appended {added_lines} line(s) to {target} ({}) — `print -f {}` shows it]",
+        "[appended {added_lines} {} to {target} ({}). Read it back with {}]",
+        count(added_lines, "line"),
         bytes_label(total_bytes),
-        quoted(target)
+        bold(&format!("print -f {}", quoted(target)))
     )
 }
 
@@ -1036,25 +1118,29 @@ pub enum AliasEdit {
 /// Read an `alias` argument.
 ///
 /// The first `=` separates name from expansion, so an expansion may contain `=`
-/// — queries do — and the name may not contain spaces, because that is what makes
+///, queries do, and the name may not contain spaces, because that is what makes
 /// it a name.
 pub fn parse_alias(text: &str) -> AliasEdit {
     let Some((name, expansion)) = text.split_once('=') else {
         return AliasEdit::Bad(format!(
-            "Write it as `alias name=command`: `alias {text}=…`."
+            "Write it as {}, for example {}.",
+            bold("alias name=command"),
+            bold(&format!("alias {text}=..."))
         ));
     };
     let name = name.trim();
     let expansion = expansion.trim();
     if name.is_empty() || name.contains(char::is_whitespace) {
-        return AliasEdit::Bad(
-            "An alias name cannot be empty or contain spaces. Try `alias bal=balance --tree`."
-                .to_string(),
-        );
+        return AliasEdit::Bad(format!(
+            "An alias name cannot be empty or contain spaces. Try {}.",
+            bold("alias bal=balance --tree")
+        ));
     }
     if expansion.is_empty() {
         return AliasEdit::Bad(format!(
-            "`{name}` would expand to nothing. Try `alias {name}=balance --tree`."
+            "{} would expand to nothing. Try {}.",
+            bold(name),
+            bold(&format!("alias {name}=balance --tree"))
         ));
     }
     AliasEdit::Set(name.to_string(), expansion.to_string())
@@ -1091,21 +1177,25 @@ pub fn expand_alias(
 /// What the terminal prints when `alias` is given the list of them.
 pub fn alias_list(aliases: &[(String, String)]) -> String {
     if aliases.is_empty() {
-        return "No aliases yet. `alias bal=balance --tree` makes `bal` run that.\r\n"
-            .to_string();
+        return format!(
+            "No aliases yet. {} makes {} run {}.\r\n",
+            bold("alias bal=balance --tree"),
+            bold("bal"),
+            bold("balance --tree")
+        );
     }
-    let mut text = String::from("Aliases:\r\n");
+    let mut text = format!("{}:\r\n", bold("Aliases"));
     for (name, expansion) in aliases {
         text.push_str(&format!("  {name} = {expansion}\r\n"));
     }
-    text.push_str("`unalias <name>` removes one.\r\n");
+    text.push_str(&format!("Remove one with {}.\r\n", bold("unalias <name>")));
     text
 }
 
 /// The note printed when a command was expanded, so it is never a surprise that
 /// something other than what was typed ran.
 pub fn alias_note(name: &str, expansion: &str) -> String {
-    format!("[{name} → {expansion}]")
+    format!("[{name} {} {expansion}]", dim("runs"))
 }
 
 /// The most recent history entry before `from` that contains `query`.
@@ -1148,7 +1238,7 @@ pub struct Hit {
 /// Case-insensitive, because a terminal search usually is and journals are full
 /// of names whose capitalisation nobody remembers. `from` is `None` for the first
 /// search, and the last match's position otherwise, so pressing `n` repeatedly
-/// walks forward rather than sticking on the match it just showed — and a line
+/// walks forward rather than sticking on the match it just showed, and a line
 /// with two matches yields both. Wrapping is what makes `n` useful on the last
 /// match instead of silently doing nothing.
 pub fn search_lines(
@@ -1214,8 +1304,13 @@ pub fn search_lines(
 }
 
 /// The prompt shown while Ctrl+R is narrowing a search, as readline shows it.
-pub fn isearch_prompt(query: &str) -> String {
-    format!("(reverse-i-search)`{query}': ")
+pub fn isearch_prompt(query: &str, failed: bool) -> String {
+    let label = if failed {
+        "(failed reverse-i-search)"
+    } else {
+        "(reverse-i-search)"
+    };
+    format!("{} {}: ", dim(label), bold(query))
 }
 
 /// What the terminal prints after a run that wrote files.
@@ -1251,8 +1346,11 @@ pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
     }
     let names: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
     text.push_str(&format!(
-        " — saved; `download {}` for a copy]",
-        quoted(names.first().copied().unwrap_or(""))
+        ", saved. Take a copy with {}]",
+        bold(&format!(
+            "download {}",
+            quoted(names.first().copied().unwrap_or(""))
+        ))
     ));
     text
 }
@@ -1276,15 +1374,20 @@ pub fn download_list(files: &[String]) -> String {
     if files.is_empty() {
         // "Written" rather than "downloaded": `put` shows this list too, and the
         // file has not been saved anywhere yet either way.
-        return "Nothing has been written yet. `-o FILE` on a command writes a file — \
-                for example `balance -O csv -o balance.csv`.\r\n"
-            .to_string();
+        return format!(
+            "Nothing has been written yet. {} on a command writes a file, for example {}.\r\n",
+            bold("-o FILE"),
+            bold("balance -O csv -o balance.csv")
+        );
     }
     let mut text = String::from("Written by commands this session:\r\n");
     for path in files {
         text.push_str(&format!("  {path}\r\n"));
     }
-    text.push_str("`download <path>` saves one to your computer.\r\n");
+    text.push_str(&format!(
+        "Save one with {}.\r\n",
+        bold("download <path>")
+    ));
     text
 }
 
@@ -1294,7 +1397,12 @@ pub fn download_list(files: &[String]) -> String {
 /// hledger's own; saying which command produced them is the difference between a
 /// picture and a claim.
 pub fn chart_note(command: &str) -> String {
-    format!("[chart of `{command}` — hledger's numbers, drawn]")
+    format!(
+        "[{} {}, {}]",
+        dim("chart of"),
+        bold(command),
+        dim("drawn from hledger's numbers")
+    )
 }
 
 /// Read an on/off argument, accepting the spellings people actually type.
@@ -1302,7 +1410,11 @@ pub fn parse_switch(text: &str) -> Result<bool, String> {
     match text.trim().to_lowercase().as_str() {
         "on" | "yes" | "true" | "1" | "enable" | "enabled" => Ok(true),
         "off" | "no" | "false" | "0" | "disable" | "disabled" => Ok(false),
-        other => Err(format!("`{other}` is not on or off. Try `screenreader on`.")),
+        other => Err(format!(
+            "{} is not on or off. Try {}.",
+            bold(other),
+            bold("screenreader on")
+        )),
     }
 }
 
@@ -1313,58 +1425,99 @@ pub fn parse_switch(text: &str) -> Result<bool, String> {
 pub fn font_size(text: &str) -> Result<u32, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("Give a size in pixels, like `font 18`.".to_string());
+        return Err(format!(
+            "Give a size in pixels, like {}.",
+            bold("font 18")
+        ));
     }
     match trimmed.parse::<u32>() {
         Ok(size) => Ok(size.clamp(MIN_FONT, MAX_FONT)),
         Err(_) => Err(format!(
-            "`{trimmed}` is not a number. Give a size in pixels, like `font 18` ({} to {}).",
+            "{} is not a number. Give a size in pixels, like {} ({} to {}).",
+            bold(trimmed),
+            bold("font 18"),
             MIN_FONT, MAX_FONT
         )),
     }
 }
 
-/// The prompt for the journal being read.
+/// The prompt: what is being read, and a marker to type after.
 ///
-/// A terminal that shows only `$ ` makes "which journal is this?" a question you
-/// have to ask. The file's own name is enough to answer it and short enough not to
-/// eat the line; `(no journal)` says plainly that nothing is loaded.
+/// A bare `$ ` said nothing, and the journal being read is the one piece of the
+/// terminal's state that is easy to lose track of. The name is dimmed so it recedes,
+/// and the marker carries the accent colour so the eye finds the line to type on.
 pub fn prompt_for(main: Option<&str>) -> String {
-    match main {
+    let label = match main {
         Some(path) => {
             let name = path.rsplit('/').next().unwrap_or(path);
             if name.is_empty() {
-                "$ ".to_string()
+                "no journal".to_string()
             } else {
-                format!("{name} $ ")
+                name.to_string()
             }
         }
-        None => "(no journal) $ ".to_string(),
-    }
+        None => "no journal".to_string(),
+    };
+    format!("{} {} ", dim(&label), accent("»"))
 }
 
 /// What the terminal prints after loading the demo.
 pub fn demo_loaded(files: usize, main: &str) -> String {
     format!(
-        "Loaded the demo journal ({files} file(s)) — reading `{main}`. It is a sample; \
-         `upload` replaces it.\r\n",
+        "Loaded the sample journal ({files} files), reading {}.\r\n",
+        bold(main)
     )
 }
 
-/// What the terminal prints on a cold start.
+/// A count and its noun, spelled for the count.
+pub fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    }
+}
+
+/// The greeting, and the only place the app explains itself before a journal is
+/// loaded.
+///
+/// It says three things and stops: what this is, that nothing leaves the tab, and
+/// the four things worth typing first. Someone arriving at an empty terminal has no
+/// idea what it takes, so this is worth more than a version string.
 pub fn welcome(version: &str) -> String {
-    format!(
-        "hledger-anywhere — hledger {version} (wasm32-wasi), running entirely in this tab.\r\n\
-         No journal is loaded. Type `upload` for files, `upload_dir` for a folder,\r\n\
-         `demo` to try it on a sample journal, or `?` for help.\r\n",
-    )
+    let mut text = String::new();
+    text.push_str(&format!(
+        "  {}  {}\r\n",
+        bold("hledger-anywhere"),
+        dim(&format!("hledger {version} (wasm32-wasi)"))
+    ));
+    text.push_str(&format!(
+        "  {}\r\n\r\n",
+        dim("A terminal for hledger, running entirely in this tab.")
+    ));
+    text.push_str("  Drop journal files on this window, or type:\r\n");
+    for (command, description) in [
+        ("upload", "add journal files"),
+        ("upload_dir", "add a folder, keeping its structure"),
+        ("demo", "try the sample journal"),
+        ("?", "every command and key"),
+    ] {
+        text.push_str(&format!(
+            "    {}  {}\r\n",
+            bold(&format!("{command:<11}")),
+            dim(description)
+        ));
+    }
+    text.push_str(&format!("\r\n  {}\r\n", dim("No journal is loaded yet.")));
+    text
 }
 
 /// What the terminal prints when files came back from a previous visit.
 pub fn resumed(count: usize, main: &str) -> String {
     format!(
-        "Resumed {count} file(s) from last time — reading `{main}`. \
-         `journal` lists or changes it.\r\n",
+        "Resumed {count} files, reading {}. Type {} to list or change them.\r\n",
+        bold(main),
+        bold("journal")
     )
 }
 
@@ -1378,23 +1531,28 @@ pub fn files_arrived(
     skipped: &[(String, String)],
     main: Option<&str>,
 ) -> String {
-    let mut text = format!("{source} {} file(s).\r\n", loaded.len());
+    let noun = count(loaded.len(), "file");
+    let mut text = format!("{source} {} {noun}.\r\n", loaded.len());
     for path in loaded {
         text.push_str(&format!("  {path}\r\n"));
     }
     for (path, reason) in skipped {
-        text.push_str(&format!("  skipped {path}: {reason}\r\n"));
+        text.push_str(&format!("  {} {path}: {reason}\r\n", dim("skipped")));
     }
     match main {
-        Some(main) => {
-            text.push_str(&format!("Reading `{main}`. Try `hledger balance`.\r\n"));
-        }
-        None => {
-            text.push_str(
-                "None of those looks like a journal (.journal, .hledger or .j), so hledger has \
-                 nothing to read yet.\r\n",
-            );
-        }
+        Some(main) => text.push_str(&format!(
+            "Reading {}. Type {} for a report, or {} for the rest.\r\n",
+            bold(main),
+            bold("balance"),
+            bold("?")
+        )),
+        None => text.push_str(&format!(
+            "{}\r\n",
+            dim(
+                "None of those is a journal (.journal, .hledger or .j), so hledger has \
+                 nothing to read yet."
+            )
+        )),
     }
     text
 }
@@ -1402,56 +1560,119 @@ pub fn files_arrived(
 /// What the terminal prints for `journal` with no argument.
 pub fn file_list(files: &[String], main: Option<&str>) -> String {
     if files.is_empty() {
-        return "No files uploaded yet. Type `upload`.\r\n".to_string();
+        return format!(
+            "No journal files are loaded. Drop them on this window, or type {}.\r\n",
+            bold("upload")
+        );
     }
-    let mut text = String::from("Uploaded files:\r\n");
+    let noun = count(files.len(), "file");
+    let mut text = format!("{} {noun} loaded:\r\n", files.len());
     for path in files {
         let marker = if Some(path.as_str()) == main {
-            "*"
+            accent("*")
         } else {
-            " "
+            " ".to_string()
         };
         text.push_str(&format!(" {marker} {path}\r\n"));
     }
-    text.push_str("The `*` is the one hledger reads. `journal <path>` changes it.\r\n");
+    text.push_str(&format!(
+        "{} {} {} {}.\r\n",
+        dim("Marked"),
+        accent("*"),
+        dim("is the file hledger reads. Change it with"),
+        bold("journal <path>")
+    ));
     text
 }
 
 /// The app's own help, for `?`. Deliberately short: `hledger help` is one
 /// keystroke away and knows far more.
 pub fn help() -> String {
-    "This is a terminal for hledger, running in your browser. Everything you type is\n\
-     passed to hledger unchanged, without needing -f: the loaded files are mounted and\n\
-     LEDGER_FILE points at the one being read.\n\
-     \n\
-       upload            choose files to add\n\
-       upload_dir        choose a folder to add, keeping the paths inside it\n\
-       demo              load a small built-in journal to try things on\n\
-       journal           list loaded files and mark the one being read\n\
-       journal <path>    read a different loaded file\n\
-       download <path>   save a file a command wrote with -o\n\
-       alias name=cmd    make `name` run `cmd` (`alias` lists, `unalias` removes)\n\
-       connect user@host connect a remoteStorage account, then `remote`\n\
-       remote [dir]      load every journal file under /hledger/ (or a folder in it)\n\
-       disconnect        forget the account (the files stay in the cache)\n\
-       put <path>        save a loaded file (or one hledger wrote) to the account\n\
-       font [size]       show or set the font size (Ctrl+= / Ctrl+- / Ctrl+0 too)\n\
-       screenreader on   turn the accessibility tree on (off turns it off)\n\
-       chart [args]      draw a report instead of printing it, e.g. `chart balance expenses -M`\n\
-       cmd >> file       run `cmd` and append its output to a loaded file\n\
-       append file       type or paste journal text into a file, ending with `.`\n\
-       /text             search the output; n and N repeat the search\n\
-       clear             clear the screen\n\
-       ?                 this help\n\
-     \n\
-     Keys: Enter runs; Tab completes commands, flags, accounts, aliases and paths;\n\
-     Up/Down recall history; Ctrl+C stops a running command or clears the line.\n\
-     Emacs/readline keys work too: Ctrl+A/E line ends, Ctrl+B/F back and forward,\n\
-     Ctrl+K/U/W kill, Ctrl+Y yank, Ctrl+T transpose, Ctrl+D delete, Alt+B/F by word,\n\
-     Ctrl+L clear, Ctrl+R reverse search the history, Ctrl+= and Ctrl+- the font.\n\
-     Try `hledger stats` or `hledger balance --tree`.\n"
-        .to_string()
+    let mut text = String::new();
+    text.push_str(&format!("{}\r\n", bold("hledger-anywhere")));
+    text.push_str(&format!(
+        "{}\r\n\r\n",
+        dim(
+            "Everything you type goes to hledger unchanged, and -f is never needed: the \
+             loaded files are mounted, and the one being read is exported as $LEDGER_FILE."
+        )
+    ));
+
+    for (heading, rows) in GROUPS {
+        text.push_str(&format!("{}\r\n", bold(heading)));
+        for (form, description) in *rows {
+            text.push_str(&format!(
+                "  {}  {}\r\n",
+                bold(&format!("{form:<18}")),
+                dim(description)
+            ));
+        }
+        text.push_str("\r\n");
+    }
+
+    text.push_str(&format!("{}\r\n", bold("Keys")));
+    for line in [
+        "Enter runs a command. Tab completes commands, flags, accounts, aliases and paths.",
+        "Up and Down recall history. Ctrl+C stops a running command, or clears the line.",
+        "Ctrl+A and Ctrl+E are the ends of the line, Ctrl+B and Ctrl+F move by character,",
+        "Alt+B and Alt+F by word. Ctrl+K, Ctrl+U and Ctrl+W cut to the end, the start and",
+        "by word; Ctrl+Y pastes the last cut. Ctrl+R searches the history as you type,",
+        "Ctrl+T swaps the two characters around the cursor, Ctrl+D deletes forward,",
+        "Ctrl+L clears the screen, and Ctrl+= and Ctrl+- change the font.",
+    ] {
+        text.push_str(&format!("  {}\r\n", dim(line)));
+    }
+    text.push_str(&format!(
+        "\r\n  {} {}\r\n",
+        dim("New here? Try"),
+        bold("demo")
+    ));
+    text
 }
+
+/// The `?` help, grouped by what the user is trying to do rather than by what the
+/// code does.
+const GROUPS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Files",
+        &[
+            ("upload", "add journal files"),
+            ("upload_dir", "add a folder, keeping its structure"),
+            ("demo", "load the sample journal"),
+            ("journal [path]", "list the loaded files, or read a different one"),
+            ("append <file>", "type or paste journal text into a file, ending with a dot"),
+            ("download <path>", "save a file into your browser's downloads"),
+        ],
+    ),
+    (
+        "Reports",
+        &[
+            ("chart [args]", "draw a report instead of printing it"),
+            ("cmd >> file", "run a command and append what it prints to a file"),
+            ("/text", "search the output; n and N repeat the search"),
+            ("alias name=cmd", "make a name run a command; alias lists them"),
+            ("unalias <name>", "remove one"),
+            ("clear", "clear the screen"),
+        ],
+    ),
+    (
+        "A storage account",
+        &[
+            ("connect user@host", "connect a remoteStorage account"),
+            ("remote [dir]", "load the files under /hledger/ from that account"),
+            ("put <path>", "save a loaded file into that account"),
+            ("disconnect", "forget the account; the loaded files stay loaded"),
+        ],
+    ),
+    (
+        "This terminal",
+        &[
+            ("font [size]", "show or set the font size"),
+            ("screenreader on", "turn the accessibility tree on or off"),
+            ("?", "this help"),
+        ],
+    ),
+];
 
 #[cfg(test)]
 mod tests {
@@ -1555,8 +1776,8 @@ mod tests {
 
     #[test]
     fn taking_a_line_empties_the_editor_and_refuses_a_blank_one() {
-        // What goes into the history is the caller's decision now — see
-        // `only_commands_go_into_the_history` — so this is about the line itself.
+        // What goes into the history is the caller's decision now, see
+        // `only_commands_go_into_the_history`, so this is about the line itself.
         let mut e = Editor::with_history(Vec::new());
         e.insert("   ");
         assert_eq!(e.take(), None, "a blank line is not a command");
@@ -1738,28 +1959,114 @@ mod tests {
     }
 
     #[test]
+    fn what_the_terminal_says_has_no_backticks_and_no_em_dashes() {
+        // Two house rules, of the kind that rot silently: a command in a message is
+        // bold rather than quoted, and there are no em dashes in anything the user
+        // reads. Every message the terminal can produce is sampled here.
+        let samples = [
+            welcome("1.52.4"),
+            help(),
+            prompt_for(None),
+            prompt_for(Some("2024.journal")),
+            isearch_prompt("bal", false),
+            isearch_prompt("bal", true),
+            resumed(2, "hledger.journal"),
+            demo_loaded(2, "hledger.journal"),
+            files_arrived(
+                "Uploaded",
+                &["a.journal".to_string()],
+                &[("b.png".to_string(), "binary".to_string())],
+                Some("a.journal"),
+            ),
+            files_arrived("Uploaded", &[], &[], None),
+            file_list(&["a.journal".to_string()], Some("a.journal")),
+            file_list(&[], None),
+            download_list(&[]),
+            download_list(&["out.csv".to_string()]),
+            wrote_note(&[("out.csv".to_string(), 12, false)]),
+            append_note("2024.journal", 2, 40),
+            block_header("2024.journal"),
+            alias_list(&[]),
+            alias_list(&[("bal".to_string(), "balance".to_string())]),
+            alias_note("bal", "balance"),
+            chart_note("balance"),
+            quoted("my file.journal"),
+        ];
+        // The refusals matter as much as the greetings: they are read at the moment
+        // someone is already confused about what they typed.
+        let refusals = [
+            tokenize("balance 'this year").expect_err("unclosed"),
+            single_argument("two files").expect_err("two"),
+            append_target("data/").expect_err("a directory"),
+            parse_switch("maybe").expect_err("a switch"),
+            font_size("large").expect_err("a number"),
+            match redirect("print >>") {
+                Redirect::Bad(message) => message,
+                other => panic!("{other:?}"),
+            },
+            match redirect("print >> two files") {
+                Redirect::Bad(message) => message,
+                other => panic!("{other:?}"),
+            },
+            match parse_alias("nonsense") {
+                AliasEdit::Bad(message) => message,
+                other => panic!("{other:?}"),
+            },
+            match redirect("print >> \"unclosed") {
+                Redirect::Bad(message) => message,
+                other => panic!("{other:?}"),
+            },
+        ];
+        for text in samples.into_iter().chain(refusals) {
+            let visible = plain(&text);
+            assert!(
+                !visible.contains('`'),
+                "a backtick reached the terminal: {visible:?}"
+            );
+            assert!(
+                !visible.contains('\u{2014}'),
+                "an em dash reached the terminal: {visible:?}"
+            );
+        }
+    }
+
+    #[test]
     fn banners_say_what_is_loaded_and_what_to_do() {
         let cold = welcome("1.52.4");
-        assert!(cold.contains("1.52.4"));
-        assert!(cold.contains("upload"));
-        assert!(cold.contains("upload_dir"), "a folder upload must be discoverable");
+        let visible = plain(&cold);
+        assert!(visible.contains("1.52.4"), "{visible}");
+        assert!(visible.contains("upload"), "{visible}");
+        assert!(visible.contains("upload_dir"), "a folder upload must be discoverable");
+        assert!(visible.contains("demo"), "the sample journal must be discoverable");
+        assert!(visible.contains("No journal is loaded yet."), "{visible}");
+        // A banner, not a sentence: the title carries weight, the asides recede.
+        assert!(cold.contains(BOLD) && cold.contains(DIM), "{cold:?}");
 
-        let back = resumed(3, "books/hledger.journal");
-        assert!(back.contains('3'));
-        assert!(back.contains("books/hledger.journal"));
+        let back = plain(&resumed(3, "books/hledger.journal"));
+        assert!(back.contains("Resumed 3 files"), "{back}");
+        assert!(back.contains("books/hledger.journal"), "{back}");
 
-        let up = files_arrived(
+        let up = plain(&files_arrived(
             "Uploaded",
             &["hledger.journal".to_string()],
             &[("logo.png".to_string(), "binary".to_string())],
             Some("hledger.journal"),
-        );
-        assert!(up.contains("Uploaded 1 file(s)"));
-        assert!(up.contains("skipped logo.png: binary"));
-        assert!(up.contains("hledger balance"));
+        ));
+        assert!(up.contains("Uploaded 1 file."), "{up}");
+        assert!(up.contains("skipped logo.png: binary"), "{up}");
+        assert!(up.contains("balance"), "{up}");
 
-        let nothing = files_arrived("Uploaded", &["data.csv".to_string()], &[], None);
-        assert!(nothing.contains("None of those looks like a journal"));
+        let nothing = plain(&files_arrived("Uploaded", &["data.csv".to_string()], &[], None));
+        assert!(nothing.contains("None of those is a journal"), "{nothing}");
+
+        // Two files, two plurals: "file(s)" is a form letter, not a terminal.
+        let two = plain(&files_arrived(
+            "Uploaded",
+            &["a.journal".to_string(), "b.journal".to_string()],
+            &[],
+            Some("a.journal"),
+        ));
+        assert!(two.contains("Uploaded 2 files."), "{two}");
     }
 
     fn lines(text: &[&str]) -> Vec<(usize, String)> {
@@ -2081,13 +2388,23 @@ mod tests {
 
     #[test]
     fn the_prompt_names_the_journal_without_eating_the_line() {
-        assert_eq!(prompt_for(Some("hledger.journal")), "hledger.journal $ ");
-        assert_eq!(prompt_for(Some("books/2024.journal")), "2024.journal $ ");
-        assert_eq!(prompt_for(Some("/data/deep/path.journal")), "path.journal $ ");
-        assert_eq!(prompt_for(None), "(no journal) $ ");
-        // A path with no name in it falls back to the plain prompt rather than a
-        // dangling separator.
-        assert_eq!(prompt_for(Some("books/")), "$ ");
+        // The visible text is what matters here; the styling around it is checked
+        // once, at the end, rather than repeated in every case.
+        assert_eq!(plain(&prompt_for(Some("hledger.journal"))), "hledger.journal » ");
+        assert_eq!(plain(&prompt_for(Some("books/2024.journal"))), "2024.journal » ");
+        assert_eq!(
+            plain(&prompt_for(Some("/data/deep/path.journal"))),
+            "path.journal » "
+        );
+        assert_eq!(plain(&prompt_for(None)), "no journal » ");
+        // A path with no name in it says the same as no journal at all, rather than
+        // leaving a dangling separator.
+        assert_eq!(plain(&prompt_for(Some("books/"))), "no journal » ");
+
+        // Dim for what is being read, the accent colour for the marker to type
+        // after: a flat `$ ` was the whole complaint.
+        let prompt = prompt_for(Some("2024.journal"));
+        assert!(prompt.contains(DIM) && prompt.contains(ACCENT), "{prompt:?}");
     }
 
     #[test]
@@ -2105,8 +2422,17 @@ mod tests {
 
     #[test]
     fn the_isearch_prompt_looks_like_the_one_people_know() {
-        assert_eq!(isearch_prompt("bal"), "(reverse-i-search)`bal\': ");
-        assert_eq!(isearch_prompt(""), "(reverse-i-search)`\': ");
+        // Readline's prompt in the terminal's own clothes: the state is dim, the
+        // query is bold, and a search that found nothing says so.
+        let found = isearch_prompt("bal", false);
+        assert_eq!(plain(&found), "(reverse-i-search) bal: ");
+        assert!(found.contains(BOLD), "{found:?}");
+
+        assert_eq!(plain(&isearch_prompt("", false)), "(reverse-i-search) : ");
+        assert_eq!(
+            plain(&isearch_prompt("bal", true)),
+            "(failed reverse-i-search) bal: "
+        );
     }
 
     #[test]
@@ -2136,7 +2462,7 @@ mod tests {
         assert!(note.contains("changed data/2024.journal (4.0 KB)"), "{note}");
         // And that it was kept, with the command that gets a copy.
         assert!(note.contains("saved"), "{note}");
-        assert!(note.contains("`download bal.csv`"), "{note}");
+        assert!(plain(&note).contains("download bal.csv"), "{note}");
     }
 
     #[test]
@@ -2300,7 +2626,7 @@ mod tests {
         // quotes the quote itself can.
         assert_eq!(tokenize("a\\ b").expect("tokens"), ["a b"]);
         assert_eq!(tokenize("\"a \\\"b\\\"\"").expect("tokens"), ["a \"b\""]);
-        // A single quote cannot be escaped inside single quotes — a shell cannot
+        // A single quote cannot be escaped inside single quotes, a shell cannot
         // either, and this refuses rather than guessing at what was meant.
         assert!(tokenize("'it\\'s'").is_err());
         // A backslash in single quotes is literal, as in a shell.
@@ -2399,7 +2725,7 @@ mod tests {
     #[test]
     fn the_append_note_says_what_landed_where() {
         let note = append_note("2024.journal", 12, 4096);
-        assert!(note.contains("12 line(s)"), "{note}");
+        assert!(note.contains("12 lines"), "{note}");
         assert!(note.contains("2024.journal"), "{note}");
         assert!(note.contains("4.0 KB"), "{note}");
     }
@@ -2412,10 +2738,13 @@ mod tests {
         assert_eq!(quoted("my file.journal"), "\"my file.journal\"");
 
         let note = wrote_note(&[("my file.csv".to_string(), 12, false)]);
-        assert!(note.contains("`download \"my file.csv\"`"), "{note}");
+        assert!(plain(&note).contains("download \"my file.csv\""), "{note}");
 
         let appended = append_note("my file.journal", 2, 40);
-        assert!(appended.contains("`print -f \"my file.journal\"`"), "{appended}");
+        assert!(
+            plain(&appended).contains("print -f \"my file.journal\""),
+            "{appended}"
+        );
     }
 
     #[test]
@@ -2457,9 +2786,14 @@ mod tests {
     #[test]
     fn the_file_list_marks_the_one_in_use() {
         let files = ["a.journal".to_string(), "b.journal".to_string()];
-        let text = file_list(&files, Some("b.journal"));
-        assert!(text.contains("  a.journal"));
-        assert!(text.contains(" * b.journal"));
-        assert!(file_list(&[], None).contains("No files uploaded"));
+        let text = plain(&file_list(&files, Some("b.journal")));
+        assert!(text.contains("2 files loaded"), "{text}");
+        assert!(text.contains("  a.journal"), "{text}");
+        assert!(text.contains(" * b.journal"), "{text}");
+        assert!(text.contains("journal <path>"), "{text}");
+
+        let empty = plain(&file_list(&[], None));
+        assert!(empty.contains("No journal files are loaded"), "{empty}");
+        assert!(empty.contains("upload"), "{empty}");
     }
 }

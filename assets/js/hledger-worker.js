@@ -1,5 +1,5 @@
 /**
- * hledger-anywhere — WASI worker.
+ * hledger-anywhere, WASI worker.
  *
  * Owns the hledger WebAssembly runtime and runs it off the main thread.
  *
@@ -10,7 +10,7 @@
  * Why this file exists instead of the published bridge: the `hledger-wasm`
  * package's own JavaScript bridge re-fetches and re-instantiates the ~18 MB
  * module on *every* call, and captures output with a line-buffered writer that
- * drops a trailing partial line — which would corrupt JSON that does not end in
+ * drops a trailing partial line, which would corrupt JSON that does not end in
  * a newline. Here the module is compiled once, and stdout/stderr are captured as
  * raw bytes.
  *
@@ -39,8 +39,8 @@ const DEFAULT_WASM_PATH = '/wasm/hledger.wasm';
  * report cannot depend on ambient state that does not exist under WASI.
  *
  * PATH is present, and empty apart from the root, because the real hledger CLI
- * *looks up* PATH rather than defaulting when it is missing — it scans for
- * add-on `hledger-*` executables — and the WASI shim turns a missing variable
+ * *looks up* PATH rather than defaulting when it is missing, it scans for
+ * add-on `hledger-*` executables, and the WASI shim turns a missing variable
  * into a hard failure ("env var \"PATH\" not found"). Pointing it at `/`, which
  * holds only the mounted journal files, means the lookup succeeds and finds no
  * add-ons, which is exactly right in a browser. The interim bridge never read
@@ -139,8 +139,8 @@ function ensureCompiled() {
  * Build the WASI filesystem for one run: the user's files, at their relative
  * paths, under a single `data` directory.
  *
- * Mounting the whole loaded directory — rather than writing one journal to a
- * fixed name — is what makes `include` directives, `.rules` files and CSV
+ * Mounting the whole loaded directory, rather than writing one journal to a
+ * fixed name, is what makes `include` directives, `.rules` files and CSV
  * imports resolve, because hledger can then open the referenced paths itself.
  *
  * The preopen is `/` and the files live under `data/`, which is the layout
@@ -193,7 +193,7 @@ function writtenFiles(root, mounted) {
   const record = (path, file) => {
     const contents = new TextDecoder('utf-8').decode(file.data ?? new Uint8Array(0));
     // Files under data/ are the uploaded ones: only worth reporting if the run
-    // changed them. Anything else the run created is news by definition —
+    // changed them. Anything else the run created is news by definition , 
     // including a file at the mount root, which is where a relative `-o` lands.
     const uploaded = path.startsWith('data/') ? path.slice('data/'.length) : null;
     if (uploaded === null || mounted.get(uploaded) !== contents) {
@@ -273,7 +273,7 @@ async function run(request) {
   let exitCode = 0;
   try {
     // `start` calls `_start` and turns a proc_exit into a return value, so the
-    // real exit code is available — unlike a bare `_start()` call, which throws
+    // real exit code is available, unlike a bare `_start()` call, which throws
     // and would make a failed report look like a successful one.
     exitCode = wasi.start(instance);
   } catch (error) {

@@ -155,7 +155,7 @@ fi
 # --- 4. nothing available --------------------------------------------------
 rm -f "$dest" 2>/dev/null || true
 warn ""
-warn "hledger.wasm is NOT available — the app will build and run, but the"
+warn "hledger.wasm is NOT available, the app will build and run, but the"
 warn "terminal will report that the engine is missing."
 warn ""
 warn "To build the real hledger CLI for WebAssembly (recommended):"

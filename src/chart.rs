@@ -5,7 +5,7 @@
 //! there is nowhere to draw it but the terminal the app already has.
 //!
 //! The input is hledger's own CSV (`-O csv`), which is the only format that keeps
-//! the structure — accounts, periods and amounts — without parsing a text table
+//! the structure, accounts, periods and amounts, without parsing a text table
 //! whose columns move. Two shapes matter, and they are different questions:
 //!
 //!   * Two columns (a label and one amount per row) is a **ranking**: horizontal

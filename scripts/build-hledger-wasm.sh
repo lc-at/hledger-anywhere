@@ -92,8 +92,8 @@ fi
 #
 # WASI has no threads to hand out in any case, so the threaded RTS is not
 # something this build could use: dropping the flag selects the RTS that
-# actually exists. The rest of the stanza — `-with-rtsopts=-T`, which only turns
-# on RTS statistics — is unaffected.
+# actually exists. The rest of the stanza, `-with-rtsopts=-T`, which only turns
+# on RTS statistics, is unaffected.
 #
 # Done with sed rather than by editing vendor/hledger, because vendor/ is a
 # pristine, gitignored clone of the upstream tag and should stay that way. It is
@@ -137,7 +137,7 @@ cp "$built" "$OUT"
 # would have to be stored if the artifact is ever committed instead of fetched.
 #
 # Optional, because binaryen is not guaranteed to be present: without it the
-# build still produces a correct, just larger, artifact — and says so.
+# build still produces a correct, just larger, artifact, and says so.
 WASM_OPT=$(command -v wasm-opt 2>/dev/null || true)
 if [ -z "$WASM_OPT" ]; then
     for candidate in \
@@ -169,7 +169,7 @@ fi
 size=$(wc -c <"$OUT" | tr -d ' ')
 # Plain if/elif rather than `sha=$(A || B) | cut`: that form puts the assignment
 # on the left of a pipeline, so it lands in a subshell and the variable is still
-# unset afterwards — which `set -u` then reports as "parameter not set".
+# unset afterwards, which `set -u` then reports as "parameter not set".
 if command -v sha256sum >/dev/null 2>&1; then
     sha=$(sha256sum "$OUT" | cut -d' ' -f1)
 elif command -v shasum >/dev/null 2>&1; then

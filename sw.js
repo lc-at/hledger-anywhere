@@ -7,7 +7,7 @@
  *
  * The cache name comes from the URL the page registered with, which carries the
  * engine's SHA-256. A new engine means a new name, so the old cache is dropped on
- * activation rather than lingering as a half-stale mixture — and the engine's URL
+ * activation rather than lingering as a half-stale mixture, and the engine's URL
  * carries the same checksum, which is what makes it safe to serve from the cache
  * without ever revalidating.
  *

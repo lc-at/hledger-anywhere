@@ -7,8 +7,8 @@
 //! Two structural notes, because both are load-bearing:
 //!
 //! * **The picker opens synchronously, inside the key handler.** A file dialog
-//!   opened after an `await` is refused by the browser *silently* — no error, no
-//!   dialog, a promise that never settles — so `upload` calls
+//!   opened after an `await` is refused by the browser *silently*, no error, no
+//!   dialog, a promise that never settles, so `upload` calls
 //!   [`upload::open_picker`] before anything is spawned. See that module.
 //! * **Input typed while a command runs is buffered, not dropped.** The engine
 //!   runs one command at a time and cannot be interrupted, so the honest thing is
@@ -32,7 +32,9 @@ use crate::terminal::view::Screen;
 use crate::upload::{self, Picked};
 
 /// The prompt while journal text is being typed, as a shell continues a line.
-const BLOCK_PROMPT: &str = "> ";
+fn block_prompt() -> String {
+    format!("{} {} ", terminal::dim("..."), terminal::accent("»"))
+}
 
 /// `localStorage` key for the terminal font size.
 const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
@@ -43,7 +45,7 @@ const ALIAS_KEY: &str = "hledger-anywhere.terminal.aliases.v1";
 /// `localStorage` key marking that a `connect` is waiting to come back.
 ///
 /// The library claims the access token from the URL fragment when it starts, and it
-/// only starts when a remote command runs — which is too late: the fragment is gone
+/// only starts when a remote command runs, which is too late: the fragment is gone
 /// by then and the connection with it. This flag says "someone is expected back", so
 /// the next page load starts the library immediately.
 const REMOTE_PENDING_KEY: &str = "hledger-anywhere.remote.pending.v1";
@@ -73,7 +75,7 @@ type Listener<T> = RefCell<Option<wasm_bindgen::closure::Closure<T>>>;
 ///
 /// Held apart from the editor because it is a mode: while it is on, keys narrow
 /// the query instead of editing the line, which is the whole point of an
-/// incremental search — you keep typing until the line you want appears.
+/// incremental search, you keep typing until the line you want appears.
 struct ISearch {
     query: String,
     /// Index in the history of the match being shown, for the next Ctrl+R.
@@ -194,8 +196,9 @@ async fn read_remote(
             bytes += contents.len();
             if bytes > MAX_REMOTE_BYTES {
                 return Err(remote::client::RemoteError::Failed(format!(
-                    "that is more than {} MB of journal; `remote <folder>` loads a smaller part",
-                    MAX_REMOTE_BYTES / (1024 * 1024)
+                    "that is more than {} MB of journal. {} loads a smaller part.",
+                    MAX_REMOTE_BYTES / (1024 * 1024),
+                    terminal::bold("remote <folder>")
                 )));
             }
             picked.files.push(JournalFile::new(path, contents));
@@ -374,9 +377,8 @@ impl App {
     fn prompt(&self) {
         let editor = self.editor.borrow();
         let prompt = match self.isearch.borrow().as_ref() {
-            Some(search) if search.failed => format!("(failed reverse-i-search)`{}': ", search.query),
-            Some(search) => terminal::isearch_prompt(&search.query),
-            None if self.block.borrow().is_some() => BLOCK_PROMPT.to_string(),
+            Some(search) => terminal::isearch_prompt(&search.query, search.failed),
+            None if self.block.borrow().is_some() => block_prompt(),
             None => self.prompt_text(),
         };
         self.screen
@@ -403,7 +405,7 @@ impl App {
     /// What the prompt says right now: the journal being read, then `$ `.
     ///
     /// Used for drawing *and* for noting the command echo as the app's own line, so
-    /// the two can never disagree — a mismatch there would leave the echo
+    /// the two can never disagree, a mismatch there would leave the echo
     /// searchable and the match count would climb.
     fn prompt_text(&self) -> String {
         terminal::prompt_for(self.main.borrow().as_deref())
@@ -493,8 +495,8 @@ impl App {
 
     /// `chart [args]`: run a report and draw it.
     ///
-    /// The default asks the question a chart is usually asked — what did the months
-    /// cost — and any argument overrides it. `-O csv` is added because it is the
+    /// The default asks the question a chart is usually asked, what did the months
+    /// cost, and any argument overrides it. `-O csv` is added because it is the
     /// only output that keeps accounts, periods and amounts apart without parsing a
     /// text table whose columns move; a caller who asked for a format keeps theirs.
     fn run_chart(self: &Rc<App>, arguments: &str) {
@@ -546,12 +548,14 @@ impl App {
 
                 if lines.is_empty() {
                     if output.is_failure() {
-                        self.output(&output.stderr, Some("\u{1b}[31m"));
+                        self.output(&output.stderr, Some(terminal::RED));
                     } else {
                         self.say(&format!(
-                            "Nothing to draw: `{command}` gave no amounts. Chart a \
-                             filtered report, like `chart balance expenses -M` or \
-                             `chart balance --depth 2`."
+                            "Nothing to draw: {} gave no amounts. Chart a filtered \
+                             report, like {} or {}.",
+                            terminal::bold(command),
+                            terminal::bold("chart balance expenses -M"),
+                            terminal::bold("chart balance --depth 2")
                         ));
                     }
                 } else {
@@ -567,12 +571,12 @@ impl App {
                         output.exit_code,
                         output.ms / 1000.0
                     );
-                    self.block(&status, Some("\u{1b}[2;31m"));
+                    self.block(&status, Some(terminal::DIM_RED));
                     self.remember_chatter(&status);
                 }
             }
             Err(EngineError::Cancelled) => self.say("[cancelled]"),
-            Err(error) => self.block(&error.to_string(), Some("\u{1b}[31m")),
+            Err(error) => self.block(&error.to_string(), Some(terminal::RED)),
         }
 
         self.busy.set(false);
@@ -692,6 +696,10 @@ impl App {
     /// a cursor position read straight after a write is stale, and a stale range
     /// silently searches the wrong lines. Comparing text cannot go stale.
     fn remember_chatter(&self, text: &str) {
+        // The record has to be the *visible* line: xterm's buffer holds no escape
+        // sequences, so a record that kept them would never match the screen and the
+        // app's own messages would become searchable again.
+        let text = terminal::plain(text);
         let mut chatter = self.chatter.borrow_mut();
         for line in text.lines() {
             let line = line.trim();
@@ -717,7 +725,7 @@ impl App {
             self.screen.write("\r\n");
         }
         if style.is_some() {
-            self.screen.write("\u{1b}[0m");
+            self.screen.write(terminal::RESET);
         }
     }
 
@@ -942,7 +950,7 @@ impl App {
         // and a blank one is content too: blank lines separate entries.
         if self.block.borrow().is_some() {
             let line = taken.unwrap_or_default();
-            self.remember_chatter(&format!("{BLOCK_PROMPT}{line}"));
+            self.remember_chatter(&format!("{}{line}", block_prompt()));
             self.screen.write("\r\n");
             if terminal::ends_block(&line) {
                 self.finish_block();
@@ -958,8 +966,8 @@ impl App {
         let Some(mut line) = taken else {
             // An empty line is a command too, and the one a terminal is most
             // often given: it prints a fresh prompt line, as a shell does.
-            // Redrawing in place would be invisible — the prompt is already there
-            // — so pressing Enter appeared to do nothing.
+            // Redrawing in place would be invisible, the prompt is already there
+            //, so pressing Enter appeared to do nothing.
             self.screen.write("\r\n");
             self.prompt();
             return;
@@ -1022,7 +1030,10 @@ impl App {
         // An append only means something for a command that prints journal text.
         // Saying so beats silently ignoring the `>>`, which would lose the output.
         if append.is_some() && !matches!(terminal::classify(&line), Command::Hledger(_)) {
-            self.announce("`>>` appends what an hledger command prints. Give it one to run.");
+            self.announce(&format!(
+                "{} appends what an hledger command prints. Give it one to run.",
+                terminal::bold(">>")
+            ));
             return;
         }
 
@@ -1049,16 +1060,22 @@ impl App {
                 }
             }
             Command::Unalias(None) => {
-                self.announce("Which one? `unalias <name>`, or `alias` to list them.");
+                self.announce(&format!(
+                    "Which one? {}, or {} to list them.",
+                    terminal::bold("unalias <name>"),
+                    terminal::bold("alias")
+                ));
             }
             Command::Connect(Some(address)) => {
                 if let Some(address) = self.single(address) {
                     self.connect_remote(&address);
                 }
             }
-            Command::Connect(None) => self.announce(
-                "Which account? `connect user@host` — for example `connect you@5apps.com`.",
-            ),
+            Command::Connect(None) => self.announce(&format!(
+                "Which account? Use {} for example {}.",
+                terminal::bold("connect user@host"),
+                terminal::bold("connect you@5apps.com")
+            )),
             Command::Disconnect => self.disconnect_remote(),
             Command::Remote(None) => self.load_remote(""),
             Command::Remote(Some(path)) => {
@@ -1081,21 +1098,24 @@ impl App {
                 // The list message already explains an empty session, so it is
                 // not repeated here.
                 self.announce(&format!(
-                    "Which file? `put <path>`.\n{}",
+                    "Which file? {}.\n{}",
+                    terminal::bold("put <path>"),
                     terminal::download_list(&names)
                 ));
             }
             Command::Font(None) => self.announce(&format!(
-                "The font is {}px ({} to {}). `font 18` changes it; so do Ctrl+=, \
-                 Ctrl+- and Ctrl+0.",
+                "The font is {}px, between {} and {}. {} changes it, and so do \
+                 Ctrl+=, Ctrl+- and Ctrl+0.",
                 self.font.get(),
                 terminal::MIN_FONT,
-                terminal::MAX_FONT
+                terminal::MAX_FONT,
+                terminal::bold("font 18")
             )),
             Command::ScreenReader(None) => self.announce(&format!(
-                "The accessibility tree is {}. `screenreader {}` changes it; it is \
+                "The accessibility tree is {}. {} turns it {}; the setting is \
                  remembered between visits.",
                 if self.screen_reader.get() { "on" } else { "off" },
+                terminal::bold("screenreader"),
                 if self.screen_reader.get() { "off" } else { "on" }
             )),
             Command::Append(Some(target)) => {
@@ -1103,10 +1123,12 @@ impl App {
                     self.start_block(&target);
                 }
             }
-            Command::Append(None) => self.announce(
-                "Which file? `append data/2024.journal` — then type or paste the \
-                 entries, and a line with just `.` to finish.",
-            ),
+            Command::Append(None) => self.announce(&format!(
+                "Which file? For example {}, then type or paste the entries, and \
+                 finish with a line containing only {}.",
+                terminal::bold("append data/2024.journal"),
+                terminal::bold(".")
+            )),
             Command::Chart(None) => self.run_chart(""),
             Command::Chart(Some(arguments)) => self.run_chart(arguments),
             Command::ScreenReader(Some(wanted)) => {
@@ -1159,7 +1181,7 @@ impl App {
     /// One argument with its quoting removed, or a complaint about why not.
     ///
     /// The app's own commands take a single path, address or number. A path can
-    /// have a space in it — an uploaded file is named whatever it was named — so
+    /// have a space in it, an uploaded file is named whatever it was named, so
     /// `journal "my file.journal"` has to mean that file, and `journal a b` has to
     /// say so rather than quietly reading `a`.
     fn single(self: &Rc<App>, rest: &str) -> Option<String> {
@@ -1172,7 +1194,7 @@ impl App {
         }
     }
 
-    /// Files arrive three ways — picked, dropped, read from an account — and this
+    /// Files arrive three ways, picked, dropped, read from an account, and this
     /// is the one place that mounts them, so the states it sets (files, main
     /// journal, cache, engine configuration) cannot drift between them.
     fn accept_files(self: &Rc<App>, picked: Picked, source: &str) {
@@ -1230,7 +1252,7 @@ impl App {
         let Some(file) = files.iter().find(|file| file.path == path) else {
             drop(files);
             let text = terminal::file_list(&self.paths(), self.main.borrow().as_deref());
-            self.announce(&format!("No uploaded file is called `{path}`.\n{text}"));
+            self.announce(&format!("No loaded file is called {}.\n{text}", terminal::bold(path)));
             return;
         };
         let path = file.path.clone();
@@ -1240,7 +1262,9 @@ impl App {
         self.remember();
         self.configure();
         self.announce(&format!(
-            "Now reading `{path}`. Try `hledger balance`."
+            "Now reading {}. Type {} for a report.",
+            terminal::bold(&path),
+            terminal::bold("balance")
         ));
     }
 
@@ -1248,7 +1272,7 @@ impl App {
     ///
     /// The journal is what makes a bare `hledger balance` work: hledger reads
     /// `$LEDGER_FILE` when no `-f` is given. The size is what it formats reports
-    /// to — hledger asks the terminal, WASI cannot answer, and the wasm build's
+    /// to, hledger asks the terminal, WASI cannot answer, and the wasm build's
     /// terminal-size stub reads `$COLUMNS`/`$LINES` instead, so the size has to be
     /// in the environment before every run. Called at startup, after an upload,
     /// and on every resize.
@@ -1272,7 +1296,7 @@ impl App {
     /// Stop the running command by throwing the engine's worker away.
     ///
     /// The worker is replaced on the next run, so the environment has to be given
-    /// to it again — a new worker knows nothing about the journal or the terminal
+    /// to it again, a new worker knows nothing about the journal or the terminal
     /// size.
     fn cancel(self: &Rc<App>) {
         let app = Rc::clone(self);
@@ -1318,7 +1342,7 @@ impl App {
                     self.output(&visible, None);
                 }
                 if !output.stderr.trim().is_empty() {
-                    self.output(&output.stderr, Some("\u{1b}[31m"));
+                    self.output(&output.stderr, Some(terminal::RED));
                 }
                 if let Some(note) = note {
                     self.say(&note);
@@ -1331,14 +1355,14 @@ impl App {
                         output.ms / 1000.0
                     );
                     // The terminal's own exit status, but still the app talking.
-                    self.block(&status, Some("\u{1b}[2;31m"));
+                    self.block(&status, Some(terminal::DIM_RED));
                     self.remember_chatter(&status);
                 }
             }
             // Stopping a command is not a failure: the terminal already printed
             // the ^C, and an error message would read as though something broke.
             Err(EngineError::Cancelled) => self.say("[cancelled]"),
-            Err(error) => self.block(&error.to_string(), Some("\u{1b}[31m")),
+            Err(error) => self.block(&error.to_string(), Some(terminal::RED)),
         }
 
         self.settle();
@@ -1361,7 +1385,7 @@ impl App {
     /// Append what a command printed to a loaded file.
     ///
     /// The command ran against the files as they were, and its output is journal
-    /// text — that is what `import`, `print` and `rewrite` produce — so the file
+    /// text, that is what `import`, `print` and `rewrite` produce, so the file
     /// grows by exactly what was on stdout, well-formed at the join.
     fn append_output(self: &Rc<App>, path: &str, target: &str, output: &HledgerOutput) {
         let existing = self
@@ -1518,7 +1542,11 @@ impl App {
                     aliases.sort_by(|left, right| left.0.cmp(&right.0));
                 }
                 save_aliases(&self.aliases.borrow());
-                self.announce(&format!("`{name}` now runs `{expansion}`."));
+                self.announce(&format!(
+                    "{} now runs {}.",
+                    terminal::bold(&name),
+                    terminal::bold(&expansion)
+                ));
             }
         }
     }
@@ -1532,17 +1560,17 @@ impl App {
         };
         if !removed {
             let listing = terminal::alias_list(&self.aliases.borrow());
-            self.announce(&format!("No alias called `{name}`.\n{listing}"));
+            self.announce(&format!("No alias called {}.\n{listing}", terminal::bold(name)));
             return;
         }
         save_aliases(&self.aliases.borrow());
-        self.announce(&format!("Removed `{name}`."));
+        self.announce(&format!("Removed {}.", terminal::bold(name)));
     }
 
     /// `connect user@host`: start connecting a remoteStorage account.
     ///
     /// This ends in a redirect to the provider's consent screen and back, so the
-    /// message has to be printed before anything else happens — after the redirect
+    /// message has to be printed before anything else happens, after the redirect
     /// there is nobody left to print it.
     fn connect_remote(self: &Rc<App>, address: &str) {
         let app = Rc::clone(self);
@@ -1553,7 +1581,7 @@ impl App {
             let _ = storage.set_item(REMOTE_PENDING_KEY, "on");
         }
         self.announce(&format!(
-            "Connecting {address} — your browser will leave this page for the \
+            "Connecting {address}, your browser will leave this page for the \
              provider's consent screen and come back."
         ));
         spawn_local(async move {
@@ -1609,13 +1637,17 @@ impl App {
         }
         match address {
             Some(address) => self.announce(&format!(
-                "Connected to {address}. `remote` loads your journals; `put` saves \
-                 files back."
+                "Connected to {address}. {} loads your journals, and {} saves files \
+                 back to the account.",
+                terminal::bold("remote"),
+                terminal::bold("put")
             )),
-            None => self.announce(
-                "Connected to your storage account. `remote` loads your journals; \
-                 `put` saves files back.",
-            ),
+            None => self.announce(&format!(
+                "Connected to your storage account. {} loads your journals, and {} \
+                 saves files back to it.",
+                terminal::bold("remote"),
+                terminal::bold("put")
+            )),
         }
         self.prompt();
     }
@@ -1624,10 +1656,11 @@ impl App {
     /// files already loaded keep working.
     fn disconnect_remote(self: &Rc<App>) {
         match remote::client::Account::disconnect() {
-            Ok(()) => self.announce(
-                "Disconnected. The files already loaded stay loaded; `connect` \
-                 brings the account back.",
-            ),
+            Ok(()) => self.announce(&format!(
+                "Disconnected. The files already loaded stay loaded; {} brings the \
+                 account back.",
+                terminal::bold("connect")
+            )),
             Err(error) => self.announce(&error.message()),
         }
     }
@@ -1662,7 +1695,9 @@ impl App {
             names.sort();
             names.dedup();
             self.announce(&format!(
-                "Nothing called `{path}` is loaded. `journal` lists what is.\n{}",
+                "Nothing called {} is loaded. {} lists what is.\n{}",
+                terminal::bold(path),
+                terminal::bold("journal"),
                 terminal::download_list(&names)
             ));
             return;
@@ -1670,13 +1705,16 @@ impl App {
 
         let app = Rc::clone(self);
         self.announce(&format!(
-            "Saving `{}` ({} bytes) to your storage account…",
-            file.path,
+            "Saving {} ({} bytes) to your storage account…",
+            terminal::bold(&file.path),
             file.contents.len()
         ));
         spawn_local(async move {
             match write_remote(&file).await {
-                Ok(where_to) => app.announce(&format!("Saved `{}` to {where_to}.", file.path)),
+                Ok(where_to) => app.announce(&format!(
+                    "Saved {} to {where_to}.",
+                    terminal::bold(&file.path)
+                )),
                 Err(error) => app.announce(&error.message()),
             }
         });
@@ -1718,8 +1756,8 @@ impl App {
     /// Take files dropped anywhere on the page.
     ///
     /// One listener for all three drag events: they differ only in what should
-    /// happen, and the browser's own behaviour — navigating away to show a dropped
-    /// file — has to be suppressed on all of them, or a drop that misses the
+    /// happen, and the browser's own behaviour, navigating away to show a dropped
+    /// file, has to be suppressed on all of them, or a drop that misses the
     /// terminal loses the app.
     fn drop_target(self: &Rc<App>) {
         let app = Rc::clone(self);
@@ -1783,7 +1821,10 @@ impl App {
             match self.last_search.borrow().clone() {
                 Some(previous) => previous,
                 None => {
-                    self.announce("Nothing to repeat yet — `/text` searches the output.");
+                    self.announce(&format!(
+                "Nothing to repeat yet. {} searches the output.",
+                terminal::bold("/text")
+            ));
                     return;
                 }
             }
@@ -1799,7 +1840,10 @@ impl App {
     /// `n` and `N`: repeat the last search, forwards or backwards.
     fn search_again(self: &Rc<App>, backwards: bool) {
         let Some(term) = self.last_search.borrow().clone() else {
-            self.announce("Nothing to repeat yet — `/text` searches the output.");
+            self.announce(&format!(
+                "Nothing to repeat yet. {} searches the output.",
+                terminal::bold("/text")
+            ));
             return;
         };
         self.find(&term, backwards);
@@ -1840,7 +1884,7 @@ impl App {
                     hit.index, hit.total
                 ));
             }
-            None => self.announce(&format!("No match for `{term}`.")),
+            None => self.announce(&format!("No match for {}.", terminal::bold(term))),
         }
     }
 
@@ -1856,22 +1900,25 @@ impl App {
             let names: Vec<String> =
                 self.written.borrow().iter().map(|file| file.path.clone()).collect();
             let text = terminal::download_list(&names);
-            self.announce(&format!("Nothing called `{path}` was written.\n{text}"));
+            self.announce(&format!("Nothing called {} was written.\n{text}", terminal::bold(path)));
             return;
         };
         match save_to_disk(&file) {
             Ok(()) => self.announce(&format!(
-                "Saving `{}` ({} bytes) — check your downloads.",
-                file.path,
+                "Saving {} ({} bytes). Check your downloads.",
+                terminal::bold(&file.path),
                 file.contents.len()
             )),
-            Err(reason) => self.announce(&format!("Could not save `{}`: {reason}", file.path)),
+            Err(reason) => self.announce(&format!(
+                    "Could not save {}: {reason}",
+                    terminal::bold(&file.path)
+                )),
         }
     }
 
     /// Ask the engine for the account names, once, so Tab can complete them.
     ///
-    /// On a large journal this is a whole run — several seconds — so it happens
+    /// On a large journal this is a whole run, several seconds, so it happens
     /// when someone first presses Tab rather than at startup, and it says so.
     fn fetch_accounts(self: &Rc<App>) {
         let files = self.files.borrow().clone();
@@ -1893,7 +1940,7 @@ impl App {
                         .collect();
                     let count = names.len();
                     *app.accounts.borrow_mut() = Some(names);
-                    app.announce(&format!("{count} account names ready — press Tab again."));
+                    app.announce(&format!("{count} account names ready, press Tab again."));
                 }
                 Ok(output) => app.announce(&output.failure_message()),
                 Err(error) => app.announce(&error.to_string()),
@@ -1967,7 +2014,7 @@ async fn boot(app: Rc<App>) {
 
 /// The command line to hand the engine.
 ///
-/// The user's words, with a leading `hledger` accepted and dropped — that is how
+/// The user's words, with a leading `hledger` accepted and dropped, that is how
 /// the command looks in a shell, and people paste commands. Nothing else is added:
 /// the journal comes from `$LEDGER_FILE`, so what runs is what was typed.
 fn argv_for(command: &str) -> Result<Vec<String>, String> {

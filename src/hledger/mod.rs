@@ -3,7 +3,7 @@
 //! One engine: the real hledger CLI built for wasm32-wasi, pinned by `wasm.lock`
 //! and driven through `window.hledgerWasi`. The interim npm "bridge" artifact and
 //! the argv dialect it needed are gone, which is why nothing here converts a
-//! declarative report into a command line — the user types the command line.
+//! declarative report into a command line, the user types the command line.
 //!
 //! The types are plain data and the module compiles natively, so the parts worth
 //! testing (what counts as a failure, what a failure says) are covered by
@@ -71,7 +71,7 @@ impl HledgerOutput {
     /// Whether this run should be treated as a failure.
     ///
     /// A non-zero exit is the obvious case. The subtle one is hledger exiting 0
-    /// with something on stderr and nothing on stdout — a warning that is really
+    /// with something on stderr and nothing on stdout, a warning that is really
     /// the whole story, which the terminal should colour as an error.
     pub fn is_failure(&self) -> bool {
         self.exit_code != 0 || (!self.stderr.trim().is_empty() && self.stdout.trim().is_empty())
@@ -123,7 +123,7 @@ impl HledgerRequest {
 
 /// Compile the module ahead of the first command.
 ///
-/// Optional — a run compiles on demand — but doing it up front means the first
+/// Optional, a run compiles on demand, but doing it up front means the first
 /// command is not the thing that waits for the whole 13 MB download.
 #[cfg(target_arch = "wasm32")]
 pub async fn init() -> Result<(), EngineError> {

@@ -2,8 +2,8 @@
 //!
 //! This module is the only place that talks to `window.hledgerWasi`, published
 //! by `assets/js/hledger-wasi.js`. Keeping the boundary this thin means the rest
-//! of the app sees a plain Rust `async fn`, and the JS side can be changed — or
-//! replaced by a different WASI host — without touching callers.
+//! of the app sees a plain Rust `async fn`, and the JS side can be changed, or
+//! replaced by a different WASI host, without touching callers.
 //!
 //! Everything goes through `js_sys::Reflect` rather than
 //! `#[wasm_bindgen(module = ...)]`. That is deliberate: the generated import
@@ -170,7 +170,7 @@ fn string_array(value: &JsValue) -> Vec<String> {
 
 /// Compile the module ahead of the first command.
 ///
-/// Optional — `run` compiles on demand — but doing it up front means the first
+/// Optional, `run` compiles on demand, but doing it up front means the first
 /// command is not the thing that has to wait for the whole download.
 pub async fn init() -> Result<(), EngineError> {
     let bridge = bridge().await?;
@@ -182,7 +182,7 @@ pub async fn init() -> Result<(), EngineError> {
 /// `ledger_file` is what lets the user type `hledger balance` with no `-f`:
 /// hledger reads `$LEDGER_FILE` when no file is given. `columns` and `lines` are
 /// the terminal's size, which hledger needs because it formats reports to the
-/// width of the terminal it is running in and WASI gives it no way to ask — the
+/// width of the terminal it is running in and WASI gives it no way to ask, the
 /// wasm build's terminal-size stub reads them from the environment instead. The
 /// worker builds the environment; passing `None` for anything clears it.
 pub async fn configure(

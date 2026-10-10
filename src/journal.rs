@@ -1,8 +1,8 @@
 //! Choosing which uploaded file hledger should read.
 //!
 //! Pure: no browser, no engine. Uploading a folder of journal files raises a
-//! question the user should not have to answer every time — *which one is the
-//! journal?* — and getting it wrong produces hledger's "no such file" rather than
+//! question the user should not have to answer every time, *which one is the
+//! journal?*, and getting it wrong produces hledger's "no such file" rather than
 //! a report, so the rules are worth stating once and testing here rather than
 //! being buried in the upload handler.
 //!
@@ -120,7 +120,7 @@ pub fn choose_main(files: &[JournalFile]) -> Option<String> {
 /// `journal <path>` stays short, if paths are relative to what was actually
 /// chosen rather than repeating the folder name.
 ///
-/// Only stripped when *every* file agrees on the first component — which is what
+/// Only stripped when *every* file agrees on the first component, which is what
 /// distinguishes a chosen folder from a set of files that happen to share a
 /// prefix.
 pub fn strip_common_root(files: &mut [JournalFile]) {

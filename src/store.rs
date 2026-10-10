@@ -6,7 +6,7 @@
 //! remains the user's files on disk: nothing in this module is authoritative, and
 //! no caller may treat a store failure as an error state. A missing, empty, stale
 //! or undecodable snapshot must degrade to exactly the experience of a first
-//! visit — "type upload" — while a browser with no usable IndexedDB (private
+//! visit, "type upload", while a browser with no usable IndexedDB (private
 //! mode, storage disabled, quota exhausted) must behave as though persistence had
 //! never been requested.
 //!
@@ -18,8 +18,8 @@
 //!
 //! Database `hledger-anywhere`, version 1, with two object stores:
 //!
-//! * `files` — keyed by `path`; one record per mounted file.
-//! * `meta` — keyed by `key`; one `terminal_session` record naming the journal.
+//! * `files`, keyed by `path`; one record per mounted file.
+//! * `meta`, keyed by `key`; one `terminal_session` record naming the journal.
 //!
 //! This is the same database and the same `files` shape the earlier panel-based
 //! app used, deliberately and without a version bump: a visitor who already has a

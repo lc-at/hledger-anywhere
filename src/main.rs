@@ -1,4 +1,4 @@
-//! hledger-anywhere — a terminal for hledger, running entirely in the browser.
+//! hledger-anywhere, a terminal for hledger, running entirely in the browser.
 //!
 //! # Module layout
 //!
@@ -6,10 +6,10 @@
 //! convention so a `web_sys` import cannot leak into logic that should be
 //! testable on the host:
 //!
-//! * **Pure modules** — [`terminal`] (the line editor, the command vocabulary,
+//! * **Pure modules**, [`terminal`] (the line editor, the command vocabulary,
 //!   the text printed around output), [`journal`] (which uploaded file hledger
 //!   should read), and [`hledger`]'s types. These are covered by `cargo test`.
-//! * **Browser modules** — [`app`], [`terminal::view`] (xterm.js), [`upload`]
+//! * **Browser modules**, [`app`], [`terminal::view`] (xterm.js), [`upload`]
 //!   (the file picker), [`store`] (IndexedDB) and `hledger::bridge`.
 //!
 //! There is one thing in the app: a terminal. The engine is the real hledger CLI

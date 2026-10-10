@@ -9,7 +9,7 @@
 //! build step, and a handful of globals do not justify adding one. The fit addon
 //! is reached through `Reflect` because its global is a namespace object
 //! (`FitAddon.FitAddon`), which the `wasm_bindgen` macro cannot spell; the buffer
-//! is read the same way for the same reason — xterm's scrollback API is deep and
+//! is read the same way for the same reason, xterm's scrollback API is deep and
 //! mostly untyped, and searching it is the app's job, not an addon's.
 
 use js_sys::{Array, Function, Object, Reflect};
@@ -101,7 +101,7 @@ impl Screen {
     /// The terminal's size in character cells.
     ///
     /// hledger formats its reports to the width of the terminal it is running in,
-    /// and the only way to tell it is through the environment — see
+    /// and the only way to tell it is through the environment, see
     /// [`Screen::size`]'s callers and `hledger-wasm/terminal-size-stub`.
     pub fn size(&self) -> (u32, u32) {
         (self.terminal.cols(), self.terminal.rows())
@@ -126,7 +126,7 @@ impl Screen {
     ///
     /// Without it the terminal is a canvas of rows and a screen reader can say
     /// nothing useful about it. xterm watches this option specifically, so it can
-    /// be changed at runtime — `cols` and `rows` are the only options that cannot.
+    /// be changed at runtime, `cols` and `rows` are the only options that cannot.
     pub fn set_screen_reader(&self, on: bool) {
         if let Ok(options) = Reflect::get(&self.terminal, &JsValue::from_str("options")) {
             let _ = Reflect::set(
@@ -152,7 +152,7 @@ impl Screen {
     /// The whole scrollback, oldest first, as plain text.
     ///
     /// This is what the search reads, including the lines that have scrolled off
-    /// screen — which is the whole reason to search a terminal. The app decides
+    /// screen, which is the whole reason to search a terminal. The app decides
     /// which of these rows are engine output; see `App::output_rows`.
     pub fn lines(&self) -> Vec<String> {
         let Some(active) = self.buffer() else {
@@ -192,7 +192,7 @@ impl Screen {
             return;
         };
         // `select` works in viewport coordinates, so the row has to be converted
-        // after scrolling — otherwise every match above the fold selects the
+        // after scrolling, otherwise every match above the fold selects the
         // wrong line.
         let viewport = self
             .buffer()

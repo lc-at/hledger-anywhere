@@ -2,8 +2,8 @@
 #
 # This file is the single source of truth for *which* hledger WASM binary the
 # app runs against. It is read by:
-#   * scripts/fetch-hledger-wasm.sh  — resolves/verifies assets/wasm/hledger.wasm
-#   * build.rs                       — bakes the values in as compile-time env
+#   * scripts/fetch-hledger-wasm.sh , resolves/verifies assets/wasm/hledger.wasm
+#   * build.rs                      , bakes the values in as compile-time env
 #                                      vars, so the terminal can report exactly
 #                                      what it is running and whether it matches
 #
@@ -18,7 +18,7 @@
 # arrives, so a wrong, stale or tampered upload is rejected rather than run.
 #
 # Publishing a new engine (which needs the GitHub API, hence CI rather than a
-# developer machine — see .github/workflows/publish-engine.yml):
+# developer machine, see .github/workflows/publish-engine.yml):
 #
 #   sh scripts/build-hledger-wasm.sh     # writes artifacts/hledger.wasm and
 #                                        # prints its size and SHA-256

@@ -42,7 +42,10 @@ impl RemoteError {
             }
             RemoteError::Call(what) => format!("the remoteStorage library would not {what}"),
             RemoteError::NotConnected => {
-                "no storage account is connected. `connect user@host` starts that.".to_string()
+                format!(
+                    "no storage account is connected. {} starts that.",
+                    crate::terminal::bold("connect user@host")
+                )
             }
             RemoteError::Failed(reason) => reason.clone(),
         }
@@ -57,13 +60,13 @@ fn window() -> Result<JsValue, RemoteError> {
 
 fn get(target: &JsValue, name: &str) -> Result<JsValue, RemoteError> {
     Reflect::get(target, &JsValue::from_str(name))
-        .map_err(|_| RemoteError::Call(format!("read `{name}`")))
+        .map_err(|_| RemoteError::Call(format!("read {}", crate::terminal::bold(name))))
 }
 
 fn call(target: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, RemoteError> {
     let function = get(target, name)?
         .dyn_into::<Function>()
-        .map_err(|_| RemoteError::Call(format!("use `{name}`")))?;
+        .map_err(|_| RemoteError::Call(format!("use {}", crate::terminal::bold(name))))?;
     let list = Array::new();
     for argument in args {
         list.push(argument);
@@ -148,7 +151,7 @@ impl Account {
     /// Connect, or find out that the account is not connected yet.
     ///
     /// `access.claim` has to happen before the client is used, and `connect` is
-    /// what starts the OAuth dance — which is a redirect, so a caller that gets
+    /// what starts the OAuth dance, which is a redirect, so a caller that gets
     /// `Ok` may be about to lose the page.
     pub async fn open() -> Result<Account, RemoteError> {
         let _ = load_library().await?;
@@ -197,7 +200,7 @@ impl Account {
     ///
     /// `connected` is restored from local storage asynchronously, so asking
     /// straight after construction answers "no" for an account that is in fact
-    /// connected — which is exactly how a successful OAuth round trip came back
+    /// connected, which is exactly how a successful OAuth round trip came back
     /// and was then thrown away.
     pub async fn wait_connected() -> bool {
         for _ in 0..15 {
@@ -246,7 +249,7 @@ impl Account {
     /// An empty listing is asked for again before it is believed. The first read
     /// after an OAuth return can come back empty while the library is still
     /// bringing its wire client up, and an empty answer is indistinguishable from
-    /// an empty account — so `remote` reported having found nothing while the
+    /// an empty account, so `remote` reported having found nothing while the
     /// account held two journals and the include between them was then missing.
     pub async fn list(&self, directory: &str) -> Result<Vec<Entry>, RemoteError> {
         for attempt in 0..3 {
@@ -268,7 +271,7 @@ impl Account {
                 &[
                     JsValue::from_str(&super::scoped(directory)),
                     // A number is a maximum age, so zero means "not older than
-                    // now": a sync should look. (`false` is not the same thing —
+                    // now": a sync should look. (`false` is not the same thing , 
                     // it means the cache is all that may be used, which is how
                     // this first returned nothing at all.)
                     JsValue::from_f64(0.0),
@@ -376,7 +379,7 @@ async fn tick() {
 /// A fresh client with the app's category claimed.
 ///
 /// Claiming happens here, before any use, because the library refuses to touch a
-/// path whose access was not claimed — and claiming is what puts the scope into
+/// path whose access was not claimed, and claiming is what puts the scope into
 /// the OAuth request.
 fn new_client() -> Result<JsValue, RemoteError> {
     let library = window().and_then(|window| get(&window, "RemoteStorage"))?;

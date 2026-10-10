@@ -2,12 +2,12 @@
 //!
 //! [remoteStorage](https://remotestorage.io) is a protocol for storing a user's
 //! data in an account they choose, so the journal follows them between devices
-//! without this app running a server — which is the whole premise here. The
+//! without this app running a server, which is the whole premise here. The
 //! library is vendored and loaded lazily; see [`client`].
 //!
 //! This module is the part that can be reasoned about without a network or an
 //! account: what a listing means, where the files go in the mount, and what has
-//! still to be walked. Getting that right is most of the feature — the rest is
+//! still to be walked. Getting that right is most of the feature, the rest is
 //! plumbing, and it is the part that cannot be tested without an account.
 
 // Natively this module exists for its tests: the only code that uses it is
@@ -30,7 +30,7 @@ pub struct Entry {
 ///
 /// The values are `true` for every entry when the library's cache is on, which is
 /// the default, and may be metadata objects when it is off. Only the keys are
-/// trusted, so both shapes work — and the trailing slash is what separates a
+/// trusted, so both shapes work, and the trailing slash is what separates a
 /// folder from a file.
 pub fn parse_listing(listing: &serde_json::Value) -> Vec<Entry> {
     let Some(object) = listing.as_object() else {
@@ -77,7 +77,7 @@ pub fn directory_for(argument: &str) -> String {
 /// Where a remote file goes in the mount.
 ///
 /// Paths are re-rooted at the category, so `/hledger/books/2024.journal` becomes
-/// `books/2024.journal` — the same shape an upload produces, which is what keeps
+/// `books/2024.journal`, the same shape an upload produces, which is what keeps
 /// `include` directives between remote files working. `None` means the path is
 /// outside the category, which the walk should not have asked for.
 pub fn mount_path(remote: &str) -> Option<String> {
@@ -99,7 +99,7 @@ pub fn remote_path(local: &str) -> String {
 /// A path as the scoped client wants it.
 ///
 /// The client is scoped at the category, so it already knows about `/hledger/` and
-/// a path that repeats it lands in a folder of the same name inside itself — which
+/// a path that repeats it lands in a folder of the same name inside itself, which
 /// is exactly what happened the first time a file was written to a real server:
 /// `/hledger/rt.csv` became `hledger/hledger/rt.csv` on disk.
 pub fn scoped(path: &str) -> String {
@@ -117,7 +117,7 @@ pub fn scoped(path: &str) -> String {
 ///
 /// A listing names its entries relative to **the folder that was listed**, not to
 /// the scope root, so the folder has to be put back too. Assuming the scope root is
-/// what made a file in a nested folder resolve to a path that does not exist — and
+/// what made a file in a nested folder resolve to a path that does not exist, and
 /// then be skipped as unreadable rather than loaded.
 pub fn joined(directory: &str, key: &str) -> String {
     let key = key.trim_start_matches('/');

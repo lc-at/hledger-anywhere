@@ -3,7 +3,7 @@
 hledger-anywhere's own code is licensed **AGPL-3.0-or-later**. It depends on the
 following third-party components, which remain under their own licences.
 
-## hledger — GPL-3.0-or-later
+## hledger, GPL-3.0-or-later
 
 **This is the important one.** The application runs hledger, which is licensed
 under the GNU General Public License v3.0 or later. hledger is not just linked
@@ -36,27 +36,27 @@ provide it.
 | `hledger-wasm/cabal.project` | AGPL-3.0-or-later (this project) | Pins GHC boot libraries and adds the stub package |
 | `hledger-wasm/terminal-size-stub/` | AGPL-3.0-or-later (this project) | Drop-in replacement for `terminal-size`, whose `ioctl`-based implementation cannot work under WASI. The module interface mirrors the BSD-3-Clause `terminal-size` package |
 
-## @bjorn3/browser_wasi_shim — MIT
+## @bjorn3/browser_wasi_shim, MIT
 
 Vendored as source in `assets/js/vendor/` (a copy of the published `dist/`
 directory of version 0.4.2) so the app needs no npm step and no bundler.
 
 - Upstream: <https://github.com/bjorn3/browser_wasi_shim>
 
-## xterm.js — MIT
+## xterm.js, MIT
 
 Vendored in `assets/js/vendor/xterm/`, so the app has no JavaScript build step:
 
 | File | Upstream |
 |---|---|
-| `xterm.js`, `xterm.css`, `LICENSE` | `@xterm/xterm@5.5.0` — <https://github.com/xtermjs/xterm.js> |
-| `addon-fit.js` | `@xterm/addon-fit@0.10.0` — <https://github.com/xtermjs/xterm.js> |
+| `xterm.js`, `xterm.css`, `LICENSE` | `@xterm/xterm@5.5.0`, <https://github.com/xtermjs/xterm.js> |
+| `addon-fit.js` | `@xterm/addon-fit@0.10.0`, <https://github.com/xtermjs/xterm.js> |
 
 They are loaded by plain `<script>`/`<link>` tags in `index.html` and reached
 through the globals they publish (`window.Terminal`, `window.FitAddon.FitAddon`),
 which is why no npm dependency and no bundler are involved.
 
-## remoteStorage.js — MIT
+## remoteStorage.js, MIT
 
 Vendored in `assets/js/vendor/remotestorage/`, loaded on demand by
 `src/remote/client.rs` when a remote command is first used.

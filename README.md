@@ -2,21 +2,25 @@
 
 A terminal for [hledger](https://hledger.org), running entirely in your browser.
 
-**Live: <https://hledger.gru.fi>** — nothing to install, and nothing to sign up for.
+**Live: <https://hledger.gru.fi>**, nothing to install, and nothing to sign up for.
 
-The real hledger CLI — the pinned **1.52.4** build for `wasm32-wasi` — runs in a Web
+The real hledger CLI, the pinned **1.52.4** build for `wasm32-wasi`, runs in a Web
 Worker, and everything you type goes to it unchanged. There is no server: the whole
 application is static files. Nothing you load leaves the browser, except when you
 deliberately connect a remoteStorage account (see [remoteStorage](#remotestorage)).
 
 ```
-hledger-anywhere — hledger 1.52.4 (wasm32-wasi), running entirely in this tab.
-No journal is loaded. Type `upload` for files, `upload_dir` for a folder,
-`demo` to try it on a sample journal, or `?` for help.
-(no journal) $ demo
-Loaded the demo journal (2 file(s)) — reading `hledger.journal`. It is a sample;
-`upload` replaces it.
-hledger.journal $ balance --tree
+  hledger-anywhere  hledger 1.52.4 (wasm32-wasi)
+  A terminal for hledger, running entirely in this tab.
+  Drop journal files on this window, or type:
+    upload       add journal files
+    upload_dir   add a folder, keeping its structure
+    demo         try the sample journal
+    ?            every command and key
+  No journal is loaded yet.
+no journal » demo
+Loaded the sample journal (2 files), reading hledger.journal.
+hledger.journal » balance --tree
            $9,386.11  assets
            $9,278.61    bank
            $4,278.61      checking
@@ -39,7 +43,7 @@ copied from a real session, not written by hand.
 
 ## Contents
 
-- [Using it](#using-it) — commands, keys, quoting, search
+- [Using it](#using-it), commands, keys, quoting, search
 - [Loading a journal](#loading-a-journal)
 - [Editing, and getting data out](#editing-and-getting-data-out)
 - [Charts](#charts)
@@ -54,7 +58,7 @@ copied from a real session, not written by hand.
 
 ## Using it
 
-Type hledger commands. A leading `hledger` is optional — `balance` and
+Type hledger commands. A leading `hledger` is optional, `balance` and
 `hledger balance` are the same thing. **`-f` is never needed**: the loaded files are
 mounted for the engine and the one being read is exported as `$LEDGER_FILE`, the
 variable hledger already consults when no file is given.
@@ -90,7 +94,7 @@ Everything that is not in this table is passed to hledger verbatim.
 | Command | What it does |
 |---|---|
 | `upload` | Choose files to add. **Replaces** what is loaded, so uploading the same set again is how you update it. Up to 5 MB per file, 50 MB in total. |
-| `upload_dir` | Choose a folder, keeping the paths inside it — what a journal split into `2024.journal`, `2025.journal` and `prices/` needs. |
+| `upload_dir` | Choose a folder, keeping the paths inside it, what a journal split into `2024.journal`, `2025.journal` and `prices/` needs. |
 | `demo` | Load a small built-in journal, so the app can be tried without uploading anything. |
 | `journal` | List the loaded files and mark the one being read. |
 | `journal <path>` | Read a different loaded file. |
@@ -114,7 +118,7 @@ Everything that is not in this table is passed to hledger verbatim.
 
 ### Keys
 
-**Enter** runs. **Tab** completes — hledger's commands and flags, account names,
+**Enter** runs. **Tab** completes hledger's commands and flags, account names,
 your aliases, and the paths of loaded files. **↑/↓** recall history (the last 100
 commands, kept between visits). **Ctrl+C** stops a running command, or clears the
 line.
@@ -128,19 +132,19 @@ terminal already have in their fingers:
 | `Ctrl+B` `Ctrl+F` | back / forward one character |
 | `Alt+B` `Alt+F` | back / forward one word |
 | `Ctrl+P` `Ctrl+N` | previous / next history entry (same as ↑/↓) |
-| `Ctrl+R` | reverse search the history, incremental — type to narrow, `Ctrl+R` again to go further back, `Enter` to run, `Ctrl+G` to cancel |
+| `Ctrl+R` | reverse search the history, incremental, type to narrow, `Ctrl+R` again to go further back, `Enter` to run, `Ctrl+G` to cancel |
 | `Ctrl+K` `Ctrl+U` `Ctrl+W` | kill to end / to start / the word before the cursor |
 | `Ctrl+Y` | yank the most recent kill |
 | `Ctrl+T` | transpose the two characters around the cursor |
 | `Ctrl+D` `Ctrl+H` | delete forward / backward |
 | `Ctrl+L` | clear the screen |
-| `Ctrl+=` `Ctrl+-` `Ctrl+0` | bigger / smaller / default font — `font <size>` for a phone |
+| `Ctrl+=` `Ctrl+-` `Ctrl+0` | bigger / smaller / default font, `font <size>` for a phone |
 
 ### Searching the output
 
 `/text` searches what commands have printed and says which match you are on; `n` and
-`N` step through matches, wrapping at the ends. The app's own lines — your command
-echoes and its messages — are excluded, so searching for what you just typed does not
+`N` step through matches, wrapping at the ends. The app's own lines, your command
+echoes and its messages, are excluded, so searching for what you just typed does not
 find the thing you typed it into.
 
 Account names for completion are fetched the **first time you press Tab** with a
@@ -152,11 +156,11 @@ engine run, and it should be something you asked for.
 Four ways in, and all of them end with the same result: files mounted for the engine,
 one of them chosen as the journal to read and shown in the prompt.
 
-- **`upload`** — pick files.
-- **`upload_dir`** — pick a folder, keeping its structure.
+- **`upload`**, pick files.
+- **`upload_dir`**, pick a folder, keeping its structure.
 - **Drag and drop** files anywhere on the page; it outlines itself while a drag is
   over it. Dropped files land at the root, like `upload`.
-- **`demo`** — a small built-in journal, in two files so that `include` resolves.
+- **`demo`**, a small built-in journal, in two files so that `include` resolves.
 
 Which file is read is chosen by looking for the journal the others are included
 *from*, so a journal split across files with `include` works without being told how.
@@ -169,7 +173,7 @@ anything (private mode) behaves exactly like a first visit.
 ## Editing, and getting data out
 
 **A command's output can become a file.** `-o FILE` writes into the mount, and the
-app keeps what a command wrote as part of the loaded files — replacing one that was
+app keeps what a command wrote as part of the loaded files, replacing one that was
 already there, keeping it for next time, and re-reading it on the next command. So
 `-o` onto a loaded file is an edit rather than a report you have to catch.
 
@@ -177,8 +181,9 @@ already there, keeping it for next time, and re-reading it on the next command. 
 they print what they computed:
 
 ```
-$ print expenses >> "2024 statement.journal"
-[appended 16 line(s) to 2024 statement.journal (410 bytes) — `print -f "2024 statement.journal"` shows it]
+hledger.journal » print expenses >> "2024 statement.journal"
+[appended 16 lines to 2024 statement.journal (410 bytes). Read it back with
+print -f "2024 statement.journal"]
 ```
 
 The target is a loaded file, named either as the engine sees it (`data/2024.journal`)
@@ -191,29 +196,30 @@ one file is refused with the reason.
 entry is several:
 
 ```
-$ append data/2024.journal
-Typing into data/2024.journal. Paste or type journal text, then `.` on its own to
-finish; Ctrl+C abandons it.
-> 2024-05-01 * Coffee
->     expenses:food  $4.00
->     assets:cash
-> .
-[appended 4 line(s) to data/2024.journal (57 bytes) — `print -f data/2024.journal` shows it]
+hledger.journal » append data/2024.journal
+Typing into data/2024.journal. Paste or type journal text, then a line with just .
+to finish. Ctrl+C abandons it.
+... 2024-05-01 * Coffee
+...     expenses:food  $4.00
+...     assets:cash
+... .
+[appended 4 lines to data/2024.journal (57 bytes). Read it back with print -f data/2024.journal]
 ```
 
-The `> ` prompt is the mode. Blank lines are kept, because they separate entries; `.`
-alone ends it; Ctrl+C abandons it without writing. A paste arrives as one event with
-newlines in it and is split into lines, so a whole transaction can be pasted in at
-once.
+The `... ` prompt is the mode. Blank lines are kept, because they separate entries;
+a line with a single `.` ends it; Ctrl+C abandons it without writing. A paste arrives
+as one event with newlines in it and is split into lines, so a whole transaction can
+be pasted in at once.
 
 **Importing a statement needs nothing special.** This is the main way data gets in.
 Upload the journal, the CSV, and its rules file:
 
 ```
-$ import data/statement.csv
+hledger.journal » import data/statement.csv
 imported 3 new transactions from statement.csv to /data/2024.journal
-[changed 2024.journal (386 bytes); wrote .latest.statement.csv (11 bytes) — saved]
-$ balance
+[changed 2024.journal (386 bytes); wrote .latest.statement.csv (11 bytes), saved.
+Take a copy with download 2024.journal]
+hledger.journal » balance
            $2,995.50  assets:bank:checking
           $-1,000.00  equity:opening
           $-1,995.50  expenses:unknown
@@ -223,7 +229,7 @@ $ balance
 
 `import` appends to the journal itself: no `-o`, no `>>`. And hledger tracks what it
 has already imported in a state file it writes *into the mount*, so the app keeps that
-too — which is why running the same import again reports `no new transactions found`
+too, which is why running the same import again reports `no new transactions found`
 and leaves the balance alone rather than doubling it.
 
 **Getting a file out of the browser** is `download <path>`; everything loaded is also
@@ -239,8 +245,8 @@ one today, so nothing does it yet.
 arguments it asks the question a chart is usually asked, `balance -M expenses`.
 
 ```
-$ chart balance --depth 2
-[chart of `balance --depth 2` — hledger's numbers, drawn]
+hledger.journal » chart balance --depth 2
+[chart of balance --depth 2, drawn from hledger's numbers]
 assets:bank              ████████████████████████████████████████   $9278.61
 equity:opening balances  ██████████████████████████████████▋        $-7520.00
 income:salary            ███████████████████████▊                   $-3200.00
@@ -253,8 +259,8 @@ horizontal bars, longest first, which is how "where did the money go" is read. A
 report over time is a **series**: vertical bars, one per period. Values are drawn with
 eighth-width blocks, so a bar ends where the value does instead of rounding to a cell.
 
-Charts are drawn from hledger's own numbers — the command that produced them is
-printed above them — so a chart can never quietly disagree with the report. And they
+Charts are drawn from hledger's own numbers, the command that produced them is
+printed above them, so a chart can never quietly disagree with the report. And they
 are drawn from the CSV hledger prints with `-O csv`, which is added for you if you did
 not ask for a format:
 
@@ -274,21 +280,22 @@ devices without this app running a server: the files live in an account you choo
 and the browser talks to it directly.
 
 ```
-$ connect you@host          your browser leaves for the consent screen and comes back
-Connected to your storage account. `remote` loads your journals; `put` saves files back.
-$ remote                    walks /hledger/, reads every file, mounts them like an upload
-Read 4 file(s) from /hledger/.
-$ put hledger.journal       writes a file back, including one the engine wrote
-Saved `hledger.journal` to /hledger/hledger.journal.
+no journal » connect you@host     leaves for the consent screen, and comes back
+Connected to your storage account. remote loads your journals, and put saves files
+back to it.
+no journal » remote               walks /hledger/, mounts every file like an upload
+Read 4 files from /hledger/.
+no journal » put hledger.journal  writes a file back, including one the engine wrote
+Saved hledger.journal to /hledger/hledger.journal.
 ```
 
 Paths are re-rooted at the category, so `/hledger/books/2024.journal` becomes
-`books/2024.journal` in the mount — the same shape an upload produces — which keeps an
+`books/2024.journal` in the mount, the same shape an upload produces, which keeps an
 `include` between files in different folders working. Files have to live under the
 `hledger` category, because remoteStorage grants access one category at a time;
 changing which one is a one-line change in `src/remote/mod.rs`.
 
-The library is 146 KB and is loaded when you first use a remote command — or
+The library is 146 KB and is loaded when you first use a remote command, or
 immediately on the page that comes *back* from `connect`, because the access token
 arrives in the URL fragment and has to be claimed before it is gone. A file in your
 account that cannot be read is skipped and named rather than stopping the sync.
@@ -296,7 +303,7 @@ account that cannot be read is skipped and named rather than stopping the sync.
 ## Offline and installable
 
 A service worker caches the shell and the 13 MB engine, so a second visit needs no
-network — including running hledger, which works with the network switched off. There
+network, including running hledger, which works with the network switched off. There
 is a web app manifest and icons, so it can be installed on a phone home screen, which
 is where "anywhere" is most useful.
 
@@ -356,7 +363,7 @@ Three decisions worth knowing:
 **Reports are as wide as the terminal, as far as hledger makes them.** hledger normally
 asks the operating system how wide the terminal is, and WASI has no terminal to ask;
 the wasm build's `terminal-size` stub reads `$COLUMNS` and `$LINES` instead, and the
-app exports xterm's size into every run's environment — including after a window
+app exports xterm's size into every run's environment, including after a window
 resize. What hledger does with it is hledger's business: `register` and `aregister`
 lay their columns out to fill the width, while `balance` and `print` size themselves to
 their content and look the same at any width.
@@ -368,7 +375,7 @@ Rust 2024 edition (MSRV 1.88).
 
 ```sh
 sh scripts/build-hledger-wasm.sh   # once: builds hledger.wasm (~13 MB; needs the
-                                   # ghc-wasm toolchain — see the script's comments)
+                                   # ghc-wasm toolchain, see the script's comments)
 . scripts/env.sh                   # puts .tools/bin on PATH, redirects caches
 trunk serve                        # http://127.0.0.1:8080
 trunk build --release              # writes dist/, which is all you deploy
@@ -376,7 +383,7 @@ trunk build --release              # writes dist/, which is all you deploy
 
 **The engine is fetched, not committed.** It is 13 MB and changes once per hledger
 version, so `wasm.lock` pins it by URL, size and SHA-256, and a `pre_build` hook
-downloads and verifies it — preferring `artifacts/hledger.wasm` when you have just
+downloads and verifies it, preferring `artifacts/hledger.wasm` when you have just
 built one locally. A file that does not match the lock is rejected rather than run,
 and if none is available the app still builds and the terminal says the engine is
 missing.
@@ -403,8 +410,8 @@ CI runs the tests, both lints, that engine smoke test, and then the build.
 Beyond the tests, the behaviour in this README was verified by driving the running
 app in a browser: an interrupted long command, offline mode with the network actually
 off, a real `ClipboardEvent` paste, chart output read off the screen, and the whole
-remoteStorage round trip — connect, `put`, and reading the journals back into a fresh
-browser — against a real [armadietto](https://github.com/remotestorage/armadietto)
+remoteStorage round trip, connect, `put`, and reading the journals back into a fresh
+browser, against a real [armadietto](https://github.com/remotestorage/armadietto)
 server on `127.0.0.1`.
 
 ## Known limitations
@@ -433,8 +440,8 @@ server on `127.0.0.1`.
 **Why not OPFS?** A file-backed filesystem in the browser has been considered since
 before the engine could write at all, and the vendored shim even ships one
 (`SyncOPFSFile`). It was measured rather than assumed: posting an 8 MB file set to the
-worker costs about **23 ms**, and the size barely matters — 0.25 MB and 8 MB cost the
-same, because it is message overhead, not copying — while hledger's own runtime is
+worker costs about **23 ms**, and the size barely matters, 0.25 MB and 8 MB cost the
+same, because it is message overhead, not copying, while hledger's own runtime is
 seconds. IndexedDB holds what is loaded, the worker gets a copy per run, and none of
 that is worth replacing.
 
@@ -450,7 +457,7 @@ release needs the GitHub API.
 
 To publish a new engine after changing `hledger-wasm/`: build it, update `size` and
 `sha256` in `wasm.lock`, push a `wasm-*` tag, and point `url` at the asset it
-publishes — the header of `wasm.lock` has the exact commands.
+publishes, the header of `wasm.lock` has the exact commands.
 
 The site is served over HTTPS; `http://` redirects to it.
 
