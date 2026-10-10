@@ -145,6 +145,10 @@ pub enum Command<'a> {
     Disconnect,
     /// `remote [dir]` loads files from the connected account.
     Remote(Option<&'a str>),
+    /// `put <path>` saves a file a command wrote into the connected account.
+    Put(Option<&'a str>),
+    /// `font [size]` shows or sets the terminal font size.
+    Font(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -173,6 +177,8 @@ pub fn classify(line: &str) -> Command<'_> {
         "connect" => Command::Connect((!rest.is_empty()).then_some(rest)),
         "disconnect" => Command::Disconnect,
         "remote" => Command::Remote((!rest.is_empty()).then_some(rest)),
+        "put" => Command::Put((!rest.is_empty()).then_some(rest)),
+        "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -509,6 +515,8 @@ pub fn candidates(paths: &[String]) -> Vec<String> {
         "connect",
         "remote",
         "disconnect",
+        "put",
+        "font",
     ]
         .iter()
         .map(|word| (*word).to_string())
@@ -866,7 +874,10 @@ pub fn wrote_note(files: &[(String, usize)]) -> String {
 /// What the terminal prints for `download` with no argument.
 pub fn download_list(files: &[String]) -> String {
     if files.is_empty() {
-        return "Nothing to download yet. `-o FILE` on a command writes a file —                 for example `balance -O csv -o balance.csv`.\r\n"
+        // "Written" rather than "downloaded": `put` shows this list too, and the
+        // file has not been saved anywhere yet either way.
+        return "Nothing has been written yet. `-o FILE` on a command writes a file — \
+                for example `balance -O csv -o balance.csv`.\r\n"
             .to_string();
     }
     let mut text = String::from("Written by commands this session:\r\n");
@@ -875,6 +886,24 @@ pub fn download_list(files: &[String]) -> String {
     }
     text.push_str("`download <path>` saves one to your computer.\r\n");
     text
+}
+
+/// Read a font size from a command argument, clamped to the usable range.
+///
+/// Clamping rather than refusing on purpose: `font 100` plainly means "as big as
+/// it goes", and the keyboard shortcuts already clamp.
+pub fn font_size(text: &str) -> Result<u32, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Give a size in pixels, like `font 18`.".to_string());
+    }
+    match trimmed.parse::<u32>() {
+        Ok(size) => Ok(size.clamp(MIN_FONT, MAX_FONT)),
+        Err(_) => Err(format!(
+            "`{trimmed}` is not a number. Give a size in pixels, like `font 18` ({} to {}).",
+            MIN_FONT, MAX_FONT
+        )),
+    }
 }
 
 /// The prompt for the journal being read.
@@ -987,6 +1016,8 @@ pub fn help() -> String {
        connect user@host connect a remoteStorage account, then `remote`\n\
        remote [dir]      load every journal file under /hledger/ (or a folder in it)\n\
        disconnect        forget the account (the files stay in the cache)\n\
+       put <path>        save a file hledger wrote into the connected account\n\
+       font [size]       show or set the font size (Ctrl+= / Ctrl+- / Ctrl+0 too)\n\
        /text             search the output; n and N repeat the search\n\
        clear             clear the screen\n\
        ?                 this help\n\
@@ -1646,10 +1677,28 @@ mod tests {
 
     #[test]
     fn the_download_list_explains_itself_when_there_is_nothing_to_save() {
-        assert!(download_list(&[]).contains("-o FILE"));
+        let nothing = download_list(&[]);
+        assert!(nothing.contains("-o FILE"), "{nothing}");
+        // It must not promise a download: `put` shows the same list.
+        assert!(nothing.contains("has been written yet"), "{nothing}");
+        assert!(!nothing.contains("  "), "the message has a stray gap: {nothing}");
         let listing = download_list(&["out.csv".to_string()]);
         assert!(listing.contains("out.csv"));
         assert!(listing.contains("download <path>"));
+    }
+
+    #[test]
+    fn a_font_size_is_read_from_a_command_as_well_as_a_key() {
+        // A phone has no Ctrl+=, so the size has to be reachable by typing.
+        assert_eq!(font_size("18"), Ok(18));
+        assert_eq!(font_size(" 12 "), Ok(12));
+        // Clamped rather than refused, like the keys are.
+        assert_eq!(font_size("4"), Ok(MIN_FONT));
+        assert_eq!(font_size("400"), Ok(MAX_FONT));
+        assert!(font_size("big").is_err());
+        assert!(font_size("").is_err());
+        let complaint = font_size("big").expect_err("not a number");
+        assert!(complaint.contains("number"), "{complaint}");
     }
 
     #[test]

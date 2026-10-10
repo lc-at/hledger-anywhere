@@ -100,6 +100,23 @@ pub fn start() {
     spawn_local(async move { boot(booting).await });
 }
 
+/// Save a file hledger wrote into the connected account.
+///
+/// This is the other half of `remote`: what was read from an account can be
+/// written back to it, under the same category and at the same relative path, so
+/// an exported report lands beside the journal it came from.
+async fn write_remote(
+    file: &JournalFile,
+) -> Result<String, remote::client::RemoteError> {
+    let account = remote::client::Account::open().await?;
+    let path = remote::remote_path(&file.path);
+    account.write(&path, &file.contents).await?;
+    Ok(match account.user_address() {
+        Some(address) => format!("{path} in {address}"),
+        None => path,
+    })
+}
+
 /// Walk a remoteStorage directory and read every file in it.
 ///
 /// Breadth-first over the folders `getListing` reports, with a visited set: the
@@ -370,12 +387,18 @@ impl App {
         } else {
             terminal::step_font(self.font.get(), direction)
         };
-        if next == self.font.get() {
+        self.set_font_size(next);
+    }
+
+    /// Set the font size outright, from a key or from `font <size>`.
+    fn set_font_size(self: &Rc<App>, size: u32) {
+        let size = size.clamp(terminal::MIN_FONT, terminal::MAX_FONT);
+        if size == self.font.get() {
             return;
         }
-        self.font.set(next);
-        save_font(next);
-        self.screen.set_font_size(next);
+        self.font.set(size);
+        save_font(size);
+        self.screen.set_font_size(size);
         // The size is part of what hledger is told, so a resize means the next
         // command formats to the new width.
         self.configure();
@@ -687,6 +710,35 @@ impl App {
             Command::Disconnect => self.disconnect_remote(),
             Command::Remote(None) => self.load_remote(""),
             Command::Remote(Some(path)) => self.load_remote(path),
+            Command::Put(Some(path)) => self.put_remote(path),
+            Command::Put(None) => {
+                let names: Vec<String> = self
+                    .written
+                    .borrow()
+                    .iter()
+                    .map(|file| file.path.clone())
+                    .collect();
+                // The list message already explains an empty session, so it is
+                // not repeated here.
+                self.announce(&format!(
+                    "Which file? `put <path>`.\n{}",
+                    terminal::download_list(&names)
+                ));
+            }
+            Command::Font(None) => self.announce(&format!(
+                "The font is {}px ({} to {}). `font 18` changes it; so do Ctrl+=, \
+                 Ctrl+- and Ctrl+0.",
+                self.font.get(),
+                terminal::MIN_FONT,
+                terminal::MAX_FONT
+            )),
+            Command::Font(Some(size)) => match terminal::font_size(size) {
+                Ok(size) => {
+                    self.set_font_size(size);
+                    self.announce(&format!("The font is now {}px.", self.font.get()));
+                }
+                Err(complaint) => self.announce(&complaint),
+            },
             Command::Search(term) => self.search(term.unwrap_or("")),
             Command::SearchAgain(backwards) => self.search_again(backwards),
             Command::Download(Some(path)) => self.download(path),
@@ -1078,6 +1130,42 @@ impl App {
             ),
             Err(error) => self.announce(&error.message()),
         }
+    }
+
+    /// `put <path>`: save a file a command wrote into the connected account.
+    fn put_remote(self: &Rc<App>, path: &str) {
+        let file = self
+            .written
+            .borrow()
+            .iter()
+            .find(|file| file.path == path)
+            .cloned();
+        let Some(file) = file else {
+            let names: Vec<String> = self
+                .written
+                .borrow()
+                .iter()
+                .map(|file| file.path.clone())
+                .collect();
+            self.announce(&format!(
+                "Nothing called `{path}` was written this session.\n{}",
+                terminal::download_list(&names)
+            ));
+            return;
+        };
+
+        let app = Rc::clone(self);
+        self.announce(&format!(
+            "Saving `{}` ({} bytes) to your storage account…",
+            file.path,
+            file.contents.len()
+        ));
+        spawn_local(async move {
+            match write_remote(&file).await {
+                Ok(where_to) => app.announce(&format!("Saved `{}` to {where_to}.", file.path)),
+                Err(error) => app.announce(&error.message()),
+            }
+        });
     }
 
     /// `remote [dir]`: walk the account and mount what is there.

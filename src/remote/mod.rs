@@ -87,6 +87,15 @@ pub fn mount_path(remote: &str) -> Option<String> {
         .filter(|rest| !rest.is_empty())
 }
 
+/// Where a file from the mount goes in the account.
+///
+/// The inverse of [`mount_path`]: `bal.csv` becomes `/hledger/bal.csv`, so a file
+/// hledger wrote with `-o` lands beside the journal it came from rather than in a
+/// directory of its own making.
+pub fn remote_path(local: &str) -> String {
+    format!("{CATEGORY}{}", local.trim_start_matches('/'))
+}
+
 /// The folders directly inside `directory` that still have to be listed.
 ///
 /// A listing gives one folder's contents, so reaching nested files means walking:
@@ -204,6 +213,18 @@ mod tests {
         );
         // From a leaf folder: nothing to walk.
         assert!(subdirectories(&entries, "/hledger/books/deep/").is_empty());
+    }
+
+    #[test]
+    fn a_local_path_goes_back_under_the_category() {
+        assert_eq!(remote_path("bal.csv"), "/hledger/bal.csv");
+        assert_eq!(remote_path("books/2024.journal"), "/hledger/books/2024.journal");
+        assert_eq!(remote_path("/bal.csv"), "/hledger/bal.csv");
+        // Round trip: what was mounted comes back to where it came from.
+        for path in ["a.journal", "books/deep/2025.journal"] {
+            let remote = remote_path(path);
+            assert_eq!(mount_path(&remote).as_deref(), Some(path));
+        }
     }
 
     #[test]

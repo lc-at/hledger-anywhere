@@ -46,7 +46,9 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `download <path>` | Save a file a command wrote with `-o`. |
 | `connect user@host` | Connect a [remoteStorage](https://remotestorage.io) account, so the journal follows you between devices. |
 | `remote [dir]` | Load every file under `/hledger/` (or a folder inside it) from that account. |
+| `put <path>` | Save a file a command wrote with `-o` into that account. |
 | `disconnect` | Forget the account; the files already loaded stay loaded. |
+| `font [size]` | Show or set the font size — the keyboard shortcuts need a keyboard, and a phone has none. |
 | `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
 | `unalias <name>` | Remove one. |
 | `clear` | Clear the screen. |
@@ -65,7 +67,9 @@ their content and look the same at any width.
 running a server. `connect you@host` starts the provider's consent screen — your
 browser leaves the page and comes back, and the connection is remembered. Then
 `remote` walks `/hledger/` in your account, reads every file it finds, and mounts
-them exactly as an upload would: paths are re-rooted at the category, so an
+them exactly as an upload would — and `put bal.csv` writes a file hledger produced
+back to the same folder, which is the other half of the same idea. Paths are
+re-rooted the same way in both directions: paths are re-rooted at the category, so an
 `include` between files in different folders still resolves. Files have to live
 under the `hledger` category, because remoteStorage grants access one category at
 a time; changing which one is a one-line change in `src/remote/mod.rs`. The library

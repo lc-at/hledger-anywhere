@@ -207,6 +207,26 @@ impl Account {
         Ok(super::parse_listing(&json_value(&listing)))
     }
 
+    /// Write one file.
+    ///
+    /// `storeFile` takes the content type first, then the path, which is the one
+    /// place this API's argument order surprises.
+    pub async fn write(&self, path: &str, contents: &str) -> Result<(), RemoteError> {
+        let call_args = [
+            JsValue::from_str("text/plain"),
+            JsValue::from_str(path),
+            JsValue::from_str(contents),
+        ];
+        JsFuture::from(
+            call(&self.scope, "storeFile", &call_args)?
+                .dyn_into::<Promise>()
+                .map_err(|_| RemoteError::Call("write a file".to_string()))?,
+        )
+        .await
+        .map_err(|error| RemoteError::Failed(describe(&error)))?;
+        Ok(())
+    }
+
     /// Read one file.
     pub async fn read(&self, path: &str) -> Result<String, RemoteError> {
         let file = JsFuture::from(
