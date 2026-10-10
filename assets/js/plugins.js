@@ -49,13 +49,22 @@
         return null;
       }
       popup.document.title = title || name;
+      let url = null;
       return {
         write(html) {
-          popup.document.open();
-          popup.document.write(String(html));
-          popup.document.close();
+          // A blob document rather than document.write: the window gets a real document
+          // with its own URL, which is what a browser renders predictably, keeps the
+          // page's own styles out of it, and leaves the window's history sane.
+          if (url) {
+            URL.revokeObjectURL(url);
+          }
+          url = URL.createObjectURL(new Blob([String(html)], { type: 'text/html' }));
+          popup.location.replace(url);
         },
         close() {
+          if (url) {
+            URL.revokeObjectURL(url);
+          }
           popup.close();
         },
       };

@@ -55,17 +55,40 @@ export default {
   },
 };
 
-/** [period, amount] rows, ignoring the header and anything unparseable. */
+/**
+ * A series from hledger's monthly balance CSV.
+ *
+ * The shape is one row per account and one column per period, with a Total row:
+ *
+ *   "account","2024-01","2024-02"
+ *   "expenses:food:coffee","0","$12.50"
+ *   "Total:","$1286.40","$47.49"
+ *
+ * So the periods come from the header, and each period's value is the sum of its
+ * column. The Total row is skipped: it is the sum of the rows, and adding it would
+ * count everything twice.
+ */
 function parse(csv) {
   const rows = String(csv).trim().split('\n').map((line) => split(line));
   if (rows.length < 2) return [];
   const [header, ...body] = rows;
-  const period = header.indexOf('period');
-  const amount = header.findIndex((cell) => cell === 'balance' || cell.startsWith('balance'));
-  if (period < 0 || amount < 0) return [];
-  return body
-    .map((cells) => ({ label: cells[period], value: money(cells[amount]) }))
-    .filter((point) => point.label && Number.isFinite(point.value));
+  const periods = header.slice(1).map((cell) => cell.trim());
+  if (periods.length === 0) return [];
+
+  const totals = periods.map(() => 0);
+  let counted = 0;
+  for (const cells of body) {
+    if (cells.length < periods.length + 1) continue;
+    const account = (cells[0] || '').trim().toLowerCase();
+    if (account === 'total:' || account === 'total' || account === '') continue;
+    for (let index = 0; index < periods.length; index += 1) {
+      const value = money(cells[index + 1]);
+      if (Number.isFinite(value)) totals[index] += value;
+    }
+    counted += 1;
+  }
+  if (counted === 0) return [];
+  return periods.map((label, index) => ({ label, value: totals[index] }));
 }
 
 /** One CSV line, honouring quoted cells. */
