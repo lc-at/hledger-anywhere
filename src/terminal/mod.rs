@@ -218,6 +218,8 @@ pub enum Command<'a> {
     ScreenReader(Option<&'a str>),
     /// `plugins` lists the installed plugins; `add`, `remove` and `reload` change them.
     Plugins(Option<&'a str>),
+    /// `settings` shows what is remembered; `export` and `import` move it between visits.
+    Settings(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -249,6 +251,7 @@ pub fn classify(line: &str) -> Command<'_> {
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
         "plugins" => Command::Plugins((!rest.is_empty()).then_some(rest)),
+        "settings" => Command::Settings((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -730,6 +733,7 @@ pub const COMMANDS: &[&str] = &[
     "font",
     "screenreader",
     "plugins",
+    "settings",
 ];
 
 pub fn candidates(paths: &[String]) -> Vec<String> {
@@ -1206,6 +1210,72 @@ pub fn plugin_usage(word: &str) -> String {
         bold("plugins"),
         bold("plugins add <url or path>"),
         bold("plugins remove <url>")
+    )
+}
+
+/// What `settings` prints: what is remembered, and how to move it.
+pub fn settings_list(rows: &[(String, String)]) -> String {
+    let mut text = format!(
+        "{}, {}\r\n",
+        bold("Settings"),
+        dim("remembered between visits")
+    );
+    let width = rows
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (label, value) in rows {
+        text.push_str(&format!(
+            "  {}  {}\r\n",
+            bold(&format!("{label:<width$}")),
+            value
+        ));
+    }
+    text.push_str(&format!(
+        "\r\n{} writes them to a file you can keep, and {} reads one back.\r\n",
+        bold("settings export"),
+        bold("settings import <path>")
+    ));
+    text
+}
+
+/// What `settings export` says once the file is on its way to the browser.
+pub fn settings_exported(path: &str, bytes: usize) -> String {
+    format!(
+        "Wrote {} ({}). Check your downloads; it carries everything above, plugin settings \
+         and repositories included.\r\n",
+        bold(path),
+        bytes_label(bytes)
+    )
+}
+
+/// What `settings import` says: what it applied, and what it could not use.
+pub fn settings_imported(applied: &[String], dropped: &[String]) -> String {
+    let mut text = if applied.is_empty() {
+        "Nothing was applied.\r\n".to_string()
+    } else {
+        format!(
+            "Applied {}: {}.\r\n",
+            count(applied.len(), "setting"),
+            applied.join(", ")
+        )
+    };
+    for complaint in dropped {
+        text.push_str(&format!("  {} {complaint}\r\n", dim("could not use:")));
+    }
+    text
+}
+
+/// What `settings` says about an argument it does not know.
+pub fn settings_usage(word: &str) -> String {
+    format!(
+        "{} is not a settings command. {} shows them, {} writes them to a file, and {} \
+         reads one back.\r\n",
+        bold(word),
+        bold("settings"),
+        bold("settings export"),
+        bold("settings import <path>")
     )
 }
 
@@ -1773,6 +1843,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("alias name=cmd", "make a name run a command; alias lists them"),
             ("unalias <name>", "remove one"),
             ("plugins", "list the installed plugins, or add and remove repositories"),
+            ("settings", "show what is remembered, or export and import it as a file"),
             ("clear", "clear the screen"),
         ],
     ),
@@ -2263,6 +2334,10 @@ mod tests {
             plugin_installed("./p.json", &["chart".to_string()], &["bad: no name".to_string()]),
             plugin_removed("./p.json", 2),
             plugin_usage("nonsense"),
+            settings_list(&[("font".to_string(), "14px".to_string())]),
+            settings_exported("hledger-anywhere-settings.json", 1024),
+            settings_imported(&["font".to_string()], &["font 900 is outside 8 to 32".to_string()]),
+            settings_usage("nonsense"),
             match parse_alias("nonsense") {
                 AliasEdit::Bad(message) => message,
                 other => panic!("{other:?}"),

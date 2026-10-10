@@ -960,6 +960,8 @@ impl App {
                 terminal::bold("screenreader"),
                 if self.screen_reader.get() { "off" } else { "on" }
             )),
+            Command::Settings(None) => self.list_settings(),
+            Command::Settings(Some(arguments)) => self.settings_command(arguments),
             Command::Plugins(None) => self.list_plugins(),
             Command::Plugins(Some(arguments)) => self.plugins_command(arguments),
             Command::ScreenReader(Some(wanted)) => {
@@ -1533,6 +1535,144 @@ impl App {
                 self.prompt();
             }
         }
+    }
+
+    /// `settings`: what is remembered, and how to carry it somewhere else.
+    fn list_settings(self: &Rc<App>) {
+        let (font, reader, theme, aliases, repositories, plugin) = settings(|settings| {
+            (
+                settings.font,
+                settings.screen_reader,
+                settings.theme.clone(),
+                settings.aliases.len(),
+                settings.repositories.clone(),
+                settings.plugin.len(),
+            )
+        });
+        let rows = vec![
+            ("font".to_string(), format!("{font}px")),
+            (
+                "screen reader".to_string(),
+                if reader { "on".to_string() } else { "off".to_string() },
+            ),
+            ("theme".to_string(), theme),
+            ("aliases".to_string(), aliases.to_string()),
+            (
+                "repositories".to_string(),
+                if repositories.is_empty() {
+                    "none".to_string()
+                } else {
+                    repositories.join(", ")
+                },
+            ),
+            ("plugin settings".to_string(), plugin.to_string()),
+            (
+                "plugins installed".to_string(),
+                self.registry.borrow().len().to_string(),
+            ),
+        ];
+        self.say(&terminal::settings_list(&rows));
+        self.prompt();
+    }
+
+    /// `settings export|import`.
+    fn settings_command(self: &Rc<App>, arguments: &str) {
+        let (head, rest) = terminal::split_first_token(arguments);
+        match head.as_str() {
+            "export" => self.export_settings(),
+            "import" => {
+                let Some(path) = self.single(&rest) else {
+                    return;
+                };
+                self.import_settings(&path);
+            }
+            other => {
+                self.say(&terminal::settings_usage(other));
+                self.prompt();
+            }
+        }
+    }
+
+    /// `settings export`: write the record out and hand it to the browser.
+    ///
+    /// It goes through the loaded files as well, so `download` can fetch it again in the
+    /// same visit, and so what was exported is visible in `journal`.
+    fn export_settings(self: &Rc<App>) {
+        let json = settings(|settings| settings.to_json());
+        let name = "hledger-anywhere-settings.json";
+        let file = JournalFile::new(name, &json);
+        self.absorb(std::slice::from_ref(&file));
+        match save_to_disk(&file) {
+            Ok(()) => self.say(&terminal::settings_exported(name, json.len())),
+            Err(error) => self.announce(&format!("Could not save the settings: {error}")),
+        }
+        self.prompt();
+    }
+
+    /// `settings import <path>`: read a settings file that is loaded, and apply it.
+    fn import_settings(self: &Rc<App>, path: &str) {
+        let contents = self
+            .files
+            .borrow()
+            .iter()
+            .find(|file| file.path == path)
+            .map(|file| file.contents.clone());
+        let Some(contents) = contents else {
+            let names = self.paths();
+            let main = self.main.borrow().clone();
+            return self.announce(&format!(
+                "No loaded file is called {}. Upload it first, then import it.\n{}",
+                terminal::bold(path),
+                terminal::file_list(&names, main.as_deref())
+            ));
+        };
+        match Settings::from_json(&contents) {
+            Ok(import) => self.apply_settings(import.settings, &import.dropped),
+            Err(error) => self.announce(&error),
+        }
+    }
+
+    /// Put an imported record into effect, and keep it.
+    ///
+    /// What cannot be applied here is still stored: a theme that arrives before the theme
+    /// command exists, or a plugin's own settings for a plugin not installed yet, are
+    /// worth keeping rather than dropping.
+    fn apply_settings(self: &Rc<App>, imported: Settings, dropped: &[String]) {
+        self.set_font_size(imported.font);
+        self.set_screen_reader(imported.screen_reader);
+        let aliases: Vec<(String, String)> = imported
+            .aliases
+            .iter()
+            .map(|alias| (alias.name.clone(), alias.command.clone()))
+            .collect();
+        *self.aliases.borrow_mut() = aliases.clone();
+        save_aliases(&aliases);
+
+        let repositories = imported.repositories.clone();
+        let applied = vec![
+            "font".to_string(),
+            "screen reader".to_string(),
+            "aliases".to_string(),
+            "theme".to_string(),
+            "plugin settings".to_string(),
+            terminal::count(repositories.len(), "repository"),
+        ];
+        let dropped: Vec<String> = dropped.to_vec();
+        update_settings(|settings| *settings = imported);
+
+        let app = Rc::clone(self);
+        self.busy.set(true);
+        spawn_local(async move {
+            app.title("installing repositories");
+            for url in &repositories {
+                if let Err(error) = app.install_repository(url).await {
+                    app.announce(&format!("{}: {error}", terminal::bold(url)));
+                }
+            }
+            app.title("");
+            app.say(&terminal::settings_imported(&applied, &dropped));
+            app.settle();
+        });
     }
 
     fn settle(self: &Rc<App>) {

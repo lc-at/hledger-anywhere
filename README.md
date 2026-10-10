@@ -110,6 +110,7 @@ Everything that is not in this table is passed to hledger verbatim.
 | `screenreader` | Turn xterm's accessibility tree `on` or `off`. |
 | `clear` | Clear the screen. |
 | `plugins [add\|remove\|reload]` | List the installed plugins, or install a repository by URL or path. |
+| `settings [export\|import <path>]` | Show what is remembered, or move it between instances as a file. |
 | `?` | The app's own help, the engine's version and its checksum. |
 
 ### Keys
@@ -211,6 +212,30 @@ cannot change a journal either.
 
 A plugin is code running in this page, so installing a repository is trusting it. See
 [docs/plugins.md](docs/plugins.md) for the manifest fields, the API, and a worked example.
+
+## Settings, and moving them
+
+The font, the accessibility setting, the aliases, the selected theme, the installed plugin
+repositories and each plugin's own settings are one record, kept in this browser:
+
+```
+hledger.journal » settings
+Settings, remembered between visits
+  font            14px
+  screen reader   off
+  theme           default
+  aliases         2
+  repositories    ./examples/plugins/plugins.json
+  plugin settings 1
+  plugins installed 1
+```
+
+`settings export` writes that record to a file through the browser's own download, and
+`settings import <path>` reads one back after you upload it. Import is forgiving on
+purpose: a missing field takes its default, an unknown field is ignored rather than
+refused, and anything unusable is reported rather than silently applied. That is what
+makes it safe to carry settings from an older or a newer instance, or from a file you
+edited by hand.
 
 ## Read-only, for now
 
