@@ -108,6 +108,14 @@ pub enum Command<'a> {
     Clear,
     /// The app's own help, not hledger's.
     Help,
+    /// Load a small built-in journal, so the app can be tried without one.
+    Demo,
+    /// `/term` — find `term` in the scrollback, or the last term when blank.
+    Search(Option<&'a str>),
+    /// `n` / `N` — repeat the last search, forwards / backwards.
+    SearchAgain(bool),
+    /// `download <path>` — save a file hledger wrote in the last run.
+    Download(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -130,6 +138,14 @@ pub fn classify(line: &str) -> Command<'_> {
         "journal" => Command::Journal((!rest.is_empty()).then_some(rest)),
         "clear" => Command::Clear,
         "?" => Command::Help,
+        "demo" => Command::Demo,
+        "download" => Command::Download((!rest.is_empty()).then_some(rest)),
+        // Vim's vocabulary, because it is the one people already know for
+        // scrolling back through output. `n` and `N` are not hledger commands, so
+        // nothing is shadowed; `/` alone repeats the last search.
+        "n" => Command::SearchAgain(false),
+        "N" => Command::SearchAgain(true),
+        _ if trimmed.starts_with('/') => Command::Search(Some(trimmed[1..].trim())),
         _ => Command::Hledger(trimmed),
     }
 }
@@ -353,7 +369,15 @@ pub enum Completion {
 /// Every word completion can offer: the app's commands, hledger's, the common
 /// flags, and the uploaded file paths.
 pub fn candidates(paths: &[String]) -> Vec<String> {
-    let mut all: Vec<String> = ["upload", "upload_dir", "journal", "clear", "?"]
+    let mut all: Vec<String> = [
+        "upload",
+        "upload_dir",
+        "journal",
+        "clear",
+        "?",
+        "demo",
+        "download",
+    ]
         .iter()
         .map(|word| (*word).to_string())
         .collect();
@@ -400,7 +424,8 @@ pub fn visible_output(stdout: &str) -> (String, Option<String>) {
     (
         stdout[..cut].to_string(),
         Some(format!(
-            "[output truncated after {} MB of {megabytes:.1} MB]",
+            "[output truncated after {} MB of {megabytes:.1} MB — `-o out.csv` writes the \
+             whole thing, and `download out.csv` saves it]",
             MAX_OUTPUT_BYTES / (1024 * 1024)
         )),
     )
@@ -446,12 +471,180 @@ pub fn prompt_redraw(prompt: &str, line: &str, cursor: usize) -> String {
     out
 }
 
+/// A small journal to try the app on, for a first visit with nothing to upload.
+///
+/// Deliberately tiny and deliberately dated in the past: it is a sample, and the
+/// point of `demo` is that every command in `hledger help` works immediately
+/// rather than that the numbers mean anything. It includes a second file so that
+/// `include` resolution is exercised too, and covers a few commodities, tags and
+/// a price so that reports which group by those have something to group.
+pub const DEMO_JOURNAL: &str = "\
+; Demo journal — loaded by the `demo` command. Replace it with `upload`.
+include demo-prices.journal
+
+2024-01-01 * Opening balances
+    assets:bank:checking              $2,400.00
+    assets:bank:savings               $5,000.00
+    assets:cash                         $120.00
+    equity:opening balances
+
+2024-01-05 * (rent:january) Landlord
+    expenses:housing:rent             $1,200.00
+    assets:bank:checking
+
+2024-01-09 * Grocery Store  ; weekly shop
+    expenses:food:groceries              $86.40
+    assets:bank:checking
+
+2024-01-14 * (salary:january) Employer
+    assets:bank:checking              $3,200.00
+    income:salary
+
+2024-02-01 * Coffee Roasters
+    expenses:food:coffee                 $12.50
+    assets:cash
+
+2024-02-03 * Bookshop  ; receipt:yes
+    expenses:reading:books               $34.99
+    assets:bank:checking
+";
+
+/// The demo's price file, mounted alongside the journal so `include` resolves.
+pub const DEMO_PRICES: &str = "\
+P 2024-02-01 EUR $1.08
+P 2024-02-01 GBP $1.27
+";
+
+/// Where a search term was found in the scrollback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    /// Index of the line the match starts on.
+    pub row: usize,
+    /// Character column the match starts at.
+    pub column: usize,
+    /// Length of the match, in characters.
+    pub length: usize,
+    /// Which match this is, counting from 1, and how many there are in total.
+    pub index: usize,
+    pub total: usize,
+}
+
+/// Find `term` in `lines`, starting after `from` and wrapping once.
+///
+/// Case-insensitive, because a terminal search usually is and journals are full
+/// of names whose capitalisation nobody remembers. `from` is `None` for the first
+/// search, and the last match's position otherwise, so pressing `n` repeatedly
+/// walks forward rather than sticking on the match it just showed — and a line
+/// with two matches yields both. Wrapping is what makes `n` useful on the last
+/// match instead of silently doing nothing.
+pub fn search_lines(
+    lines: &[(usize, String)],
+    term: &str,
+    from: Option<(usize, usize)>,
+    backwards: bool,
+) -> Option<Hit> {
+    let needle = term.trim().to_lowercase();
+    if needle.is_empty() || lines.is_empty() {
+        return None;
+    }
+
+    // Every match, so the caller can say "3 of 17" and so `n` knows where it is.
+    let mut matches: Vec<(usize, usize, usize)> = Vec::new();
+    for (row, line) in lines.iter() {
+        let haystack = line.to_lowercase();
+        let mut start = 0usize;
+        while let Some(offset) = haystack[start..].find(&needle) {
+            let column = haystack[..start + offset].chars().count();
+            matches.push((*row, column, needle.chars().count()));
+            start += offset + needle.len();
+            if start >= haystack.len() {
+                break;
+            }
+        }
+    }
+    if matches.is_empty() {
+        return None;
+    }
+
+    let count = matches.len();
+    let index = match from {
+        None => {
+            if backwards {
+                count - 1
+            } else {
+                0
+            }
+        }
+        Some(position) => {
+            if backwards {
+                matches
+                    .iter()
+                    .rposition(|(row, column, _)| (*row, *column) < position)
+                    .unwrap_or(count - 1)
+            } else {
+                matches
+                    .iter()
+                    .position(|(row, column, _)| (*row, *column) > position)
+                    .unwrap_or(0)
+            }
+        }
+    };
+    let (row, column, length) = matches[index];
+    Some(Hit {
+        row,
+        column,
+        length,
+        index: index + 1,
+        total: count,
+    })
+}
+
+/// What the terminal prints after a run that wrote files.
+///
+/// Writing instead of printing is what `-o` is for, and the file only exists
+/// inside the run's in-memory mount, so saying where it went matters more than
+/// usual: without this the command looks like it did nothing.
+pub fn wrote_note(files: &[(String, usize)]) -> String {
+    let mut text = String::from("[wrote");
+    for (path, bytes) in files {
+        text.push_str(&format!(" {path} ({bytes} bytes)"));
+    }
+    let names: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+    text.push_str(&format!(
+        " — `download {}` to save it]",
+        names.first().copied().unwrap_or("")
+    ));
+    text
+}
+
+/// What the terminal prints for `download` with no argument.
+pub fn download_list(files: &[String]) -> String {
+    if files.is_empty() {
+        return "Nothing to download yet. `-o FILE` on a command writes a file —                 for example `balance -O csv -o balance.csv`.\r\n"
+            .to_string();
+    }
+    let mut text = String::from("Written by commands this session:\r\n");
+    for path in files {
+        text.push_str(&format!("  {path}\r\n"));
+    }
+    text.push_str("`download <path>` saves one to your computer.\r\n");
+    text
+}
+
+/// What the terminal prints after loading the demo.
+pub fn demo_loaded(files: usize, main: &str) -> String {
+    format!(
+        "Loaded the demo journal ({files} file(s)) — reading `{main}`. It is a sample; \
+         `upload` replaces it.\r\n",
+    )
+}
+
 /// What the terminal prints on a cold start.
 pub fn welcome(version: &str) -> String {
     format!(
         "hledger-anywhere — hledger {version} (wasm32-wasi), running entirely in this tab.\r\n\
-         No journal is loaded. Type `upload` for journal files, `upload_dir` for a whole\r\n\
-         folder, or `?` for help.\r\n",
+         No journal is loaded. Type `upload` for files, `upload_dir` for a folder,\r\n\
+         `demo` to try it on a sample journal, or `?` for help.\r\n",
     )
 }
 
@@ -703,6 +896,51 @@ mod tests {
     }
 
     #[test]
+    fn search_and_download_are_the_apps_but_nothing_else_is_shadowed() {
+        assert_eq!(classify("/rent"), Command::Search(Some("rent")));
+        assert_eq!(classify("/  spaced  "), Command::Search(Some("spaced")));
+        assert_eq!(classify("/"), Command::Search(Some("")));
+        assert_eq!(classify("n"), Command::SearchAgain(false));
+        assert_eq!(classify("N"), Command::SearchAgain(true));
+        assert_eq!(classify("demo"), Command::Demo);
+        assert_eq!(classify("download out.csv"), Command::Download(Some("out.csv")));
+        assert_eq!(classify("download"), Command::Download(None));
+
+        // The words that must still reach hledger.
+        for line in ["balance", "print --explicit", "notes", "codes", "stats --help"] {
+            assert!(
+                matches!(classify(line), Command::Hledger(_)),
+                "{line} should go to hledger"
+            );
+        }
+    }
+
+    #[test]
+    fn the_demo_journal_is_a_whole_journal_not_a_fragment() {
+        // It is shown to a first-time visitor, so it has to exercise the things
+        // the app claims: a second file, an include of it, several accounts,
+        // commodities, tags and a price.
+        assert!(DEMO_JOURNAL.contains("include demo-prices.journal"));
+        assert!(DEMO_JOURNAL.contains("expenses:"));
+        assert!(DEMO_JOURNAL.contains("income:"));
+        assert!(DEMO_JOURNAL.contains("assets:"));
+        assert!(DEMO_JOURNAL.contains("; weekly shop"));
+        assert!(DEMO_JOURNAL.contains("(rent:january)"));
+        assert!(DEMO_PRICES.contains("P 2024-02-01"));
+        // Every top-level line is either a directive or a dated transaction, so
+        // the journal is not accidentally missing a date or indented wrongly.
+        for line in DEMO_JOURNAL.lines() {
+            if line.is_empty() || line.starts_with([' ', ';']) {
+                continue;
+            }
+            assert!(
+                line.starts_with("20") || line.starts_with("include"),
+                "unexpected top-level line: {line}"
+            );
+        }
+    }
+
+    #[test]
     fn only_four_words_are_the_apps() {
         assert_eq!(classify("upload"), Command::Upload);
         assert_eq!(classify("  upload  "), Command::Upload);
@@ -735,6 +973,10 @@ mod tests {
         let note = note.expect("truncation must be reported");
         assert!(note.contains("truncated"), "{note}");
         assert!(note.contains("MB"), "{note}");
+        // It must also say how to get the whole thing, since that is the only
+        // reason the reader is being told.
+        assert!(note.contains("-o out.csv"), "{note}");
+        assert!(note.contains("download"), "{note}");
     }
 
     #[test]
@@ -782,6 +1024,121 @@ mod tests {
 
         let nothing = uploaded(&["data.csv".to_string()], &[], None);
         assert!(nothing.contains("None of those looks like a journal"));
+    }
+
+    fn lines(text: &[&str]) -> Vec<(usize, String)> {
+        text.iter()
+            .enumerate()
+            .map(|(row, line)| (row, (*line).to_string()))
+            .collect()
+    }
+
+    /// Lines from the middle of a buffer, as the app passes them: only output,
+    /// with the rows it really occupies.
+    fn sparse(pairs: &[(usize, &str)]) -> Vec<(usize, String)> {
+        pairs
+            .iter()
+            .map(|(row, line)| (*row, (*line).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_search_finds_the_first_match_then_walks_forward() {
+        let text = lines(&["alpha", "beta groceries", "gamma", "more groceries here"]);
+
+        let first = search_lines(&text, "groceries", None, false).expect("a match exists");
+        assert_eq!((first.row, first.column, first.length), (1, 5, 9));
+        assert_eq!((first.index, first.total), (1, 2));
+
+        // `from` is what was already shown, so `n` moves on rather than sticking.
+        let second = search_lines(&text, "groceries", Some((first.row, first.column)), false)
+            .expect("another");
+        assert_eq!(second.row, 3);
+        assert_eq!((second.index, second.total), (2, 2));
+
+        // Past the last one it wraps, which is what makes `n` useful there.
+        let wrapped = search_lines(&text, "groceries", Some((second.row, second.column)), false)
+            .expect("wraps");
+        assert_eq!(wrapped.row, 1);
+        assert_eq!(wrapped.index, 1);
+    }
+
+    #[test]
+    fn searching_backwards_goes_to_the_last_match_and_wraps() {
+        let text = lines(&["groceries one", "nothing", "groceries two"]);
+        let last = search_lines(&text, "GROCERIES", None, true).expect("case-insensitive");
+        assert_eq!(last.row, 2);
+        assert_eq!(last.total, 2);
+
+        let earlier = search_lines(&text, "groceries", Some((last.row, last.column)), true)
+            .expect("earlier");
+        assert_eq!(earlier.row, 0);
+
+        let wrapped = search_lines(&text, "groceries", Some((earlier.row, earlier.column)), true)
+            .expect("wraps");
+        assert_eq!(wrapped.row, 2);
+    }
+
+    #[test]
+    fn two_matches_on_one_line_are_both_counted_and_both_reachable() {
+        let text = lines(&["a a a"]);
+        let first = search_lines(&text, "a", None, false).expect("match");
+        assert_eq!(first.total, 3);
+        assert_eq!((first.index, first.column), (1, 0));
+
+        let second = search_lines(&text, "a", Some((first.row, first.column)), false).expect("2nd");
+        assert_eq!((second.index, second.column), (2, 2));
+        let third = search_lines(&text, "a", Some((second.row, second.column)), false).expect("3rd");
+        assert_eq!((third.index, third.column), (3, 4));
+
+        // Columns are characters, not bytes, so a match after a multi-byte word
+        // still lands where the eye expects.
+        let text = lines(&["café x"]);
+        let hit = search_lines(&text, "x", None, false).expect("match");
+        assert_eq!(hit.column, 5);
+    }
+
+    #[test]
+    fn rows_are_the_callers_rows_not_the_lists() {
+        // The app hands over only the output lines, which are not contiguous in
+        // the buffer; a hit has to report where the line really is, or scrolling
+        // to it lands somewhere else.
+        let output = sparse(&[(12, "alpha"), (13, "beta groceries"), (30, "more groceries")]);
+        let hit = search_lines(&output, "groceries", None, false).expect("match");
+        assert_eq!(hit.row, 13);
+        let next = search_lines(&output, "groceries", Some((hit.row, hit.column)), false)
+            .expect("match");
+        assert_eq!(next.row, 30);
+    }
+
+    #[test]
+    fn a_search_that_finds_nothing_says_nothing_rather_than_guessing() {
+        assert_eq!(search_lines(&lines(&["alpha"]), "zebra", None, false), None);
+        assert_eq!(search_lines(&lines(&["alpha"]), "   ", None, false), None);
+        assert_eq!(search_lines(&[], "alpha", None, false), None);
+    }
+
+    #[test]
+    fn a_run_that_wrote_files_says_so_and_how_to_get_them() {
+        let note = wrote_note(&[("out.csv".to_string(), 118)]);
+        assert!(note.contains("out.csv"));
+        assert!(note.contains("118 bytes"));
+        assert!(note.contains("download out.csv"), "{note}");
+
+        let two = wrote_note(&[
+            ("a.csv".to_string(), 10),
+            ("b.csv".to_string(), 20),
+        ]);
+        assert!(two.contains("a.csv (10 bytes)"));
+        assert!(two.contains("b.csv (20 bytes)"));
+    }
+
+    #[test]
+    fn the_download_list_explains_itself_when_there_is_nothing_to_save() {
+        assert!(download_list(&[]).contains("-o FILE"));
+        let listing = download_list(&["out.csv".to_string()]);
+        assert!(listing.contains("out.csv"));
+        assert!(listing.contains("download <path>"));
     }
 
     #[test]

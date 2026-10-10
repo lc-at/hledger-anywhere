@@ -59,6 +59,12 @@ pub struct HledgerOutput {
     pub exit_code: i32,
     /// Wall-clock time inside the worker, including module compile on first use.
     pub ms: f64,
+    /// Files the run created or changed in the mounted directory.
+    ///
+    /// `-o FILE` writes a report instead of printing it, and the mount is
+    /// in-memory, so without carrying these back the file would vanish with the
+    /// run. hledger can also rewrite a journal in place; that turns up here too.
+    pub written: Vec<JournalFile>,
 }
 
 impl HledgerOutput {
@@ -69,6 +75,18 @@ impl HledgerOutput {
     /// the whole story, which the terminal should colour as an error.
     pub fn is_failure(&self) -> bool {
         self.exit_code != 0 || (!self.stderr.trim().is_empty() && self.stdout.trim().is_empty())
+    }
+
+    /// A single message describing the failure, preferring hledger's own stderr.
+    pub fn failure_message(&self) -> String {
+        let stderr = self.stderr.trim();
+        if !stderr.is_empty() {
+            return stderr.to_string();
+        }
+        if self.exit_code != 0 {
+            return format!("hledger exited with status {}", self.exit_code);
+        }
+        "hledger produced no output".to_string()
     }
 }
 
@@ -84,6 +102,9 @@ pub enum EngineError {
     /// The bridge was reached but the call failed.
     #[error("the engine bridge failed: {0}")]
     Bridge(String),
+    /// The user stopped the command. Not a failure, and not worth printing as one.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 /// One invocation: the argv to run, and the files to mount.
@@ -126,10 +147,22 @@ pub async fn configure(
 /// Run one invocation.
 ///
 /// A failed command is `Ok` with a non-zero exit code: the terminal needs the
-/// stderr to display. `Err` is reserved for transport failures.
+/// stderr to display. `Err` is reserved for transport failures and for
+/// [`EngineError::Cancelled`].
 #[cfg(target_arch = "wasm32")]
 pub async fn run(request: HledgerRequest) -> Result<HledgerOutput, EngineError> {
     bridge::run(&request).await
+}
+
+/// Stop the command that is running.
+///
+/// The engine runs one synchronous `_start()` in its worker and cannot be asked
+/// to stop, so this throws the worker away. Whoever calls it must configure the
+/// engine again afterwards: a new worker knows nothing about the journal or the
+/// terminal size.
+#[cfg(target_arch = "wasm32")]
+pub async fn cancel() -> Result<(), EngineError> {
+    bridge::cancel().await
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -152,6 +185,11 @@ pub async fn run(_request: HledgerRequest) -> Result<HledgerOutput, EngineError>
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub async fn cancel() -> Result<(), EngineError> {
+    Err(native_error())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn native_error() -> EngineError {
     EngineError::Unsupported("the wasm engine is only available in a browser build".to_string())
 }
@@ -167,6 +205,7 @@ mod tests {
             stderr: stderr.to_string(),
             exit_code,
             ms: 0.0,
+            written: Vec::new(),
         }
     }
 
@@ -187,6 +226,13 @@ mod tests {
         // hledger can warn and exit 0 with nothing on stdout. The terminal should
         // colour that as a problem, not print it as the report.
         assert!(output(0, "", "no journal file was specified").is_failure());
+    }
+
+    #[test]
+    fn a_failure_message_prefers_stderr_and_is_never_empty() {
+        assert_eq!(output(1, "", "hledger: parse error").failure_message(), "hledger: parse error");
+        assert_eq!(output(3, "", "").failure_message(), "hledger exited with status 3");
+        assert_eq!(output(0, "", "").failure_message(), "hledger produced no output");
     }
 
     #[test]

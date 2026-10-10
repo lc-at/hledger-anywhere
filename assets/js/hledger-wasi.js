@@ -7,7 +7,9 @@
  *   init()                                  -> Promise<{ wasmPath }>
  *   configure({ wasmPath, ledgerFile, columns, lines })
  *                                         -> Promise<{ wasmPath, ledgerFile }>
- *   run(argv, files)              -> Promise<{ argv, stdout, stderr, exitCode, ms }>
+ *   run(argv, files)                      -> Promise<{ argv, stdout, stderr,
+ *                                                        exitCode, ms, written }>
+ *   cancel()                                -> Promise<void>
  *
  * where `argv` is a string array and `files` is an array of `[path, contents]`
  * pairs (objects with `path`/`contents` are accepted too).
@@ -131,6 +133,32 @@ class HledgerWasi {
   }
 
   /**
+   * Stop the command that is running.
+   *
+   * The engine is one synchronous `_start()` inside the worker, so there is
+   * nothing to signal and no way to ask it to stop: the only way is to throw the
+   * worker away. The next run creates a new one and recompiles the module — the
+   * bytes come from the HTTP cache, so that costs a compile, not a download — and
+   * the caller must reconfigure it, because a fresh worker starts with the
+   * default environment and no journal.
+   */
+  cancel() {
+    const worker = this.worker;
+    this.worker = null;
+    if (worker !== null) {
+      worker.terminate();
+    }
+
+    const error = new Error('cancelled');
+    error.code = 'cancelled';
+    for (const entry of this.pending.values()) {
+      entry.reject(error);
+    }
+    this.pending.clear();
+    return Promise.resolve();
+  }
+
+  /**
    * Tell the engine about its world: which journal to read, and how big the
    * terminal is.
    *
@@ -176,6 +204,7 @@ if (typeof window !== 'undefined') {
     init: () => bridge.init(),
     configure: (options) => bridge.configure(options),
     run: (argv, files) => bridge.run(argv, files),
+    cancel: () => bridge.cancel(),
   };
 }
 

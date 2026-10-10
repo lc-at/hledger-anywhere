@@ -41,6 +41,9 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `upload_dir` | Choose a folder to add, keeping the paths inside it — what a journal split into `2024.journal`, `2025.journal` and `prices/` needs. |
 | `journal` | List the uploaded files and mark the one being read. |
 | `journal <path>` | Read a different uploaded file. |
+| `demo` | Load a small built-in journal, so the app can be tried without uploading anything. |
+| `/text` | Search what commands have printed; `n` and `N` repeat it forwards and backwards, and it says which match you are on. |
+| `download <path>` | Save a file a command wrote with `-o`. |
 | `clear` | Clear the screen. |
 | `?` | The app's own help, with the engine's version and checksum. |
 
@@ -54,8 +57,9 @@ lay their columns out to fill it, while `balance` and `print` size themselves to
 their content and look the same at any width.
 
 Keys: **Enter** runs, **↑/↓** recall history, **Tab** completes hledger commands,
-flags and uploaded paths, **Ctrl+U** or **Ctrl+C** clears the line, **Ctrl+L**
-clears the screen. `hledger help` has the rest.
+flags, account names and uploaded paths, **Ctrl+U** or **Ctrl+C** clears the line,
+**Ctrl+L** clears the screen, and **Ctrl+C while a command is running stops it**.
+`hledger help` has the rest.
 
 **Uploaded files come back on the next visit** — they are stored in IndexedDB, and
 the terminal says how many it resumed and which file it is reading. That cache is
@@ -64,11 +68,18 @@ anything (private mode, storage disabled) behaves exactly like a first visit, an
 says so once.
 
 Two things to know about running commands. The engine handles **one command at a
-time** and cannot be interrupted — a synchronous `_start()` inside its worker — so
-anything typed while a command runs is buffered and replayed when it finishes, and
-Ctrl+C clears the line rather than stopping the engine. And stdout over **2 MB** is
-truncated with a note, because `hledger print` on a real journal is tens of
-megabytes and writing that to the terminal stalls the tab.
+time**; anything typed while a command runs is buffered and replayed when it
+finishes. **Ctrl+C stops it** by throwing the engine's worker away — the engine is
+one synchronous `_start()` and cannot be asked to stop, so the next command starts
+a fresh worker and recompiles the module (from the HTTP cache, so it costs a
+compile rather than a download). And stdout over **2 MB** is truncated, because
+`hledger print` on a real journal is tens of megabytes and writing that to the
+terminal stalls the tab: the note says to use `-o out.csv` and `download out.csv`,
+which writes the whole thing and hands it to you as a file.
+
+Account names are fetched for completion the **first time you press Tab** with a
+journal loaded, not at startup: on a large journal that fetch is a whole engine run
+(the same one `hledger accounts` does), and it should be something you asked for.
 
 ## Running it
 
@@ -151,7 +162,8 @@ before building.
 
 ## Known limitations
 
-- **A running command cannot be cancelled** — see above.
+- **A cancelled command restarts the engine.** The worker is replaced and the
+  module recompiled, which takes a moment on the next command.
 - **Uploads replace rather than accumulate.** Two files landing on the same path
   collide, and the second is reported rather than silently shadowing the first.
 - **The width only reaches hledger because the engine was built that way.**

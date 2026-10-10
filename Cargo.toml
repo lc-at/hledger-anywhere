@@ -31,6 +31,8 @@ features = [
     "Event",
     "EventTarget",
     "Storage",
+    "Url",
+    "HtmlAnchorElement",
     "console",
 ]
 

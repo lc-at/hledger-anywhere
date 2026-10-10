@@ -16,7 +16,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
-use super::{EngineError, HledgerOutput, HledgerRequest};
+use super::{EngineError, HledgerOutput, HledgerRequest, JournalFile};
 
 /// The global published by `assets/js/hledger-wasi.js`.
 const BRIDGE_GLOBAL: &str = "hledgerWasi";
@@ -128,6 +128,7 @@ fn classify(error: JsValue, operation: &str) -> EngineError {
     match code_of(&error).as_deref() {
         Some("unsupported") => EngineError::Unsupported(message),
         Some("missing-wasm") => EngineError::Missing(message),
+        Some("cancelled") => EngineError::Cancelled,
         _ => EngineError::Bridge(message),
     }
 }
@@ -240,6 +241,24 @@ pub async fn run(request: &HledgerRequest) -> Result<HledgerOutput, EngineError>
 
     let result = call(&bridge, "run", &[argv.into(), files.into()]).await?;
 
+    // Files the run wrote, as [path, contents] pairs; the same compact shape the
+    // request uses, for the same reason.
+    let written = field(&result, "written")
+        .dyn_into::<Array>()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let pair = entry.dyn_into::<Array>().ok()?;
+                    Some(JournalFile::new(
+                        pair.get(0).as_string()?,
+                        pair.get(1).as_string()?,
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let argv_echo = string_array(&field(&result, "argv"));
     Ok(HledgerOutput {
         argv: if argv_echo.is_empty() {
@@ -253,5 +272,16 @@ pub async fn run(request: &HledgerRequest) -> Result<HledgerOutput, EngineError>
         // which is the safe direction to be wrong in.
         exit_code: number_field(&result, "exitCode").unwrap_or(-1.0) as i32,
         ms: number_field(&result, "ms").unwrap_or(0.0),
+        written,
     })
+}
+
+/// Throw the worker away, stopping whatever it is running.
+pub async fn cancel() -> Result<(), EngineError> {
+    // Deliberately not `bridge().await`: cancelling must not wait for the bridge
+    // script to appear, and if it never did there is nothing to cancel.
+    let Some(bridge) = bridge_if_ready() else {
+        return Ok(());
+    };
+    call(&bridge, "cancel", &[]).await.map(|_| ())
 }

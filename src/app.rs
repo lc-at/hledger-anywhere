@@ -17,7 +17,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlElement;
 
@@ -68,6 +68,36 @@ pub fn start() {
     spawn_local(async move { boot(booting).await });
 }
 
+/// Hand a file to the browser as a download.
+///
+/// The object URL is deliberately not revoked: revoking it immediately can beat
+/// the browser to starting the download, and one URL per download is released
+/// when the page goes away.
+fn save_to_disk(file: &JournalFile) -> Result<(), String> {
+    let document = web_sys::window()
+        .and_then(|window| window.document())
+        .ok_or("there is no document")?;
+
+    let parts = js_sys::Array::new();
+    parts.push(&JsValue::from_str(&file.contents));
+    let blob = web_sys::Blob::new_with_str_sequence(&parts)
+        .map_err(|_| "could not build the file")?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|_| "could not build a download URL")?;
+
+    let anchor: web_sys::HtmlAnchorElement = document
+        .create_element("a")
+        .map_err(|_| "could not create a link")?
+        .dyn_into()
+        .map_err(|_| "could not create a link")?;
+    anchor.set_href(&url);
+    // Only the file name: the browser's download directory is its own business,
+    // and a path from the mounted filesystem would be meaningless there.
+    anchor.set_download(file.path.rsplit('/').next().unwrap_or(&file.path));
+    anchor.click();
+    Ok(())
+}
+
 /// The element the terminal lives in, from `index.html`.
 fn terminal_element() -> Option<HtmlElement> {
     let document = web_sys::window()?.document()?;
@@ -91,6 +121,19 @@ struct App {
     busy: Cell<bool>,
     /// Input typed while busy, replayed when the engine is free.
     pending: RefCell<String>,
+    /// The last search term, so `n` and `N` have something to repeat, and where it
+    /// last matched, so they move on from there rather than sticking.
+    last_search: RefCell<Option<String>>,
+    last_hit: RefCell<Option<(usize, usize)>>,
+    /// Files commands have written this session, for `download`.
+    written: RefCell<Vec<JournalFile>>,
+    /// Account names for completion: fetched once per journal, on the first Tab,
+    /// because on a large journal that fetch is a whole engine run.
+    accounts: RefCell<Option<Vec<String>>>,
+    /// Lines the app itself put on screen: the command echoes and its own
+    /// messages. The search skips them, so `/foo` finds what a command printed
+    /// rather than the `/foo` you just typed or the count line that followed it.
+    chatter: RefCell<Vec<String>>,
     /// Kept alive for the lifetime of the app.
     _resize: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut()>>>,
 }
@@ -105,6 +148,11 @@ impl App {
             store: RefCell::new(None),
             busy: Cell::new(false),
             pending: RefCell::new(String::new()),
+            last_search: RefCell::new(None),
+            last_hit: RefCell::new(None),
+            written: RefCell::new(Vec::new()),
+            accounts: RefCell::new(None),
+            chatter: RefCell::new(Vec::new()),
             _resize: RefCell::new(None),
         }
     }
@@ -124,6 +172,7 @@ impl App {
     /// line is live: without clearing it first, a message would be appended to
     /// what the user is typing.
     fn announce(&self, text: &str) {
+        self.remember_chatter(text);
         self.screen.write("\r\u{1b}[K");
         self.screen.write(&terminal::to_terminal_text(text));
         if !text.ends_with('\n') {
@@ -134,7 +183,39 @@ impl App {
         }
     }
 
-    /// Print a block of engine output, in `style` when given.
+    /// Print what a command produced. Searchable.
+    fn output(&self, text: &str, style: Option<&str>) {
+        self.block(text, style);
+    }
+
+    /// Print the app's own words: not searchable, because they are not what the
+    /// user asked to see.
+    fn say(&self, text: &str) {
+        self.remember_chatter(text);
+        self.block(text, None);
+    }
+
+    /// Note every line of `text` as the app's own, for the search to skip.
+    ///
+    /// Rows are not tracked instead, because xterm parses writes on a later tick:
+    /// a cursor position read straight after a write is stale, and a stale range
+    /// silently searches the wrong lines. Comparing text cannot go stale.
+    fn remember_chatter(&self, text: &str) {
+        let mut chatter = self.chatter.borrow_mut();
+        for line in text.lines() {
+            let line = line.trim();
+            if !line.is_empty() {
+                chatter.push(line.to_string());
+            }
+        }
+        // Only recent lines matter: the search is about what is on screen.
+        let excess = chatter.len().saturating_sub(500);
+        if excess > 0 {
+            chatter.drain(0..excess);
+        }
+    }
+
+    /// Print a block, in `style` when given.
     fn block(&self, text: &str, style: Option<&str>) {
         let text = terminal::to_terminal_text(text);
         if let Some(style) = style {
@@ -175,6 +256,16 @@ impl App {
 
     fn on_input(self: &Rc<App>, data: &str) {
         if self.busy.get() {
+            // Ctrl+C is the one thing that must never be queued: it is what stops
+            // the command that is running. Everything else typed while busy is kept
+            // and replayed, because there is no way to cancel a command that has
+            // not started and dropping it would lose what someone typed.
+            if data.contains('\u{3}') {
+                self.screen.write("^C\r\n");
+                self.pending.borrow_mut().clear();
+                self.cancel();
+                return;
+            }
             // Nothing typed is lost, and a queued Enter runs when the engine frees
             // up. The engine is synchronous inside its worker, so there is no way
             // to cancel what is already running.
@@ -245,9 +336,18 @@ impl App {
         }
     }
 
-    fn complete(&self) {
+    fn complete(self: &Rc<App>) {
+        if self.accounts.borrow().is_none() && !self.files.borrow().is_empty() {
+            self.announce("Reading account names for completion…");
+            self.fetch_accounts();
+            return;
+        }
+
         let paths = self.paths();
-        let candidates = terminal::candidates(&paths);
+        let mut candidates = terminal::candidates(&paths);
+        if let Some(accounts) = self.accounts.borrow().as_ref() {
+            candidates.extend(accounts.iter().cloned());
+        }
         let outcome = self.editor.borrow_mut().complete(&candidates);
         match outcome {
             Completion::Ambiguous(options) => self.announce(&options.join("  ")),
@@ -271,6 +371,7 @@ impl App {
             return;
         };
         save_history(self.editor.borrow().history());
+        self.remember_chatter(&format!("{PROMPT}{line}"));
 
         // The command is already on screen: the prompt redraw printed what was
         // typed, character by character. A shell does not echo it again, and
@@ -288,6 +389,16 @@ impl App {
             }
             Command::Upload => self.upload(upload::Mode::Files),
             Command::UploadDir => self.upload(upload::Mode::Directory),
+            Command::Demo => self.load_demo(),
+            Command::Search(term) => self.search(term.unwrap_or("")),
+            Command::SearchAgain(backwards) => self.search_again(backwards),
+            Command::Download(Some(path)) => self.download(path),
+            Command::Download(None) => {
+                let names: Vec<String> =
+                    self.written.borrow().iter().map(|file| file.path.clone()).collect();
+                let text = terminal::download_list(&names);
+                self.announce(&text);
+            }
             Command::Journal(None) => {
                 let text = terminal::file_list(&self.paths(), self.main.borrow().as_deref());
                 self.announce(&text);
@@ -335,6 +446,8 @@ impl App {
         // one sentence.
         *self.files.borrow_mut() = picked.files;
         *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
+        // Different journal, different accounts.
+        *self.accounts.borrow_mut() = None;
 
         self.remember();
         self.configure();
@@ -378,6 +491,19 @@ impl App {
         });
     }
 
+    /// Stop the running command by throwing the engine's worker away.
+    ///
+    /// The worker is replaced on the next run, so the environment has to be given
+    /// to it again — a new worker knows nothing about the journal or the terminal
+    /// size.
+    fn cancel(self: &Rc<App>) {
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            let _ = hledger::cancel().await;
+            app.configure();
+        });
+    }
+
     fn run(self: &Rc<App>, command: &str) {
         let argv = argv_for(command);
         let files = self.files.borrow().clone();
@@ -395,13 +521,28 @@ impl App {
             Ok(output) => {
                 let (visible, note) = terminal::visible_output(&output.stdout);
                 if !visible.trim().is_empty() {
-                    self.block(&visible, None);
+                    self.output(&visible, None);
                 }
                 if !output.stderr.trim().is_empty() {
-                    self.block(&output.stderr, Some("\u{1b}[31m"));
+                    self.output(&output.stderr, Some("\u{1b}[31m"));
                 }
                 if let Some(note) = note {
-                    self.block(&note, Some("\u{1b}[2m"));
+                    self.say(&note);
+                }
+                if !output.written.is_empty() {
+                    let sizes: Vec<(String, usize)> = output
+                        .written
+                        .iter()
+                        .map(|file| (file.path.clone(), file.contents.len()))
+                        .collect();
+                    self.say(&terminal::wrote_note(&sizes));
+                    // Kept for `download`, which may be typed long after the run;
+                    // a later run that writes the same path replaces it.
+                    let mut written = self.written.borrow_mut();
+                    for file in &output.written {
+                        written.retain(|kept| kept.path != file.path);
+                        written.push(file.clone());
+                    }
                 }
                 if output.is_failure() {
                     let status = format!(
@@ -409,9 +550,14 @@ impl App {
                         output.exit_code,
                         output.ms / 1000.0
                     );
+                    // The terminal's own exit status, but still the app talking.
                     self.block(&status, Some("\u{1b}[2;31m"));
+                    self.remember_chatter(&status);
                 }
             }
+            // Stopping a command is not a failure: the terminal already printed
+            // the ^C, and an error message would read as though something broke.
+            Err(EngineError::Cancelled) => self.say("[cancelled]"),
             Err(error) => self.block(&error.to_string(), Some("\u{1b}[31m")),
         }
 
@@ -424,6 +570,152 @@ impl App {
             // an Enter.
             self.handle(&pending);
         }
+    }
+
+    /// Load the built-in sample journal.
+    ///
+    /// The app is only useful with a journal, and a first-time visitor has not
+    /// got one here yet: `demo` is the difference between "upload something" and
+    /// seeing a report.
+    fn load_demo(self: &Rc<App>) {
+        *self.files.borrow_mut() = vec![
+            JournalFile::new("hledger.journal", terminal::DEMO_JOURNAL),
+            JournalFile::new("demo-prices.journal", terminal::DEMO_PRICES),
+        ];
+        *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
+        *self.accounts.borrow_mut() = None;
+
+        self.remember();
+        self.configure();
+        let text = match self.main.borrow().as_deref() {
+            Some(main) => terminal::demo_loaded(self.files.borrow().len(), main),
+            None => "The demo journal could not be selected.".to_string(),
+        };
+        self.announce(&text);
+    }
+
+    /// `/text`: search the output, or repeat the last search when blank.
+    fn search(self: &Rc<App>, term: &str) {
+        let term = if term.trim().is_empty() {
+            match self.last_search.borrow().clone() {
+                Some(previous) => previous,
+                None => {
+                    self.announce("Nothing to repeat yet — `/text` searches the output.");
+                    return;
+                }
+            }
+        } else {
+            term.trim().to_string()
+        };
+        *self.last_search.borrow_mut() = Some(term.clone());
+        // A new term starts from the top, not from wherever the last one was.
+        *self.last_hit.borrow_mut() = None;
+        self.find(&term, false);
+    }
+
+    /// `n` and `N`: repeat the last search, forwards or backwards.
+    fn search_again(self: &Rc<App>, backwards: bool) {
+        let Some(term) = self.last_search.borrow().clone() else {
+            self.announce("Nothing to repeat yet — `/text` searches the output.");
+            return;
+        };
+        self.find(&term, backwards);
+    }
+
+    /// Search the scrollback, and say which match it landed on.
+    ///
+    /// The count is the reason this is not left to an addon: "3 of 17" is what
+    /// tells a reader whether they are looking at the thing they meant, and
+    /// whether pressing `n` is worth it.
+    fn find(&self, term: &str, backwards: bool) {
+        // Everything on screen except the app's own lines.
+        let chatter = self.chatter.borrow().clone();
+        let output: Vec<(usize, String)> = self
+            .screen
+            .lines()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, line)| {
+                let line = line.trim();
+                !line.is_empty() && !chatter.iter().any(|said| said == line)
+            })
+            .collect();
+        if output.is_empty() {
+            self.announce("There is no output to search yet.");
+            return;
+        }
+        let from = *self.last_hit.borrow();
+        match terminal::search_lines(&output, term, from, backwards) {
+            Some(hit) => {
+                self.screen.reveal(hit.row, hit.column, hit.length);
+                *self.last_hit.borrow_mut() = Some((hit.row, hit.column));
+                // Deliberately without repeating the term: the status line is on
+                // screen, and a line containing the term would be found by the
+                // next search for it.
+                self.announce(&format!(
+                    "match {} of {} · {term}",
+                    hit.index, hit.total
+                ));
+            }
+            None => self.announce(&format!("No match for `{term}`.")),
+        }
+    }
+
+    /// `download <path>`: save a file a command wrote with `-o`.
+    fn download(self: &Rc<App>, path: &str) {
+        let found = self
+            .written
+            .borrow()
+            .iter()
+            .find(|file| file.path == path)
+            .cloned();
+        let Some(file) = found else {
+            let names: Vec<String> =
+                self.written.borrow().iter().map(|file| file.path.clone()).collect();
+            let text = terminal::download_list(&names);
+            self.announce(&format!("Nothing called `{path}` was written.\n{text}"));
+            return;
+        };
+        match save_to_disk(&file) {
+            Ok(()) => self.announce(&format!(
+                "Saving `{}` ({} bytes) — check your downloads.",
+                file.path,
+                file.contents.len()
+            )),
+            Err(reason) => self.announce(&format!("Could not save `{}`: {reason}", file.path)),
+        }
+    }
+
+    /// Ask the engine for the account names, once, so Tab can complete them.
+    ///
+    /// On a large journal this is a whole run — several seconds — so it happens
+    /// when someone first presses Tab rather than at startup, and it says so.
+    fn fetch_accounts(self: &Rc<App>) {
+        let files = self.files.borrow().clone();
+        self.busy.set(true);
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            let request =
+                HledgerRequest::new(vec!["hledger".to_string(), "accounts".to_string()], files);
+            let outcome = hledger::run(request).await;
+            app.busy.set(false);
+            match outcome {
+                Ok(output) if !output.is_failure() => {
+                    let names: Vec<String> = output
+                        .stdout
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    let count = names.len();
+                    *app.accounts.borrow_mut() = Some(names);
+                    app.announce(&format!("{count} account names ready — press Tab again."));
+                }
+                Ok(output) => app.announce(&output.failure_message()),
+                Err(error) => app.announce(&error.to_string()),
+            }
+        });
     }
 
     // -- persistence --------------------------------------------------------

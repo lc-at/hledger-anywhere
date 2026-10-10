@@ -6,9 +6,11 @@
 //! non-module script in the head executes before Trunk's deferred wasm bootstrap.
 //!
 //! The bindings are hand-written rather than generated: the app has no JavaScript
-//! build step, and two globals do not justify adding one. The addon is reached
-//! through `Reflect` because its global is a namespace object
-//! (`FitAddon.FitAddon`), which the `wasm_bindgen` macro cannot spell.
+//! build step, and a handful of globals do not justify adding one. The fit addon
+//! is reached through `Reflect` because its global is a namespace object
+//! (`FitAddon.FitAddon`), which the `wasm_bindgen` macro cannot spell; the buffer
+//! is read the same way for the same reason — xterm's scrollback API is deep and
+//! mostly untyped, and searching it is the app's job, not an addon's.
 
 use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::prelude::*;
@@ -64,11 +66,10 @@ impl Screen {
     pub fn mount(element: &HtmlElement) -> Result<Screen, String> {
         let terminal = Xterm::new(&options());
 
-        let fit = fit_addon();
+        let fit = addon("FitAddon");
         if let Some(addon) = &fit {
             terminal.load_addon(addon);
         }
-
         terminal.open(element);
         let screen = Screen { terminal, fit };
         screen.fit();
@@ -111,6 +112,70 @@ impl Screen {
         }
     }
 
+    /// The whole scrollback, oldest first, as plain text.
+    ///
+    /// This is what the search reads, including the lines that have scrolled off
+    /// screen — which is the whole reason to search a terminal. The app decides
+    /// which of these rows are engine output; see `App::output_rows`.
+    pub fn lines(&self) -> Vec<String> {
+        let Some(active) = self.buffer() else {
+            return Vec::new();
+        };
+        let Some(get_line) = method(&active, "getLine") else {
+            return Vec::new();
+        };
+        let length = property(&active, "length").unwrap_or(0.0) as usize;
+
+        let mut lines = Vec::with_capacity(length);
+        for row in 0..length {
+            let Ok(line) = get_line.call1(&active, &JsValue::from_f64(row as f64)) else {
+                continue;
+            };
+            if line.is_null() || line.is_undefined() {
+                lines.push(String::new());
+                continue;
+            }
+            // `translateToString(true)` trims the padding a terminal pads every
+            // line with, which is what makes a search match what is visible.
+            let text = method(&line, "translateToString")
+                .and_then(|function| function.call1(&line, &JsValue::TRUE).ok())
+                .and_then(|value| value.as_string())
+                .unwrap_or_default();
+            lines.push(text);
+        }
+        lines
+    }
+
+    /// Scroll the line at buffer index `row` into view and select the match.
+    pub fn reveal(&self, row: usize, column: usize, length: usize) {
+        if let Some(scroll) = method(&self.terminal, "scrollToLine") {
+            let _ = scroll.call1(&self.terminal, &JsValue::from_f64(row as f64));
+        }
+        let Some(select) = method(&self.terminal, "select") else {
+            return;
+        };
+        // `select` works in viewport coordinates, so the row has to be converted
+        // after scrolling — otherwise every match above the fold selects the
+        // wrong line.
+        let viewport = self
+            .buffer()
+            .and_then(|active| property(&active, "viewportY"))
+            .unwrap_or(0.0);
+        let view_row = (row as f64 - viewport).max(0.0);
+        let _ = select.call3(
+            &self.terminal,
+            &JsValue::from_f64(column as f64),
+            &JsValue::from_f64(view_row),
+            &JsValue::from_f64(length as f64),
+        );
+    }
+
+    /// xterm's active buffer, which holds the scrollback.
+    fn buffer(&self) -> Option<JsValue> {
+        let buffer = Reflect::get(&self.terminal, &JsValue::from_str("buffer")).ok()?;
+        Reflect::get(&buffer, &JsValue::from_str("active")).ok()
+    }
+
     /// Call `handler` for every chunk of input the user types.
     ///
     /// The closure is handed to JavaScript and deliberately never dropped: the
@@ -128,11 +193,25 @@ impl Screen {
     }
 }
 
-/// Construct the fit addon, or `None` when it is not on the page.
-fn fit_addon() -> Option<JsValue> {
+/// A method on a JS object, ready to call.
+fn method(target: &JsValue, name: &str) -> Option<Function> {
+    Reflect::get(target, &JsValue::from_str(name))
+        .ok()
+        .and_then(|value| value.dyn_into::<Function>().ok())
+}
+
+/// A numeric property of a JS object.
+fn property(target: &JsValue, name: &str) -> Option<f64> {
+    Reflect::get(target, &JsValue::from_str(name)).ok()?.as_f64()
+}
+
+/// Construct one of the vendored xterm addons, or `None` when it is not on the
+/// page. Both publish themselves as `<Name>.<Name>`, so the global is a namespace
+/// object holding the class.
+fn addon(name: &str) -> Option<JsValue> {
     let window = web_sys::window()?;
-    let namespace = Reflect::get(window.as_ref(), &JsValue::from_str("FitAddon")).ok()?;
-    let class = Reflect::get(&namespace, &JsValue::from_str("FitAddon")).ok()?;
+    let namespace = Reflect::get(window.as_ref(), &JsValue::from_str(name)).ok()?;
+    let class = Reflect::get(&namespace, &JsValue::from_str(name)).ok()?;
     let class = class.dyn_into::<Function>().ok()?;
     Reflect::construct(&class, &Array::new()).ok()
 }
@@ -153,7 +232,10 @@ fn options() -> JsValue {
             "ui-monospace, SFMono-Regular, Menlo, Consolas, \"DejaVu Sans Mono\", monospace",
         ),
     );
-    set(&options, "scrollback", JsValue::from_f64(5000.0));
+    // Generous, because this is where a long report goes to be read: a terminal
+    // that keeps only the last few screens cannot be searched for what scrolled
+    // past. The output cap in `terminal::MAX_OUTPUT_BYTES` is what bounds it.
+    set(&options, "scrollback", JsValue::from_f64(50_000.0));
     // The app writes every newline itself, so xterm must not rewrite them.
     set(&options, "convertEol", JsValue::FALSE);
     set(&options, "allowProposedApi", JsValue::TRUE);

@@ -179,6 +179,46 @@ function buildRoot(files) {
   return new Map([['data', data]]);
 }
 
+/**
+ * The files hledger created or changed during a run.
+ *
+ * `-o FILE` is how a report is written instead of printed, and the mount is
+ * in-memory, so without this the file would vanish with the run. Walking the tree
+ * and comparing against what was mounted is the only honest way to tell: hledger
+ * can also rewrite a journal in place, and that should be offered back too.
+ */
+function writtenFiles(root, mounted) {
+  const written = [];
+
+  const record = (path, file) => {
+    const contents = new TextDecoder('utf-8').decode(file.data ?? new Uint8Array(0));
+    // Files under data/ are the uploaded ones: only worth reporting if the run
+    // changed them. Anything else the run created is news by definition —
+    // including a file at the mount root, which is where a relative `-o` lands.
+    const uploaded = path.startsWith('data/') ? path.slice('data/'.length) : null;
+    if (uploaded === null || mounted.get(uploaded) !== contents) {
+      written.push([uploaded ?? path, contents]);
+    }
+  };
+
+  const walk = (entries, prefix) => {
+    for (const [name, entry] of entries) {
+      const path = prefix === '' ? name : `${prefix}/${name}`;
+      if (entry instanceof Directory) {
+        walk(entry.contents, path);
+      } else if (entry instanceof File) {
+        record(path, entry);
+      }
+    }
+  };
+
+  // The whole mount, not just data/, and entries may be files as well as
+  // directories: `-o out.csv` resolves against the engine's working directory,
+  // which is the mount root.
+  walk(root, '');
+  return written;
+}
+
 function normaliseFiles(files) {
   if (!Array.isArray(files)) {
     return [];
@@ -205,6 +245,12 @@ async function run(request) {
   const outDecoder = new TextDecoder('utf-8');
   const errDecoder = new TextDecoder('utf-8');
 
+  const mounted = normaliseFiles(request.files);
+  // What was mounted, so a file the run changed can be told from one it left
+  // alone. Built before the filesystem, which it is compared against afterwards.
+  const before = new Map(mounted.map((file) => [file.path, file.contents]));
+  const root = buildRoot(mounted);
+
   const fds = [
     // stdin: empty. Reports never read it, and WASI needs the slot filled.
     new OpenFile(new File(new Uint8Array(0))),
@@ -214,7 +260,7 @@ async function run(request) {
     new ConsoleStdout((buffer) => {
       stderr += errDecoder.decode(buffer, { stream: true });
     }),
-    new PreopenDirectory('/', buildRoot(normaliseFiles(request.files))),
+    new PreopenDirectory('/', root),
   ];
 
   const argv = Array.isArray(request.argv) ? request.argv.map(String) : [];
@@ -248,12 +294,17 @@ async function run(request) {
   stdout += outDecoder.decode();
   stderr += errDecoder.decode();
 
+  // Anything the run wrote, so the terminal can offer it for download before the
+  // in-memory mount is thrown away.
+  const written = writtenFiles(root, before);
+
   return {
     argv,
     stdout,
     stderr,
     exitCode,
     ms: performance.now() - started,
+    written,
   };
 }
 
