@@ -493,12 +493,6 @@ impl App {
         self.prompt();
     }
 
-    /// `chart [args]`: run a report and draw it.
-    ///
-    /// The default asks the question a chart is usually asked, what did the months
-    /// cost, and any argument overrides it. `-O csv` is added because it is the
-    /// only output that keeps accounts, periods and amounts apart without parsing a
-    /// text table whose columns move; a caller who asked for a format keeps theirs.
     /// Run what a plugin asked for.
     ///
     /// The plugin describes; the app carries it out. That is the whole contract, and

@@ -1511,11 +1511,6 @@ pub fn download_list(files: &[String]) -> String {
     text
 }
 
-/// The note printed above a chart, so it is always clear what was drawn.
-///
-/// A chart is the app's interpretation, not hledger's output, and the numbers are
-/// hledger's own; saying which command produced them is the difference between a
-/// picture and a claim.
 /// Read an on/off argument, accepting the spellings people actually type.
 pub fn parse_switch(text: &str) -> Result<bool, String> {
     match text.trim().to_lowercase().as_str() {
