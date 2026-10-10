@@ -862,17 +862,39 @@ pub fn isearch_prompt(query: &str) -> String {
 /// Writing instead of printing is what `-o` is for, and the file only exists
 /// inside the run's in-memory mount, so saying where it went matters more than
 /// usual: without this the command looks like it did nothing.
-pub fn wrote_note(files: &[(String, usize)]) -> String {
-    let mut text = String::from("[wrote");
-    for (path, bytes) in files {
-        text.push_str(&format!(" {path} ({bytes} bytes)"));
+pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
+    let mut text = String::from("[");
+    for (index, (path, bytes, replaced)) in files.iter().enumerate() {
+        if index > 0 {
+            text.push(';');
+        }
+        text.push_str(&format!(
+            "{}{} {path} ({})",
+            if index > 0 { " " } else { "" },
+            if *replaced { "changed" } else { "wrote" },
+            bytes_label(*bytes)
+        ));
     }
-    let names: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+    let names: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
     text.push_str(&format!(
-        " — `download {}` to save it]",
+        " — saved; `download {}` for a copy]",
         names.first().copied().unwrap_or("")
     ));
     text
+}
+
+/// A size as a person would say it.
+pub fn bytes_label(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes / MB)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes / KB)
+    } else {
+        format!("{bytes:.0} bytes")
+    }
 }
 
 /// What the terminal prints for `download` with no argument.
@@ -1676,17 +1698,42 @@ mod tests {
 
     #[test]
     fn a_run_that_wrote_files_says_so_and_how_to_get_them() {
-        let note = wrote_note(&[("out.csv".to_string(), 118)]);
+        let note = wrote_note(&[("out.csv".to_string(), 118, false)]);
+        assert!(note.starts_with("[wrote out.csv"), "no stray gap: {note}");
+        assert!(note.ends_with("]"), "{note}");
         assert!(note.contains("out.csv"));
         assert!(note.contains("118 bytes"));
         assert!(note.contains("download out.csv"), "{note}");
 
         let two = wrote_note(&[
-            ("a.csv".to_string(), 10),
-            ("b.csv".to_string(), 20),
+            ("a.csv".to_string(), 10, false),
+            ("b.csv".to_string(), 20, false),
         ]);
         assert!(two.contains("a.csv (10 bytes)"));
         assert!(two.contains("b.csv (20 bytes)"));
+    }
+
+    #[test]
+    fn a_written_file_says_whether_it_was_new_or_changed() {
+        let note = wrote_note(&[
+            ("bal.csv".to_string(), 326, false),
+            ("data/2024.journal".to_string(), 4096, true),
+        ]);
+        assert!(note.contains("wrote bal.csv (326 bytes)"), "{note}");
+        assert!(note.contains("changed data/2024.journal (4.0 KB)"), "{note}");
+        // And that it was kept, with the command that gets a copy.
+        assert!(note.contains("saved"), "{note}");
+        assert!(note.contains("`download bal.csv`"), "{note}");
+    }
+
+    #[test]
+    fn sizes_are_written_the_way_people_say_them() {
+        assert_eq!(bytes_label(0), "0 bytes");
+        assert_eq!(bytes_label(326), "326 bytes");
+        assert_eq!(bytes_label(1024), "1.0 KB");
+        assert_eq!(bytes_label(1536), "1.5 KB");
+        assert_eq!(bytes_label(1024 * 1024), "1.0 MB");
+        assert_eq!(bytes_label(3 * 1024 * 1024 + 512 * 1024), "3.5 MB");
     }
 
     #[test]

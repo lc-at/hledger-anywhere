@@ -83,6 +83,13 @@ default because building and maintaining that second representation costs
 something, and the setting is remembered, so someone who needs it gets it from the
 first render of every visit rather than having to find a command first.
 
+**What a command writes stays written.** `-o FILE` puts a file into the mount, and
+the app keeps it with the rest: `print -o data/copy.journal` is still there next
+visit, and `stats -f data/copy.journal` reads it. That makes `-o` onto a loaded file
+an edit rather than a report you have to catch, and `download` the way to get a copy
+out of the browser. (The one thing it does not yet track is a command that *deletes*
+a file — `rm`-style changes are not noticed.)
+
 **Dropping files anywhere on the page** loads them, the same as `upload` — most
 people reach for a drag before they read a help text, so the whole page accepts one
 and outlines itself while a drag is over it. Dropped files land at the root of the

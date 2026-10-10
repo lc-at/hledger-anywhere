@@ -930,12 +930,31 @@ impl App {
                     self.say(&note);
                 }
                 if !output.written.is_empty() {
-                    let sizes: Vec<(String, usize)> = output
-                        .written
-                        .iter()
-                        .map(|file| (file.path.clone(), file.contents.len()))
-                        .collect();
+                    // What a command writes is part of the filesystem, not a
+                    // detour from it: it replaces or joins the mounted files and is
+                    // kept for the next visit. That is what makes `-o` onto a
+                    // loaded file an edit rather than a report you have to catch.
+                    let mut sizes = Vec::new();
+                    {
+                        let mut files = self.files.borrow_mut();
+                        for file in &output.written {
+                            let replaced = files.iter().any(|known| known.path == file.path);
+                            sizes.push((file.path.clone(), file.contents.len(), replaced));
+                            files.retain(|known| known.path != file.path);
+                            files.push(file.clone());
+                        }
+                        files.sort_by(|left, right| left.path.cmp(&right.path));
+                    }
+
+                    // A journal that arrived this way is a journal like any other.
+                    if self.main.borrow().is_none() {
+                        *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
+                    }
+                    // The account names were read from the journal just replaced.
+                    *self.accounts.borrow_mut() = None;
+
                     self.say(&terminal::wrote_note(&sizes));
+
                     // Kept for `download`, which may be typed long after the run;
                     // a later run that writes the same path replaces it.
                     let mut written = self.written.borrow_mut();
@@ -943,6 +962,11 @@ impl App {
                         written.retain(|kept| kept.path != file.path);
                         written.push(file.clone());
                     }
+
+                    // Stored and re-sent, so the next command reads the new
+                    // contents rather than the ones it started with.
+                    self.remember();
+                    self.configure();
                 }
                 if output.is_failure() {
                     let status = format!(
