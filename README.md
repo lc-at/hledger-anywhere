@@ -110,8 +110,9 @@ Everything that is not in this table is passed to hledger verbatim.
 | `screenreader` | Turn xterm's accessibility tree `on` or `off`. |
 | `clear` | Clear the screen. |
 | `plugins [add\|remove\|reload]` | List the installed plugins, or install a repository by URL or path. One is bundled. |
-| `settings [export\|import <path>]` | Show what is remembered, or move it between instances as a file. |
+| `settings [export\|import]` | Show what is remembered, or move it between instances as a file. `import` opens the file picker. |
 | `theme [name]` | List the colour themes, or select one. Plugin themes are listed too. |
+| `find <text>` | Search everything printed so far; `n` and `N` step through the matches. `/text` does the same. |
 | `?` | The app's own help, the engine's version and its checksum. |
 
 ### Keys

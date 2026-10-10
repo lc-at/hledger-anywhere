@@ -287,6 +287,7 @@ pub fn classify(line: &str) -> Command<'_> {
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
         // nothing is shadowed; `/` alone repeats the last search.
+        "find" => Command::Search((!rest.trim().is_empty()).then_some(rest)),
         "n" => Command::SearchAgain(false),
         "N" => Command::SearchAgain(true),
         _ if trimmed.starts_with('/') => Command::Search(Some(trimmed[1..].trim())),
@@ -766,6 +767,7 @@ pub const COMMANDS: &[&str] = &[
     "plugins",
     "settings",
     "theme",
+    "find",
 ];
 
 pub fn candidates(paths: &[String]) -> Vec<String> {
@@ -1338,9 +1340,10 @@ pub fn settings_list(rows: &[(String, String)]) -> String {
         ));
     }
     text.push_str(&format!(
-        "\r\n{} writes them to a file you can keep, and {} reads one back.\r\n",
+        "\r\n{} writes them to a file you can keep, and {} reads one back, \
+         opening the file picker for it.\r\n",
         bold("settings export"),
-        bold("settings import <path>")
+        bold("settings import")
     ));
     text
 }
@@ -1436,21 +1439,40 @@ pub fn expand_alias(
     line: &str,
     aliases: &[(String, String)],
 ) -> (String, Option<(String, String)>) {
-    let (head, rest) = split_first_token(line);
-    let Some((name, expansion)) = aliases
-        .iter()
-        .find(|(name, _)| name == &head)
-        .map(|(name, expansion)| (name.clone(), expansion.clone()))
-    else {
-        return (line.trim().to_string(), None);
-    };
-    let expanded = if rest.trim().is_empty() {
-        expansion.clone()
-    } else {
-        format!("{expansion} {}", rest.trim())
-    };
-    (expanded, Some((name, expansion)))
+    let mut line = line.trim().to_string();
+    let mut first: Option<(String, String)> = None;
+
+    // An alias may point at another alias, and did not: `alias y=q` handed hledger the
+    // word `q` and hledger said it had never heard of it. This keeps expanding until the
+    // first word is one nothing answers to, and stops at a limit so two aliases pointing
+    // at each other end with an answer instead of hanging the terminal.
+    for _ in 0..MAX_ALIAS_DEPTH {
+        let (head, rest) = split_first_token(&line);
+        let Some((name, expansion)) = aliases
+            .iter()
+            .find(|(name, _)| name == &head)
+            .map(|(name, expansion)| (name.clone(), expansion.clone()))
+        else {
+            break;
+        };
+        if first.is_none() {
+            first = Some((name, expansion.clone()));
+        }
+        line = if rest.trim().is_empty() {
+            expansion
+        } else {
+            format!("{expansion} {}", rest.trim())
+        };
+    }
+
+    (line, first)
 }
+
+/// How many aliases deep an expansion goes before it is left alone.
+///
+/// A chain of aliases is useful; two that point at each other are a loop, and a loop has to
+/// end somewhere.
+const MAX_ALIAS_DEPTH: usize = 8;
 
 /// What the terminal prints when `alias` is given the list of them.
 pub fn alias_list(aliases: &[(String, String)]) -> String {
@@ -1952,7 +1974,8 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Reports",
         &[
-            ("/text", "search the output; n and N repeat the search"),
+            ("find <text>", "search everything printed so far; n and N step through it"),
+            ("/text", "the same search, for people who reach for / in a pager"),
             ("alias name=cmd", "make a name run a command; alias lists them"),
             ("unalias <name>", "remove one"),
             ("plugins", "list the installed plugins, or add and remove repositories"),
@@ -2129,6 +2152,57 @@ mod tests {
 
     fn options(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    #[test]
+    fn an_alias_may_point_at_another_alias() {
+        let aliases = vec![
+            ("q".to_string(), "balance expenses".to_string()),
+            ("y".to_string(), "q".to_string()),
+        ];
+        // `y` is `q` is `balance expenses`, and the note names the one that was typed.
+        let (line, used) = expand_alias("y", &aliases);
+        assert_eq!(line, "balance expenses");
+        assert_eq!(used, Some(("y".to_string(), "q".to_string())));
+
+        // Arguments survive the whole chain.
+        let (line, _) = expand_alias("y --depth 1", &aliases);
+        assert_eq!(line, "balance expenses --depth 1");
+
+        // A chain that ends at a word nothing answers to stops there.
+        let (line, _) = expand_alias("y", &[("y".to_string(), "q".to_string())]);
+        assert_eq!(line, "q");
+    }
+
+    #[test]
+    fn aliases_that_point_at_each_other_stop() {
+        // The limit, not a hang: the terminal has to come back.
+        let aliases = vec![
+            ("a".to_string(), "b".to_string()),
+            ("b".to_string(), "a".to_string()),
+        ];
+        let (line, used) = expand_alias("a", &aliases);
+        assert!(line == "a" || line == "b", "{line}");
+        assert!(used.is_some());
+    }
+
+    #[test]
+    fn find_searches_the_same_way_a_slash_does() {
+        // One search, two ways to ask for it: the pager spelling and the word.
+        assert_eq!(classify("find cash"), Command::Search(Some("cash")));
+        assert_eq!(classify("/cash"), Command::Search(Some("cash")));
+        // Bare, both mean "the last search again". The app reads an empty term that way,
+        // so this asserts the meaning rather than the shape the variant happens to take:
+        // the two spellings do not produce the same variant, and should not have to.
+        for line in ["find", "/"] {
+            match classify(line) {
+                Command::Search(term) => assert!(
+                    term.unwrap_or("").trim().is_empty(),
+                    "{line} should repeat the last search, got {term:?}"
+                ),
+                other => panic!("{line} was {other:?}"),
+            }
+        }
     }
 
     #[test]

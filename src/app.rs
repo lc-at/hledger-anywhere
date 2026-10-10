@@ -1625,10 +1625,14 @@ impl App {
         match head.as_str() {
             "export" => self.export_settings(),
             "import" => {
-                let Some(path) = self.single(&rest) else {
-                    return;
-                };
-                self.import_settings(&path);
+                // With no argument, ask for the file: a settings file from another instance
+                // is somewhere on disk, and requiring an upload first is a step that exists
+                // only because nothing opened the picker.
+                if rest.trim().is_empty() {
+                    self.import_settings(None);
+                } else if let Some(path) = self.single(&rest) {
+                    self.import_settings(Some(path));
+                }
             }
             other => {
                 self.say(&terminal::settings_usage(other));
@@ -1653,24 +1657,54 @@ impl App {
         self.prompt();
     }
 
-    /// `settings import <path>`: read a settings file that is loaded, and apply it.
-    fn import_settings(self: &Rc<App>, path: &str) {
-        let contents = self
-            .files
+    /// `settings import [path]`: read a settings file and apply it.
+    ///
+    /// A file that is already loaded is read straight away. Anything else opens the picker,
+    /// because the settings file a person wants to import is usually one they just
+    /// downloaded, and being told to upload it first is a step that exists for no reason
+    /// they can see.
+    fn import_settings(self: &Rc<App>, path: Option<String>) {
+        if let Some(path) = path {
+            match self.file_contents(&path) {
+                Some(contents) => return self.apply_settings_text(&contents),
+                None => self.announce(&format!(
+                    "No loaded file is called {}. {}",
+                    terminal::bold(&path),
+                    terminal::dim("Choose the file instead.")
+                )),
+            }
+        }
+
+        // Opened synchronously, inside the command: see the module comment on upload.
+        let pending = match upload::open_picker(upload::Mode::Files) {
+            Ok(pending) => pending,
+            Err(error) => return self.announce(&error.message()),
+        };
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            match pending.await_selection().await {
+                Ok(picked) => match picked.files.first() {
+                    Some(file) => app.apply_settings_text(&file.contents),
+                    None => app.announce("No file was chosen."),
+                },
+                Err(upload::PickError::Cancelled) => app.announce("Import cancelled"),
+                Err(error) => app.announce(&error.message()),
+            }
+        });
+    }
+
+    /// The contents of a loaded file, if it is loaded.
+    fn file_contents(&self, path: &str) -> Option<String> {
+        self.files
             .borrow()
             .iter()
             .find(|file| file.path == path)
-            .map(|file| file.contents.clone());
-        let Some(contents) = contents else {
-            let names = self.paths();
-            let main = self.main.borrow().clone();
-            return self.announce(&format!(
-                "No loaded file is called {}. Upload it first, then import it.\n{}",
-                terminal::bold(path),
-                terminal::file_list(&names, main.as_deref())
-            ));
-        };
-        match Settings::from_json(&contents) {
+            .map(|file| file.contents.clone())
+    }
+
+    /// Read settings text and put it into effect.
+    fn apply_settings_text(self: &Rc<App>, text: &str) {
+        match Settings::from_json(text) {
             Ok(import) => self.apply_settings(import.settings, &import.dropped),
             Err(error) => self.announce(&error),
         }
@@ -1699,7 +1733,7 @@ impl App {
             "aliases".to_string(),
             "theme".to_string(),
             "plugin settings".to_string(),
-            terminal::count(repositories.len(), "repository", "repositories"),
+            "repositories".to_string(),
         ];
         let dropped: Vec<String> = dropped.to_vec();
         update_settings(|settings| *settings = imported);
@@ -2212,7 +2246,8 @@ impl App {
                 Some(previous) => previous,
                 None => {
                     self.announce(&format!(
-                "Nothing to repeat yet. {} searches the output.",
+                "Nothing to repeat yet. {} or {} searches everything printed so far.",
+                terminal::bold("find <text>"),
                 terminal::bold("/text")
             ));
                     return;
@@ -2231,7 +2266,8 @@ impl App {
     fn search_again(self: &Rc<App>, backwards: bool) {
         let Some(term) = self.last_search.borrow().clone() else {
             self.announce(&format!(
-                "Nothing to repeat yet. {} searches the output.",
+                "Nothing to repeat yet. {} or {} searches everything printed so far.",
+                terminal::bold("find <text>"),
                 terminal::bold("/text")
             ));
             return;
