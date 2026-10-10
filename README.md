@@ -56,10 +56,24 @@ What hledger does with the width is hledger's business: `register` and `aregiste
 lay their columns out to fill it, while `balance` and `print` size themselves to
 their content and look the same at any width.
 
-Keys: **Enter** runs, **↑/↓** recall history, **Tab** completes hledger commands,
-flags, account names and uploaded paths, **Ctrl+U** or **Ctrl+C** clears the line,
-**Ctrl+L** clears the screen, and **Ctrl+C while a command is running stops it**.
-`hledger help` has the rest.
+Keys: **Enter** runs, **Tab** completes hledger commands, flags, account names and
+uploaded paths, **↑/↓** recall history, and **Ctrl+C stops a running command**.
+
+The **Emacs and readline keys** work as well, because that is what people who live
+in a terminal already have in their fingers:
+
+| | |
+|---|---|
+| `Ctrl+A` `Ctrl+E` | start / end of line |
+| `Ctrl+B` `Ctrl+F` | back / forward one character |
+| `Alt+B` `Alt+F` | back / forward one word |
+| `Ctrl+P` `Ctrl+N` | previous / next history entry (same as ↑/↓) |
+| `Ctrl+R` | reverse search the history, incremental — type to narrow, `Ctrl+R` again to go further back, `Enter` to run, `Ctrl+G` to cancel |
+| `Ctrl+K` `Ctrl+U` `Ctrl+W` | kill to end / to start / the word before the cursor |
+| `Ctrl+Y` | yank the most recent kill |
+| `Ctrl+T` | transpose the two characters around the cursor |
+| `Ctrl+D` `Ctrl+H` | delete forward / backward |
+| `Ctrl+L` | clear the screen |
 
 **Uploaded files come back on the next visit** — they are stored in IndexedDB, and
 the terminal says how many it resumed and which file it is reading. That cache is

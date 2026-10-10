@@ -164,6 +164,9 @@ pub struct Editor {
     recalled: Option<usize>,
     /// The line as it was before history recall began, so ↓ can come back to it.
     draft: String,
+    /// What Ctrl+K, Ctrl+U and Ctrl+W have killed, oldest first. Emacs' kill ring,
+    /// minus the cycling: Ctrl+Y yanks the most recent kill.
+    kill_ring: Vec<String>,
 }
 
 impl Editor {
@@ -235,11 +238,101 @@ impl Editor {
         self.cursor = self.chars.len();
     }
 
-    /// Ctrl+U and Ctrl+C: throw the line away.
+    /// Ctrl+C: throw the line away without remembering it.
     pub fn clear_line(&mut self) {
         self.chars.clear();
         self.cursor = 0;
         self.recalled = None;
+    }
+
+    fn kill(&mut self, text: String) {
+        if !text.is_empty() {
+            self.kill_ring.push(text);
+        }
+    }
+
+    /// Ctrl+K: kill from the cursor to the end of the line.
+    pub fn kill_to_end(&mut self) {
+        let killed: String = self.chars.split_off(self.cursor).into_iter().collect();
+        self.kill(killed);
+    }
+
+    /// Ctrl+U: kill from the cursor back to the start.
+    pub fn kill_to_start(&mut self) {
+        let killed: String = self.chars.drain(..self.cursor).collect();
+        self.cursor = 0;
+        self.kill(killed);
+    }
+
+    /// Ctrl+W: kill the word before the cursor, as a shell does — whitespace
+    /// separates words, so a path or an account name goes in one keystroke.
+    pub fn kill_word_backward(&mut self) {
+        let start = self.word_start();
+        let killed: String = self.chars.drain(start..self.cursor).collect();
+        self.cursor = start;
+        self.kill(killed);
+    }
+
+    /// Ctrl+Y: put the most recent kill back at the cursor.
+    ///
+    /// A no-op when nothing has been killed, rather than an error: a reader who
+    /// presses it out of habit should not be told off.
+    pub fn yank(&mut self) {
+        let Some(text) = self.kill_ring.last().cloned() else {
+            return;
+        };
+        for character in text.chars() {
+            self.chars.insert(self.cursor, character);
+            self.cursor += 1;
+        }
+    }
+
+    /// Ctrl+T: swap the two characters either side of the cursor.
+    ///
+    /// At the end of a line Emacs swaps the last two, which is the behaviour
+    /// people rely on for fixing a typo they have just noticed.
+    pub fn transpose(&mut self) {
+        if self.chars.len() < 2 {
+            return;
+        }
+        let right = if self.cursor >= self.chars.len() {
+            self.chars.len() - 1
+        } else {
+            self.cursor
+        };
+        let left = right - 1;
+        self.chars.swap(left, right);
+        self.cursor = right + 1;
+    }
+
+    /// Alt+B: move to the start of the word before the cursor.
+    pub fn word_left(&mut self) {
+        self.cursor = self.word_start();
+    }
+
+    /// Alt+F: move past the end of the word after the cursor.
+    pub fn word_right(&mut self) {
+        let mut index = self.cursor;
+        // Skip the whitespace we are sitting in, then the word itself.
+        while index < self.chars.len() && self.chars[index].is_whitespace() {
+            index += 1;
+        }
+        while index < self.chars.len() && !self.chars[index].is_whitespace() {
+            index += 1;
+        }
+        self.cursor = index;
+    }
+
+    /// Where the word before the cursor begins.
+    fn word_start(&self) -> usize {
+        let mut index = self.cursor;
+        while index > 0 && self.chars[index - 1].is_whitespace() {
+            index -= 1;
+        }
+        while index > 0 && !self.chars[index - 1].is_whitespace() {
+            index -= 1;
+        }
+        index
     }
 
     /// Replace the whole line, as completion does.
@@ -515,6 +608,27 @@ P 2024-02-01 EUR $1.08
 P 2024-02-01 GBP $1.27
 ";
 
+/// The most recent history entry before `from` that contains `query`.
+///
+/// This is Ctrl+R: incremental reverse search, so the caller narrows `query` a
+/// character at a time and asks again. Case-insensitive, like the scrollback
+/// search, and `from` is the index to search *before*, which is how repeated
+/// Ctrl+R walks backwards through the matches.
+pub fn reverse_search(history: &[String], query: &str, from: Option<usize>) -> Option<(usize, String)> {
+    if history.is_empty() {
+        return None;
+    }
+    let needle = query.to_lowercase();
+    let start = from.unwrap_or(history.len()).min(history.len());
+    // Walking backwards, so the first hit is the most recent one.
+    history[..start]
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, entry)| entry.to_lowercase().contains(&needle))
+        .map(|(index, entry)| (index, entry.clone()))
+}
+
 /// Where a search term was found in the scrollback.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
@@ -597,6 +711,11 @@ pub fn search_lines(
         index: index + 1,
         total: count,
     })
+}
+
+/// The prompt shown while Ctrl+R is narrowing a search, as readline shows it.
+pub fn isearch_prompt(query: &str) -> String {
+    format!("(reverse-i-search)`{query}': ")
 }
 
 /// What the terminal prints after a run that wrote files.
@@ -1116,6 +1235,139 @@ mod tests {
         assert_eq!(search_lines(&lines(&["alpha"]), "zebra", None, false), None);
         assert_eq!(search_lines(&lines(&["alpha"]), "   ", None, false), None);
         assert_eq!(search_lines(&[], "alpha", None, false), None);
+    }
+
+    #[test]
+    fn killing_and_yanking_round_trips_through_the_ring() {
+        let mut e = Editor::default();
+        e.insert("balance assets:bank");
+        // Ctrl+K kills from the cursor to the end, which means the cursor has to
+        // be where the wanted text starts.
+        e.home();
+        for _ in 0..8 {
+            e.right();
+        }
+        e.kill_to_end();
+        assert_eq!(e.line(), "balance ");
+        assert_eq!(e.kill_ring, ["assets:bank"]);
+        e.yank();
+        assert_eq!(e.line(), "balance assets:bank");
+
+        // Ctrl+U kills back to the start, and the newest kill is what Ctrl+Y
+        // brings back.
+        e.kill_to_start();
+        assert_eq!(e.line(), "");
+        assert_eq!(e.kill_ring.len(), 2);
+        e.yank();
+        assert_eq!(e.line(), "balance assets:bank");
+    }
+
+    #[test]
+    fn ctrl_w_takes_the_whole_previous_word() {
+        let mut e = Editor::default();
+        e.insert("balance expenses:food:groceries");
+        e.kill_word_backward();
+        assert_eq!(e.line(), "balance ");
+        assert_eq!(e.kill_ring, ["expenses:food:groceries"]);
+        e.yank();
+        assert_eq!(e.line(), "balance expenses:food:groceries");
+
+        // At the start there is no word to take, and nothing lands in the ring.
+        let mut e = Editor::default();
+        e.insert("balance");
+        e.home();
+        e.kill_word_backward();
+        assert_eq!(e.line(), "balance");
+        assert!(e.kill_ring.is_empty());
+    }
+
+    #[test]
+    fn yanking_an_empty_ring_does_nothing_rather_than_complaining() {
+        let mut e = Editor::default();
+        e.insert("balance");
+        e.yank();
+        assert_eq!(e.line(), "balance");
+    }
+
+    #[test]
+    fn transposing_fixes_the_character_you_just_got_wrong() {
+        // "balance" typed with the first two letters the wrong way round.
+        let mut e = Editor::default();
+        e.insert("ablance");
+        e.home();
+        e.right();
+        e.transpose();
+        assert_eq!(e.line(), "balance");
+        assert_eq!(e.cursor(), 2, "the cursor ends up past the pair");
+
+        // At the end, Emacs swaps the last two.
+        let mut e = Editor::default();
+        e.insert("ab");
+        e.transpose();
+        assert_eq!(e.line(), "ba");
+
+        // Nothing to swap.
+        let mut e = Editor::default();
+        e.insert("a");
+        e.transpose();
+        assert_eq!(e.line(), "a");
+    }
+
+    #[test]
+    fn word_motion_moves_by_words() {
+        let mut e = Editor::default();
+        e.insert("balance expenses:food --tree");
+        e.word_left();
+        assert_eq!(e.cursor(), 22);
+        e.word_left();
+        assert_eq!(e.cursor(), 8);
+        e.word_left();
+        assert_eq!(e.cursor(), 0);
+        e.word_left();
+        assert_eq!(e.cursor(), 0, "the start is a wall");
+
+        e.word_right();
+        assert_eq!(e.cursor(), 7);
+        e.word_right();
+        assert_eq!(e.cursor(), 21);
+        e.word_right();
+        assert_eq!(e.cursor(), 28);
+        e.word_right();
+        assert_eq!(e.cursor(), 28, "the end is a wall");
+    }
+
+    #[test]
+    fn reverse_search_finds_the_most_recent_match_and_walks_backwards() {
+        let history: Vec<String> = ["balance assets", "print", "balance expenses", "stats"]
+            .iter()
+            .map(|entry| (*entry).to_string())
+            .collect();
+
+        // Ctrl+R with nothing typed yet takes the newest entry at all.
+        let (index, entry) = reverse_search(&history, "", None).expect("a match");
+        assert_eq!((index, entry.as_str()), (3, "stats"));
+
+        // Typing narrows it, newest match first.
+        let (index, entry) = reverse_search(&history, "balance", None).expect("a match");
+        assert_eq!((index, entry.as_str()), (2, "balance expenses"));
+
+        // Pressing Ctrl+R again goes further back.
+        let (index, entry) = reverse_search(&history, "balance", Some(index)).expect("another");
+        assert_eq!((index, entry.as_str()), (0, "balance assets"));
+
+        // Past the oldest there is nothing, and the search says so.
+        assert_eq!(reverse_search(&history, "balance", Some(index)), None);
+        assert_eq!(reverse_search(&history, "nothing here", None), None);
+        assert_eq!(reverse_search(&[], "balance", None), None);
+
+        // Case-insensitive, like the other search.
+        assert!(reverse_search(&history, "BALANCE", None).is_some());
+    }
+
+    #[test]
+    fn the_isearch_prompt_looks_like_the_one_people_know() {
+        assert_eq!(isearch_prompt("bal"), "(reverse-i-search)`bal\': ");
+        assert_eq!(isearch_prompt(""), "(reverse-i-search)`\': ");
     }
 
     #[test]

@@ -31,6 +31,21 @@ use crate::upload::{self, Picked};
 /// What the user sees before the line.
 const PROMPT: &str = "$ ";
 
+/// A Ctrl+R search in progress.
+///
+/// Held apart from the editor because it is a mode: while it is on, keys narrow
+/// the query instead of editing the line, which is the whole point of an
+/// incremental search — you keep typing until the line you want appears.
+struct ISearch {
+    query: String,
+    /// Index in the history of the match being shown, for the next Ctrl+R.
+    index: Option<usize>,
+    /// The most recent query that found nothing, so the prompt can say so.
+    failed: bool,
+    /// The line as it was before Ctrl+R, restored when the search is cancelled.
+    saved: String,
+}
+
 /// Id of the element the terminal is mounted into.
 const TERMINAL_ID: &str = "terminal";
 
@@ -134,6 +149,8 @@ struct App {
     /// messages. The search skips them, so `/foo` finds what a command printed
     /// rather than the `/foo` you just typed or the count line that followed it.
     chatter: RefCell<Vec<String>>,
+    /// The Ctrl+R search in progress, if any.
+    isearch: RefCell<Option<ISearch>>,
     /// Kept alive for the lifetime of the app.
     _resize: RefCell<Option<wasm_bindgen::closure::Closure<dyn FnMut()>>>,
 }
@@ -153,6 +170,7 @@ impl App {
             written: RefCell::new(Vec::new()),
             accounts: RefCell::new(None),
             chatter: RefCell::new(Vec::new()),
+            isearch: RefCell::new(None),
             _resize: RefCell::new(None),
         }
     }
@@ -160,10 +178,18 @@ impl App {
     // -- printing -----------------------------------------------------------
 
     /// Redraw the prompt line, with the cursor where it belongs.
+    ///
+    /// While Ctrl+R is running the prompt is readline's, and the line is the
+    /// match it found, so the two are drawn exactly as the editor's are.
     fn prompt(&self) {
         let editor = self.editor.borrow();
+        let prompt = match self.isearch.borrow().as_ref() {
+            Some(search) if search.failed => format!("(failed reverse-i-search)`{}': ", search.query),
+            Some(search) => terminal::isearch_prompt(&search.query),
+            None => PROMPT.to_string(),
+        };
         self.screen
-            .write(&terminal::prompt_redraw(PROMPT, &editor.line(), editor.cursor()));
+            .write(&terminal::prompt_redraw(&prompt, &editor.line(), editor.cursor()));
     }
 
     /// Print text above the prompt line, then put the prompt back.
@@ -276,6 +302,12 @@ impl App {
     }
 
     fn handle(self: &Rc<App>, data: &str) {
+        // While a reverse search is running, keys belong to it. This is what
+        // makes it incremental rather than a dialog.
+        if self.isearch.borrow().is_some() {
+            self.isearch_input(data);
+            return;
+        }
         match data {
             "\r" => self.submit(),
             "\u{7f}" | "\u{8}" => {
@@ -311,15 +343,75 @@ impl App {
                 self.prompt();
             }
             "\t" => self.complete(),
+            // Emacs' line-editing keys, as readline has them. Ctrl+P and Ctrl+N
+            // are history, Ctrl+A and Ctrl+E are the ends of the line, and the
+            // kill ring is what makes Ctrl+K/Ctrl+U/Ctrl+W/Ctrl+Y worth having.
+            "\u{1}" => {
+                self.editor.borrow_mut().home();
+                self.prompt();
+            }
+            "\u{5}" => {
+                self.editor.borrow_mut().end();
+                self.prompt();
+            }
+            "\u{2}" => {
+                self.editor.borrow_mut().left();
+                self.prompt();
+            }
+            "\u{6}" => {
+                self.editor.borrow_mut().right();
+                self.prompt();
+            }
+            "\u{4}" => {
+                self.editor.borrow_mut().delete();
+                self.prompt();
+            }
+            "\u{b}" => {
+                self.editor.borrow_mut().kill_to_end();
+                self.prompt();
+            }
+            "\u{17}" => {
+                self.editor.borrow_mut().kill_word_backward();
+                self.prompt();
+            }
+            "\u{19}" => {
+                self.editor.borrow_mut().yank();
+                self.prompt();
+            }
+            "\u{14}" => {
+                self.editor.borrow_mut().transpose();
+                self.prompt();
+            }
+            "\u{10}" => {
+                self.editor.borrow_mut().history_prev();
+                self.prompt();
+            }
+            "\u{e}" => {
+                self.editor.borrow_mut().history_next();
+                self.prompt();
+            }
+            "\u{12}" => self.start_isearch(),
+            // Alt+B and Alt+F move by words, which is how Emacs users reach the
+            // middle of an account path.
+            "\u{1b}b" => {
+                self.editor.borrow_mut().word_left();
+                self.prompt();
+            }
+            "\u{1b}f" => {
+                self.editor.borrow_mut().word_right();
+                self.prompt();
+            }
             // Ctrl+C clears the line, as in a shell. It cannot stop the engine.
             "\u{3}" => {
                 self.screen.write("^C\r\n");
+                *self.isearch.borrow_mut() = None;
                 self.editor.borrow_mut().clear_line();
                 self.prompt();
             }
-            // Ctrl+U kills the line; Ctrl+L clears the screen.
+            // Ctrl+U kills back to the start, remembering it, as readline does;
+            // Ctrl+L clears the screen.
             "\u{15}" => {
-                self.editor.borrow_mut().clear_line();
+                self.editor.borrow_mut().kill_to_start();
                 self.prompt();
             }
             "\u{c}" => {
@@ -592,6 +684,110 @@ impl App {
             None => "The demo journal could not be selected.".to_string(),
         };
         self.announce(&text);
+    }
+
+    /// Ctrl+R: start an incremental reverse search through the history.
+    fn start_isearch(self: &Rc<App>) {
+        let saved = self.editor.borrow().line();
+        *self.isearch.borrow_mut() = Some(ISearch {
+            query: String::new(),
+            index: None,
+            failed: false,
+            saved,
+        });
+        self.refresh_isearch();
+    }
+
+    /// One keypress while a reverse search is running.
+    fn isearch_input(self: &Rc<App>, data: &str) {
+        match data {
+            // Enter takes the match and runs it, as readline does: the search is
+            // a way of getting to a command you have run before.
+            "\r" => {
+                *self.isearch.borrow_mut() = None;
+                self.submit();
+            }
+            // Ctrl+G or Escape abandons the search and restores the line.
+            "\u{7}" | "\u{1b}" => {
+                let saved = self
+                    .isearch
+                    .borrow_mut()
+                    .take()
+                    .map(|search| search.saved)
+                    .unwrap_or_default();
+                self.editor.borrow_mut().set_line(&saved);
+                self.prompt();
+            }
+            // Another Ctrl+R goes further back through the matches.
+            "\u{12}" => {
+                let from = self.isearch.borrow().as_ref().and_then(|search| search.index);
+                if let Some(search) = self.isearch.borrow_mut().as_mut() {
+                    search.index = from;
+                }
+                self.refresh_isearch_from(from);
+            }
+            // Backspace shortens the query, which is how an incremental search is
+            // corrected.
+            "\u{7f}" | "\u{8}" => {
+                if let Some(search) = self.isearch.borrow_mut().as_mut() {
+                    search.query.pop();
+                }
+                self.refresh_isearch();
+            }
+            // Anything else narrows the query.
+            typed if !typed.chars().any(char::is_control) => {
+                if let Some(search) = self.isearch.borrow_mut().as_mut() {
+                    search.query.push_str(typed);
+                }
+                self.refresh_isearch();
+            }
+            // A key that means something else: accept the match and let the key
+            // do its job.
+            other => {
+                *self.isearch.borrow_mut() = None;
+                self.handle(other);
+            }
+        }
+    }
+
+    /// Search again from scratch with the current query.
+    fn refresh_isearch(self: &Rc<App>) {
+        self.refresh_isearch_from(None);
+    }
+
+    /// Search again, optionally looking only before `from`.
+    fn refresh_isearch_from(self: &Rc<App>, from: Option<usize>) {
+        let query = self
+            .isearch
+            .borrow()
+            .as_ref()
+            .map(|search| search.query.clone())
+            .unwrap_or_default();
+        let history = self.editor.borrow().history().to_vec();
+
+        match terminal::reverse_search(&history, &query, from) {
+            Some((index, entry)) => {
+                {
+                    let mut isearch = self.isearch.borrow_mut();
+                    if let Some(search) = isearch.as_mut() {
+                        search.index = Some(index);
+                        search.failed = false;
+                    }
+                }
+                // The match goes into the editor, so it is the line being edited
+                // and Enter will run exactly what is on screen.
+                self.editor.borrow_mut().set_line(&entry);
+                self.prompt();
+            }
+            None => {
+                // Keep whatever was found last: readline leaves the best match on
+                // screen and says the search has failed.
+                if let Some(search) = self.isearch.borrow_mut().as_mut() {
+                    search.failed = true;
+                }
+                self.prompt();
+            }
+        }
     }
 
     /// `/text`: search the output, or repeat the last search when blank.
