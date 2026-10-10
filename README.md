@@ -50,6 +50,7 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `disconnect` | Forget the account; the files already loaded stay loaded. |
 | `font [size]` | Show or set the font size — the keyboard shortcuts need a keyboard, and a phone has none. |
 | `screenreader on` | Turn xterm's accessibility tree on or off, remembered between visits. |
+| `chart [args]` | Draw a report instead of printing it — `chart expenses -M`, `chart balance --depth 2`. |
 | `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
 | `unalias <name>` | Remove one. |
 | `clear` | Clear the screen. |
@@ -82,6 +83,33 @@ can walk line by line, instead of the canvas it otherwise sees. It is off by
 default because building and maintaining that second representation costs
 something, and the setting is remembered, so someone who needs it gets it from the
 first render of every visit rather than having to find a command first.
+
+**A report can be drawn.** `chart` runs hledger for you — `chart expenses -M` runs
+`hledger expenses -M -O csv`, and with no arguments it asks the question a chart is
+usually asked, `balance -M expenses` — then draws the numbers instead of printing
+them:
+
+```
+$ chart balance --depth 2
+[chart of `balance --depth 2` — hledger's numbers, drawn]
+assets:bank              ████████████████████████████████████████   $9278.61
+equity:opening balances  ██████████████████████████████████▋        $-7520.00
+income:salary            ███████████████████████▊                   $-3200.00
+expenses:housing         ███████████▉                               $1200.00
+expenses:food            █                                         $98.90
+```
+
+The shape follows the question. A report with one amount per row is a **ranking**:
+horizontal bars, longest first, which is how "where did the money go" is read. A
+report over time is a **series**: vertical bars, one per period. Sizes use
+eighth-width blocks, so a bar ends where the value does instead of rounding to a
+cell.
+
+Two things it will not do. It will not draw from its own arithmetic — the numbers
+are hledger's, and the command that produced them is printed above them, so a chart
+cannot quietly disagree with the report. And it will not draw zeroes: summing every
+account of a balanced journal is zero, which is why `chart` wants a filtered report
+and says so when it gets nothing to draw.
 
 **What a command writes stays written.** `-o FILE` puts a file into the mount, and
 the app keeps it with the rest: `print -o data/copy.journal` is still there next
