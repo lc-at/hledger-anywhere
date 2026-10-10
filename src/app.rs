@@ -794,6 +794,14 @@ impl App {
             self.isearch_input(data);
             return;
         }
+
+        // A completion menu lasts until something else happens: Tab and Shift+Tab
+        // step through it, Escape undoes it, and any other key takes what is on the
+        // line and carries on.
+        if !matches!(data, "\t" | "\u{1b}[Z" | "\u{1b}") {
+            let _ = self.editor.borrow_mut().menu_close();
+        }
+
         match data {
             "\r" => self.submit(),
             "\u{7f}" | "\u{8}" => {
@@ -828,7 +836,20 @@ impl App {
                 self.editor.borrow_mut().delete();
                 self.prompt();
             }
-            "\t" => self.complete(),
+            "\t" => self.complete_or_menu(),
+            // Shift+Tab steps back through the menu, as zsh does.
+            "\u{1b}[Z" => {
+                if self.editor.borrow_mut().menu_previous() {
+                    self.prompt();
+                }
+            }
+            // Escape abandons the menu and puts the line back as it was typed. On
+            // its own, outside a menu, it does nothing.
+            "\u{1b}" => {
+                if self.editor.borrow_mut().menu_cancel() {
+                    self.prompt();
+                }
+            }
             // Emacs' line-editing keys, as readline has them. Ctrl+P and Ctrl+N
             // are history, Ctrl+A and Ctrl+E are the ends of the line, and the
             // kill ring is what makes Ctrl+K/Ctrl+U/Ctrl+W/Ctrl+Y worth having.
@@ -918,9 +939,24 @@ impl App {
         }
     }
 
-    fn complete(self: &Rc<App>) {
+    /// Tab: complete as far as everything agrees, then offer a menu of the rest.
+    ///
+    /// The first Tab does what a shell does. One match completes outright; several
+    /// extend as far as they agree. When that gets nowhere there is nothing left to
+    /// guess at, so the candidates are listed and the first goes on the line, and
+    /// every Tab after that steps to the next one. Shift+Tab steps back, Escape puts
+    /// the line back as it was typed, and anything else takes what is there.
+    fn complete_or_menu(self: &Rc<App>) {
+        // Tab with a menu open means "the next one", not "complete again".
+        if self.editor.borrow_mut().menu_next() {
+            self.prompt();
+            return;
+        }
+
         if self.accounts.borrow().is_none() && !self.files.borrow().is_empty() {
-            self.announce("Reading account names for completion…");
+            self.say(&terminal::dim(
+                "Reading account names, which takes a moment. Press Tab again shortly.",
+            ));
             self.fetch_accounts();
             return;
         }
@@ -931,11 +967,19 @@ impl App {
             candidates.extend(accounts.iter().cloned());
         }
         candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
-        let outcome = self.editor.borrow_mut().complete(&candidates);
-        match outcome {
-            Completion::Ambiguous(options) => self.announce(&options.join("  ")),
-            _ => self.prompt(),
+
+        if let Completion::Ambiguous(options) = self.editor.borrow_mut().complete(&candidates) {
+            // The prompt is already on the line, so it is cleared first: the list
+            // belongs above it, not appended to the command being typed. It is
+            // printed once; stepping through afterwards changes the line only.
+            self.screen.write("\r\u{1b}[K");
+            let (columns, _) = self.screen.size();
+            for line in terminal::format_columns(&options, columns as usize) {
+                self.remember_chatter(&line);
+                self.block(&line, Some(terminal::DIM));
+            }
         }
+        self.prompt();
     }
 
     /// The uploaded paths, in upload order.

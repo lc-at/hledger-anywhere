@@ -279,6 +279,23 @@ pub struct Editor {
     /// What Ctrl+K, Ctrl+U and Ctrl+W have killed, oldest first. Emacs' kill ring,
     /// minus the cycling: Ctrl+Y yanks the most recent kill.
     kill_ring: Vec<String>,
+    /// The completion menu being stepped through, if one is open.
+    menu: Option<Menu>,
+}
+
+/// A menu of completions, as zsh offers after a second Tab.
+///
+/// The first Tab does what a shell does: one match completes, several extend as far
+/// as they agree. When that gets nowhere there is nothing left to guess, so the
+/// candidates are offered instead, one on the line at a time. The original line is
+/// kept so Escape can put it back, and each step re-completes from that original
+/// rather than from the candidate the step before inserted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Menu {
+    original: Vec<char>,
+    original_cursor: usize,
+    candidates: Vec<String>,
+    index: usize,
 }
 
 impl Editor {
@@ -554,10 +571,82 @@ impl Editor {
                     self.replace_token(&prefix);
                     Completion::Extended
                 } else {
-                    Completion::Ambiguous(many.iter().map(|value| (*value).clone()).collect())
+                    let candidates: Vec<String> =
+                        many.iter().map(|value| (*value).clone()).collect();
+                    self.open_menu(&candidates);
+                    Completion::Ambiguous(candidates)
                 }
             }
         }
+    }
+
+    /// Offer `candidates` as a menu, with the first one on the line.
+    fn open_menu(&mut self, candidates: &[String]) {
+        let menu = Menu {
+            original: self.chars.clone(),
+            original_cursor: self.cursor,
+            candidates: candidates.to_vec(),
+            index: 0,
+        };
+        self.menu = Some(menu);
+        self.show_candidate(0);
+    }
+
+    /// Put candidate `index` on the line, replacing whatever was there.
+    fn show_candidate(&mut self, index: usize) {
+        let Some(mut menu) = self.menu.take() else {
+            return;
+        };
+        let Some(candidate) = menu.candidates.get(index).cloned() else {
+            self.menu = Some(menu);
+            return;
+        };
+        menu.index = index;
+        // Back to the line as typed, then complete it afresh: the token to replace
+        // is the one the user wrote, not the one the last step inserted.
+        self.chars = menu.original.clone();
+        self.cursor = menu.original_cursor;
+        self.replace_token(&candidate);
+        self.menu = Some(menu);
+    }
+
+    /// The next candidate, wrapping around. False when no menu is open.
+    pub fn menu_next(&mut self) -> bool {
+        let Some(menu) = self.menu.as_ref() else {
+            return false;
+        };
+        let index = (menu.index + 1) % menu.candidates.len();
+        self.show_candidate(index);
+        true
+    }
+
+    /// The previous candidate, wrapping around. False when no menu is open.
+    pub fn menu_previous(&mut self) -> bool {
+        let Some(menu) = self.menu.as_ref() else {
+            return false;
+        };
+        let index = if menu.index == 0 {
+            menu.candidates.len() - 1
+        } else {
+            menu.index - 1
+        };
+        self.show_candidate(index);
+        true
+    }
+
+    /// Leave the menu, keeping whatever it put on the line.
+    pub fn menu_close(&mut self) -> bool {
+        self.menu.take().is_some()
+    }
+
+    /// Leave the menu and put the line back as it was typed.
+    pub fn menu_cancel(&mut self) -> bool {
+        let Some(menu) = self.menu.take() else {
+            return false;
+        };
+        self.chars = menu.original;
+        self.cursor = menu.original_cursor;
+        true
     }
 
     /// Replace the token under the cursor, keeping the rest of the line.
@@ -574,6 +663,41 @@ impl Editor {
         self.chars = line.chars().collect();
         self.cursor = start + replacement.chars().count();
     }
+}
+
+/// Lay candidates out in columns, the way a shell lists them.
+///
+/// Column-major, like `ls`: each column is a run down the list, so reading down and
+/// then across finds things in alphabetical order. The widest item decides how many
+/// columns fit, and when only one does, one per line, so nothing is ever cut.
+pub fn format_columns(items: &[String], width: usize) -> Vec<String> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let gap = 2;
+    let widest = items
+        .iter()
+        .map(|item| item.chars().count())
+        .max()
+        .unwrap_or(0);
+    let per_row = ((width + gap) / (widest + gap)).max(1);
+    let rows = items.len().div_ceil(per_row);
+
+    let mut lines = Vec::with_capacity(rows);
+    for row in 0..rows {
+        let mut line = String::new();
+        for column in 0..per_row {
+            let Some(item) = items.get(column * rows + row) else {
+                break;
+            };
+            if column > 0 {
+                line.push_str(&" ".repeat(gap));
+            }
+            line.push_str(&format!("{item:<widest$}"));
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    lines
 }
 
 /// What completion did, so the caller knows whether to print the options.
@@ -1613,6 +1737,7 @@ pub fn help() -> String {
     text.push_str(&format!("{}\r\n", bold("Keys")));
     for line in [
         "Enter runs a command. Tab completes commands, flags, accounts, aliases and paths.",
+        "A second Tab offers a menu: Tab and Shift+Tab step through it, Escape undoes it.",
         "Up and Down recall history. Ctrl+C stops a running command, or clears the line.",
         "Ctrl+A and Ctrl+E are the ends of the line, Ctrl+B and Ctrl+F move by character,",
         "Alt+B and Alt+F by word. Ctrl+K, Ctrl+U and Ctrl+W cut to the end, the start and",
@@ -1810,7 +1935,8 @@ mod tests {
         assert_eq!(e.complete(&candidates(&[])), Completion::Extended);
         assert_eq!(e.line(), "pri");
 
-        // A second Tab has nothing left to extend, so it lists the options.
+        // A second Tab has nothing left to extend, so it lists the options and
+        // offers the first of them.
         match e.complete(&candidates(&[])) {
             Completion::Ambiguous(options) => {
                 assert!(options.contains(&"print".to_string()));
@@ -1818,7 +1944,99 @@ mod tests {
             }
             other => panic!("expected an ambiguous completion, got {other:?}"),
         }
-        assert_eq!(e.line(), "pri", "an ambiguous Tab leaves the line alone");
+        assert_eq!(e.line(), "prices", "the first candidate goes on the line");
+    }
+
+    fn options(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    #[test]
+    fn a_menu_steps_through_the_candidates_and_escape_puts_the_line_back() {
+        let offered = options(&["balance", "balancesheet", "balancesheetequity"]);
+        let mut e = Editor::default();
+        e.insert("balance");
+
+        // "balance" cannot be extended, so the menu opens with the first candidate.
+        assert!(matches!(e.complete(&offered), Completion::Ambiguous(_)));
+        assert_eq!(e.line(), "balance");
+
+        assert!(e.menu_next());
+        assert_eq!(e.line(), "balancesheet");
+        assert!(e.menu_next());
+        assert_eq!(e.line(), "balancesheetequity");
+        // Wrapping round at the end, as a menu does.
+        assert!(e.menu_next());
+        assert_eq!(e.line(), "balance");
+        assert!(e.menu_previous());
+        assert_eq!(e.line(), "balancesheetequity");
+
+        // Escape puts back exactly what was typed, cursor included.
+        assert!(e.menu_cancel());
+        assert_eq!(e.line(), "balance");
+        assert_eq!(e.cursor(), 7);
+        // And it is over: no menu is left to step through.
+        assert!(!e.menu_next());
+        assert!(!e.menu_previous());
+        assert!(!e.menu_cancel());
+    }
+
+    #[test]
+    fn stepping_through_a_menu_completes_the_token_that_was_typed() {
+        // Each step has to complete the token the user wrote, not the candidate the
+        // step before inserted, or the word would grow a little every time.
+        let offered = options(&["bal", "balance", "balancesheet"]);
+        let mut e = Editor::default();
+        e.insert("bal");
+
+        assert!(matches!(e.complete(&offered), Completion::Ambiguous(_)));
+        assert_eq!(e.line(), "bal");
+        e.menu_next();
+        assert_eq!(e.line(), "balance");
+        e.menu_next();
+        assert_eq!(e.line(), "balancesheet");
+        e.menu_next();
+        assert_eq!(e.line(), "bal", "and round again, from the original");
+    }
+
+    #[test]
+    fn a_menu_keeps_the_completion_when_it_is_closed_by_anything_else() {
+        let offered = options(&["balance", "balancesheet"]);
+        let mut e = Editor::default();
+        e.insert("balance");
+        assert!(matches!(e.complete(&offered), Completion::Ambiguous(_)));
+        assert!(e.menu_next());
+        assert_eq!(e.line(), "balancesheet");
+
+        // Typing something else is the app's cue to close the menu; the completion
+        // it chose stays on the line.
+        assert!(e.menu_close());
+        assert_eq!(e.line(), "balancesheet");
+        assert!(!e.menu_close());
+    }
+
+    #[test]
+    fn candidates_are_listed_in_columns_that_fit() {
+        let items = options(&["upload", "upload_dir", "journal", "demo"]);
+
+        let lines = format_columns(&items, 40);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        for line in &lines {
+            assert!(line.chars().count() <= 40, "{line}");
+        }
+        // Column-major, as `ls` lays them out: the widest item pads its column.
+        assert!(lines[0].starts_with("upload "), "{lines:?}");
+        assert!(lines[1].starts_with("upload_dir"), "{lines:?}");
+        for item in &items {
+            assert!(lines.iter().any(|line| line.contains(item.as_str())), "{item}");
+        }
+
+        // Too narrow for two columns: one per line, and nothing is cut off.
+        let narrow = format_columns(&items, 4);
+        assert_eq!(narrow.len(), 4, "{narrow:?}");
+        assert!(narrow.contains(&"upload_dir".to_string()), "{narrow:?}");
+
+        assert!(format_columns(&[], 40).is_empty());
     }
 
     #[test]

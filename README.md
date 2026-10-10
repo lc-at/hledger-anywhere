@@ -118,8 +118,11 @@ Everything that is not in this table is passed to hledger verbatim.
 
 ### Keys
 
-**Enter** runs. **Tab** completes hledger's commands and flags, account names,
-your aliases, and the paths of loaded files. **↑/↓** recall history (the last 100
+**Enter** runs. **Tab** completes hledger's commands and flags, account names, your
+aliases, and the paths of loaded files. When there is more than one option left, a
+second Tab lists them in columns and puts the first on the line; every Tab after that
+steps to the next one, Shift+Tab steps back, and Escape puts back what you typed. The
+choice is made by pressing Tab, not by typing the rest of it. **↑/↓** recall history (the last 100
 commands, kept between visits). **Ctrl+C** stops a running command, or clears the
 line.
 
