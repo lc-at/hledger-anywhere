@@ -305,6 +305,10 @@ struct App {
     /// True while the engine is running: it cannot be interrupted, and it cannot
     /// run twice at once.
     busy: Cell<bool>,
+    /// Whether the engine's download has been started yet.
+    engine_warming: Cell<bool>,
+    /// Whether the engine is loaded and ready to run.
+    engine_ready: Cell<bool>,
     /// Input typed while busy, replayed when the engine is free.
     pending: RefCell<String>,
     /// The last search term, so `n` and `N` have something to repeat, and where it
@@ -350,6 +354,8 @@ impl App {
             main: RefCell::new(None),
             store: RefCell::new(None),
             busy: Cell::new(false),
+            engine_warming: Cell::new(false),
+            engine_ready: Cell::new(false),
             pending: RefCell::new(String::new()),
             last_search: RefCell::new(None),
             last_hit: RefCell::new(None),
@@ -501,6 +507,7 @@ impl App {
         let (_, arguments) = terminal::split_first_token(line);
         // The title says what was typed, not the command the plugin decided to run:
         // `running chart balance` is the user's line, `balance -O csv` is ours.
+        self.waiting_note();
         self.title(&format!("running {}", line.trim()));
         match plugin.plan(&arguments) {
             plugins::Plan::Say(message) => self.announce(&message),
@@ -790,6 +797,7 @@ impl App {
         // complete line is typed and entered in turn, exactly as if the user had
         // typed them, so a pasted journal entry works and a pasted command runs.
         if let Some(pasted) = terminal::paste(data) {
+            self.warm_engine();
             for line in &pasted.lines {
                 self.editor.borrow_mut().set_line(line);
                 self.handle("\r");
@@ -797,6 +805,16 @@ impl App {
             self.editor.borrow_mut().set_line(&pasted.rest);
             self.prompt();
             return;
+        }
+
+        // Typing is the signal to fetch the engine: a printable character, or a
+        // key that means "do something with this line". Arrows and Escape are
+        // someone still deciding.
+        let typing = matches!(data, "\r" | "\t")
+            || (data.chars().next().is_some_and(|c| !c.is_control())
+                && !data.starts_with('\u{1b}'));
+        if typing {
+            self.warm_engine();
         }
 
         // While a reverse search is running, keys belong to it. This is what
@@ -1389,6 +1407,7 @@ impl App {
         };
         let files = self.files.borrow().clone();
         self.busy.set(true);
+        self.waiting_note();
         self.title(&format!("running {command}"));
 
         let app = Rc::clone(self);
@@ -1459,6 +1478,36 @@ impl App {
         } else {
             format!("hledger-anywhere · {suffix}")
         });
+    }
+
+    /// Start loading the engine as soon as someone shows they mean to use it.
+    ///
+    /// The engine is a 13 MB wasm binary, and fetching and compiling it takes
+    /// seconds: paying that after Enter is what makes a first command look broken.
+    /// The first keystroke is the earliest honest sign that this visit will run
+    /// something, so the download starts then, while the command is still being
+    /// typed. A visitor who only reads the banner costs nothing.
+    fn warm_engine(self: &Rc<App>) {
+        if self.engine_warming.replace(true) {
+            return;
+        }
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            // Init is idempotent, and a run asks for it too, so losing the race
+            // here only means the run waited for it.
+            if hledger::bridge::init().await.is_ok() {
+                app.engine_ready.set(true);
+            }
+        });
+    }
+
+    /// Say why nothing has appeared yet, when a command has to wait for the engine.
+    fn waiting_note(&self) {
+        if !self.engine_ready.get() {
+            self.say(&terminal::dim(
+                "Starting hledger. The first command waits for the engine to load.",
+            ));
+        }
     }
 
     fn settle(self: &Rc<App>) {

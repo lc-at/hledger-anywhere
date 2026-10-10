@@ -317,6 +317,13 @@ without ever being revalidated; everything else is network-first with a cache
 fallback, so an online visitor gets the current build and an offline one gets the
 last.
 
+The engine is compiled when a command needs it, and compiling 13 MB is the slow part of
+a first command, not fetching it. So the app starts that as soon as you type something:
+the first keystroke is the earliest honest sign that this visit will run a command, and
+the compile proceeds while you finish typing. Someone who only reads the banner pays
+nothing. If a run does have to wait, it says so rather than sitting silent, and the
+window title says which command is running.
+
 ## How it works
 
 ```
