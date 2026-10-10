@@ -524,29 +524,33 @@ pub enum Completion {
 
 /// Every word completion can offer: the app's commands, hledger's, the common
 /// flags, and the uploaded file paths.
+/// The commands the app answers to itself. Everything else is hledger's.
+///
+/// One list, because three things have to agree about it: completion offers these
+/// first, the `?` help is expected to describe them, and the README is expected to
+/// document them. Tests check the last two against this.
+pub const COMMANDS: &[&str] = &[
+    "upload",
+    "upload_dir",
+    "journal",
+    "clear",
+    "?",
+    "demo",
+    "download",
+    "alias",
+    "unalias",
+    "connect",
+    "remote",
+    "disconnect",
+    "put",
+    "font",
+    "screenreader",
+    "chart",
+    "append",
+];
+
 pub fn candidates(paths: &[String]) -> Vec<String> {
-    let mut all: Vec<String> = [
-        "upload",
-        "upload_dir",
-        "journal",
-        "clear",
-        "?",
-        "demo",
-        "download",
-        "alias",
-        "unalias",
-        "connect",
-        "remote",
-        "disconnect",
-        "put",
-        "font",
-        "screenreader",
-        "chart",
-        "append",
-    ]
-        .iter()
-        .map(|word| (*word).to_string())
-        .collect();
+    let mut all: Vec<String> = COMMANDS.iter().map(|word| (*word).to_string()).collect();
     all.extend(HLEDGER_COMMANDS.iter().map(|word| (*word).to_string()));
     all.extend(FLAGS.iter().map(|word| (*word).to_string()));
     all.extend(paths.iter().cloned());
@@ -2431,11 +2435,22 @@ mod tests {
         // The help is the only place the vocabulary is written down, so a command
         // that is classified but not documented is a command nobody will find.
         let help = help();
-        for word in [
-            "upload", "upload_dir", "demo", "journal", "download", "alias", "unalias", "connect",
-            "remote", "disconnect", "clear", "?",
-        ] {
+        for word in COMMANDS {
             assert!(help.contains(word), "help does not mention `{word}`");
+        }
+    }
+
+    #[test]
+    fn the_readme_documents_every_command_the_app_owns() {
+        // Documentation drifts silently: this README once described the deployed site
+        // as HTTP-only and drag-and-drop as unwired long after both had changed. The
+        // command table is the part a test can hold to account, so it is.
+        let readme = include_str!("../../README.md");
+        for word in COMMANDS {
+            assert!(
+                readme.contains(&format!("| `{word}")),
+                "the README has no table row for `{word}`"
+            );
         }
     }
 
