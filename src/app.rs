@@ -499,6 +499,9 @@ impl App {
     /// it is why a plugin needs no access to anything here.
     fn run_plan(self: &Rc<App>, line: &str, plugin: &'static dyn plugins::Plugin) {
         let (_, arguments) = terminal::split_first_token(line);
+        // The title says what was typed, not the command the plugin decided to run:
+        // `running chart balance` is the user's line, `balance -O csv` is ours.
+        self.title(&format!("running {}", line.trim()));
         match plugin.plan(&arguments) {
             plugins::Plan::Say(message) => self.announce(&message),
             plugins::Plan::Run { command } => self.run_drawn(&command, plugin),
@@ -593,13 +596,7 @@ impl App {
             Err(error) => self.block(&error.to_string(), Some(terminal::RED)),
         }
 
-        self.busy.set(false);
-        let pending = std::mem::take(&mut *self.pending.borrow_mut());
-        if pending.is_empty() {
-            self.prompt();
-        } else {
-            self.handle(&pending);
-        }
+        self.settle();
     }
 
     /// Keep what a run wrote, whatever the app did with its output.
@@ -971,6 +968,7 @@ impl App {
             self.say(&terminal::dim(
                 "Reading account names, which takes a moment. Press Tab again shortly.",
             ));
+            self.title("reading account names");
             self.fetch_accounts();
             return;
         }
@@ -1391,6 +1389,7 @@ impl App {
         };
         let files = self.files.borrow().clone();
         self.busy.set(true);
+        self.title(&format!("running {command}"));
 
         let app = Rc::clone(self);
         spawn_local(async move {
@@ -1447,8 +1446,25 @@ impl App {
 
     /// The end of every run: ready for input, and replaying what was typed while
     /// the engine was busy.
+    /// Say in the window title what is running, if anything.
+    ///
+    /// A slow report is otherwise silent for as long as it takes, and the tab is the
+    /// one place a browser lets an application speak without writing to the terminal.
+    fn title(&self, suffix: &str) {
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        document.set_title(&if suffix.is_empty() {
+            "hledger-anywhere".to_string()
+        } else {
+            format!("hledger-anywhere · {suffix}")
+        });
+    }
+
     fn settle(self: &Rc<App>) {
         self.busy.set(false);
+        // Whatever was running has stopped, whether it printed, drew, or failed.
+        self.title("");
         let pending = std::mem::take(&mut *self.pending.borrow_mut());
         if pending.is_empty() {
             self.prompt();
