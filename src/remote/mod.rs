@@ -96,6 +96,35 @@ pub fn remote_path(local: &str) -> String {
     format!("{CATEGORY}{}", local.trim_start_matches('/'))
 }
 
+/// A path as the scoped client wants it.
+///
+/// The client is scoped at the category, so it already knows about `/hledger/` and
+/// a path that repeats it lands in a folder of the same name inside itself — which
+/// is exactly what happened the first time a file was written to a real server:
+/// `/hledger/rt.csv` became `hledger/hledger/rt.csv` on disk.
+pub fn scoped(path: &str) -> String {
+    let without_category = path
+        .trim_start_matches('/')
+        .strip_prefix(CATEGORY.trim_matches('/'))
+        .map(str::to_string)
+        .unwrap_or_else(|| path.trim_start_matches('/').to_string());
+    without_category
+        .trim_start_matches('/')
+        .to_string()
+}
+
+/// An entry path as the app knows it, with the category on the front.
+///
+/// A listing from a scoped client names paths relative to the scope; the rest of
+/// the app thinks in account-absolute paths, so the category is put back.
+pub fn unscoped(path: &str) -> String {
+    if path.starts_with(CATEGORY) {
+        path.to_string()
+    } else {
+        format!("{CATEGORY}{}", path.trim_start_matches('/'))
+    }
+}
+
 /// The folders directly inside `directory` that still have to be listed.
 ///
 /// A listing gives one folder's contents, so reaching nested files means walking:
@@ -213,6 +242,29 @@ mod tests {
         );
         // From a leaf folder: nothing to walk.
         assert!(subdirectories(&entries, "/hledger/books/deep/").is_empty());
+    }
+
+    #[test]
+    fn a_path_is_scoped_and_unscoped_without_doubling_the_category() {
+        // The client already knows the category, so the category comes off.
+        assert_eq!(scoped("/hledger/rt.csv"), "rt.csv");
+        assert_eq!(scoped("/hledger/books/2024.journal"), "books/2024.journal");
+        assert_eq!(scoped("/hledger/"), "");
+        assert_eq!(scoped("/hledger"), "");
+        assert_eq!(scoped(""), "");
+        // A path that never mentioned the category is left alone.
+        assert_eq!(scoped("rt.csv"), "rt.csv");
+
+        // And a listing from the client goes back to an account-absolute path.
+        assert_eq!(unscoped("rt.csv"), "/hledger/rt.csv");
+        assert_eq!(unscoped("books/2024.journal"), "/hledger/books/2024.journal");
+        assert_eq!(unscoped("/hledger/rt.csv"), "/hledger/rt.csv");
+
+        // The pair round-trips, which is what keeps writes out of a folder named
+        // after the category.
+        for path in ["/hledger/rt.csv", "/hledger/books/deep/x.journal"] {
+            assert_eq!(unscoped(&scoped(path)), path);
+        }
     }
 
     #[test]

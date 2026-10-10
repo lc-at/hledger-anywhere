@@ -152,21 +152,21 @@ impl Account {
     /// `Ok` may be about to lose the page.
     pub async fn open() -> Result<Account, RemoteError> {
         let _ = load_library().await?;
+        // One client, polled: the library restores a stored connection
+        // asynchronously, so a client asked once and thrown away answers "no" for
+        // an account that is connected, and a second client starts the wait again
+        // from nothing.
         let client = new_client()?;
-        Account::check_connected(&client)
+        for _ in 0..15 {
+            if get(&client, "connected")?.as_bool().unwrap_or(false) {
+                let scope = call(&client, "scope", &[JsValue::from_str(CATEGORY)])?;
+                return Ok(Account { client, scope });
+            }
+            tick().await;
+        }
+        Err(RemoteError::NotConnected)
     }
 
-    fn check_connected(client: &JsValue) -> Result<Account, RemoteError> {
-        let connected = get(client, "connected")?.as_bool().unwrap_or(false);
-        if !connected {
-            return Err(RemoteError::NotConnected);
-        }
-        let scope = call(client, "scope", &[JsValue::from_str(CATEGORY)])?;
-        Ok(Account {
-            client: client.clone(),
-            scope,
-        })
-    }
 
     /// The address the account belongs to, for saying which one is connected.
     pub fn user_address(&self) -> Option<String> {
@@ -193,18 +193,78 @@ impl Account {
         Ok(())
     }
 
+    /// Wait, briefly, for the library to report a connection.
+    ///
+    /// `connected` is restored from local storage asynchronously, so asking
+    /// straight after construction answers "no" for an account that is in fact
+    /// connected — which is exactly how a successful OAuth round trip came back
+    /// and was then thrown away.
+    pub async fn wait_connected() -> bool {
+        for _ in 0..15 {
+            if Account::is_connected() {
+                return true;
+            }
+            tick().await;
+        }
+        false
+    }
+
+    /// Whether an account is connected, without asking the network.
+    pub fn is_connected() -> bool {
+        new_client()
+            .ok()
+            .and_then(|client| get(&client, "connected").ok())
+            .and_then(|connected| connected.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Run `handler` if and when the library reports a connection.
+    ///
+    /// This is how the app learns that someone has come back from the provider's
+    /// consent screen: the library fires it, which may be some way after the page
+    /// loaded.
+    pub fn on_connected(
+        handler: impl Fn(Option<String>) + 'static,
+    ) -> Result<(), RemoteError> {
+        let client = new_client()?;
+        let callback = Closure::once(move |event: JsValue| {
+            let address = get(&event, "userAddress")
+                .ok()
+                .and_then(|value| value.as_string());
+            handler(address);
+        });
+        call(
+            &client,
+            "on",
+            &[JsValue::from_str("connected"), callback.into_js_value()],
+        )?;
+        Ok(())
+    }
+
     /// List a folder.
     pub async fn list(&self, directory: &str) -> Result<Vec<Entry>, RemoteError> {
-        let arguments = Array::new();
-        arguments.push(&JsValue::from_str(directory));
         let listing = JsFuture::from(
-            call(&self.scope, "getListing", &[JsValue::from_str(directory)])?
+            call(&self.scope, "getListing", &[JsValue::from_str(&super::scoped(directory))])?
                 .dyn_into::<Promise>()
                 .map_err(|_| RemoteError::Call("list a folder".to_string()))?,
         )
         .await
         .map_err(|error| RemoteError::Failed(describe(&error)))?;
-        Ok(super::parse_listing(&json_value(&listing)))
+
+        // A scoped listing names paths relative to the scope; the app wants them
+        // account-absolute, which is what `mount_path` strips the category from.
+        let mut value = json_value(&listing);
+        if let Some(object) = value.as_object_mut() {
+            let renamed: Vec<(String, serde_json::Value)> = object
+                .iter()
+                .map(|(path, entry)| (super::unscoped(path), entry.clone()))
+                .collect();
+            object.clear();
+            for (path, entry) in renamed {
+                object.insert(path, entry);
+            }
+        }
+        Ok(super::parse_listing(&value))
     }
 
     /// Write one file.
@@ -214,7 +274,7 @@ impl Account {
     pub async fn write(&self, path: &str, contents: &str) -> Result<(), RemoteError> {
         let call_args = [
             JsValue::from_str("text/plain"),
-            JsValue::from_str(path),
+            JsValue::from_str(&super::scoped(path)),
             JsValue::from_str(contents),
         ];
         JsFuture::from(
@@ -230,7 +290,7 @@ impl Account {
     /// Read one file.
     pub async fn read(&self, path: &str) -> Result<String, RemoteError> {
         let file = JsFuture::from(
-            call(&self.scope, "getFile", &[JsValue::from_str(path)])?
+            call(&self.scope, "getFile", &[JsValue::from_str(&super::scoped(path))])?
                 .dyn_into::<Promise>()
                 .map_err(|_| RemoteError::Call("read a file".to_string()))?,
         )
@@ -240,6 +300,23 @@ impl Account {
         data.as_string()
             .ok_or_else(|| RemoteError::Failed(format!("`{path}` is not text")))
     }
+}
+
+/// One hundred milliseconds, so a library that restores a connection from storage
+/// has somewhere to do it.
+async fn tick() {
+    let promise = Promise::new(&mut |resolve, _| {
+        let callback = Closure::once_into_js(move || {
+            let _ = resolve.call0(&JsValue::UNDEFINED);
+        });
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                callback.unchecked_ref::<Function>(),
+                100,
+            );
+        }
+    });
+    let _ = JsFuture::from(promise).await;
 }
 
 /// A fresh client with the app's category claimed.

@@ -40,6 +40,14 @@ const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
 /// `localStorage` key for the command aliases.
 const ALIAS_KEY: &str = "hledger-anywhere.terminal.aliases.v1";
 
+/// `localStorage` key marking that a `connect` is waiting to come back.
+///
+/// The library claims the access token from the URL fragment when it starts, and it
+/// only starts when a remote command runs — which is too late: the fragment is gone
+/// by then and the connection with it. This flag says "someone is expected back", so
+/// the next page load starts the library immediately.
+const REMOTE_PENDING_KEY: &str = "hledger-anywhere.remote.pending.v1";
+
 /// `localStorage` key for the screen reader preference.
 const SCREEN_READER_KEY: &str = "hledger-anywhere.terminal.screenreader.v1";
 
@@ -114,6 +122,8 @@ pub fn start() {
     app.drop_target();
 
     register_service_worker();
+
+    app.remote_return();
 
     let booting = Rc::clone(&app);
     spawn_local(async move { boot(booting).await });
@@ -294,6 +304,8 @@ struct App {
     isearch: RefCell<Option<ISearch>>,
     /// The block of typed journal text in progress, if any.
     block: RefCell<Option<Block>>,
+    /// Whether the connection coming back has already been reported.
+    remote_reported: Cell<bool>,
     /// The terminal font size, in pixels, kept between visits.
     font: Cell<u32>,
     /// Whether the terminal's accessibility tree is on, kept between visits.
@@ -326,6 +338,7 @@ impl App {
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
             block: RefCell::new(None),
+            remote_reported: Cell::new(false),
             font: Cell::new(load_font()),
             screen_reader: Cell::new(load_screen_reader()),
             aliases: RefCell::new(load_aliases()),
@@ -1454,6 +1467,11 @@ impl App {
     fn connect_remote(self: &Rc<App>, address: &str) {
         let app = Rc::clone(self);
         let address = address.to_string();
+        // Marked before the redirect, so the page that comes back knows to expect
+        // a token in its fragment.
+        if let Some(storage) = storage() {
+            let _ = storage.set_item(REMOTE_PENDING_KEY, "on");
+        }
         self.announce(&format!(
             "Connecting {address} — your browser will leave this page for the \
              provider's consent screen and come back."
@@ -1468,6 +1486,58 @@ impl App {
                 Err(error) => app.announce(&error.message()),
             }
         });
+    }
+
+    /// Deal with a connection coming back from a provider.
+    ///
+    /// Called once at start-up, and does nothing at all unless a `connect` was
+    /// started in some previous page load. Starting the library is what claims the
+    /// token from the fragment, so this is the difference between connecting once
+    /// and never connecting at all.
+    fn remote_return(self: &Rc<App>) {
+        let pending = storage()
+            .and_then(|storage| storage.get_item(REMOTE_PENDING_KEY).ok().flatten())
+            .is_some();
+        if !pending {
+            return;
+        }
+        if let Some(storage) = storage() {
+            let _ = storage.remove_item(REMOTE_PENDING_KEY);
+        }
+
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            if remote::client::load_library().await.is_err() {
+                return;
+            }
+            // The library may already know, and may say so a moment later; either
+            // way the message is printed once.
+            if remote::client::Account::wait_connected().await {
+                app.report_connection(None);
+            }
+            let announcing = Rc::clone(&app);
+            let _ = remote::client::Account::on_connected(move |address| {
+                announcing.report_connection(address);
+            });
+        });
+    }
+
+    /// Say that the account is connected, once.
+    fn report_connection(self: &Rc<App>, address: Option<String>) {
+        if self.remote_reported.replace(true) {
+            return;
+        }
+        match address {
+            Some(address) => self.announce(&format!(
+                "Connected to {address}. `remote` loads your journals; `put` saves \
+                 files back."
+            )),
+            None => self.announce(
+                "Connected to your storage account. `remote` loads your journals; \
+                 `put` saves files back.",
+            ),
+        }
+        self.prompt();
     }
 
     /// `disconnect`: forget the account. The local cache is left alone, so the
