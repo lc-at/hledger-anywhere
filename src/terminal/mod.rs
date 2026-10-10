@@ -214,8 +214,6 @@ pub enum Command<'a> {
     Font(Option<&'a str>),
     /// `screenreader [on|off]` shows or sets the accessibility tree.
     ScreenReader(Option<&'a str>),
-    /// `chart [hledger args]` draws a report instead of printing it.
-    Chart(Option<&'a str>),
     /// `append <file>` types journal text into a file, a line at a time.
     Append(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
@@ -249,7 +247,6 @@ pub fn classify(line: &str) -> Command<'_> {
         "put" => Command::Put((!rest.is_empty()).then_some(rest)),
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
-        "chart" => Command::Chart((!rest.is_empty()).then_some(rest)),
         "append" => Command::Append((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
@@ -732,7 +729,6 @@ pub const COMMANDS: &[&str] = &[
     "put",
     "font",
     "screenreader",
-    "chart",
     "append",
 ];
 
@@ -1520,15 +1516,6 @@ pub fn download_list(files: &[String]) -> String {
 /// A chart is the app's interpretation, not hledger's output, and the numbers are
 /// hledger's own; saying which command produced them is the difference between a
 /// picture and a claim.
-pub fn chart_note(command: &str) -> String {
-    format!(
-        "[{} {}, {}]",
-        dim("chart of"),
-        bold(command),
-        dim("drawn from hledger's numbers")
-    )
-}
-
 /// Read an on/off argument, accepting the spellings people actually type.
 pub fn parse_switch(text: &str) -> Result<bool, String> {
     match text.trim().to_lowercase().as_str() {
@@ -1711,7 +1698,7 @@ pub fn file_list(files: &[String], main: Option<&str>) -> String {
 
 /// The app's own help, for `?`. Deliberately short: `hledger help` is one
 /// keystroke away and knows far more.
-pub fn help() -> String {
+pub fn help(plugins: &[(&'static str, &'static str, &'static str)]) -> String {
     let mut text = String::new();
     text.push_str(&format!("{}\r\n", bold("hledger-anywhere")));
     text.push_str(&format!(
@@ -1722,13 +1709,13 @@ pub fn help() -> String {
         )
     ));
 
-    for (heading, rows) in GROUPS {
+    for (heading, rows) in groups_with(plugins) {
         text.push_str(&format!("{}\r\n", bold(heading)));
-        for (form, description) in *rows {
+        for (form, description) in rows {
             text.push_str(&format!(
                 "  {}  {}\r\n",
                 bold(&format!("{form:<18}")),
-                dim(description)
+                dim(&description)
             ));
         }
         text.push_str("\r\n");
@@ -1755,6 +1742,39 @@ pub fn help() -> String {
     text
 }
 
+/// The help's sections: the core's own, with the plugins' rows merged into the
+/// matching section, and a section of their own for a group the core does not have.
+///
+/// A plugin is listed by the group it asks for, so `chart` reads as another way to
+/// get a report rather than as something bolted on.
+fn groups_with(
+    plugins: &[(&'static str, &'static str, &'static str)],
+) -> Vec<(&'static str, Vec<(String, String)>)> {
+    let mut sections: Vec<(&str, Vec<(String, String)>)> = GROUPS
+        .iter()
+        .map(|(heading, rows)| {
+            (
+                *heading,
+                rows.iter()
+                    .map(|(form, description)| ((*form).to_string(), (*description).to_string()))
+                    .collect(),
+            )
+        })
+        .collect();
+
+    for (group, form, summary) in plugins {
+        let section = match sections.iter_mut().find(|(heading, _)| heading == group) {
+            Some(section) => section,
+            None => {
+                sections.push((group, Vec::new()));
+                sections.last_mut().expect("just pushed")
+            }
+        };
+        section.1.push(((*form).to_string(), (*summary).to_string()));
+    }
+    sections
+}
+
 /// The `?` help, grouped by what the user is trying to do rather than by what the
 /// code does.
 const GROUPS: &[(&str, &[(&str, &str)])] = &[
@@ -1772,7 +1792,6 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
     (
         "Reports",
         &[
-            ("chart [args]", "draw a report instead of printing it"),
             ("cmd >> file", "run a command and append what it prints to a file"),
             ("/text", "search the output; n and N repeat the search"),
             ("alias name=cmd", "make a name run a command; alias lists them"),
@@ -2183,7 +2202,7 @@ mod tests {
         // reads. Every message the terminal can produce is sampled here.
         let samples = [
             welcome("1.52.4"),
-            help(),
+            help(&[]),
             prompt_for(None),
             prompt_for(Some("2024.journal")),
             isearch_prompt("bal", false),
@@ -2207,7 +2226,9 @@ mod tests {
             alias_list(&[]),
             alias_list(&[("bal".to_string(), "balance".to_string())]),
             alias_note("bal", "balance"),
-            chart_note("balance"),
+            crate::plugins::find("chart")
+                .expect("chart is bundled")
+                .note("balance"),
             quoted("my file.journal"),
         ];
         // The refusals matter as much as the greetings: they are read at the moment
@@ -2966,34 +2987,49 @@ mod tests {
     }
 
     #[test]
-    fn a_chart_is_asked_for_like_any_other_command() {
-        assert_eq!(classify("chart"), Command::Chart(None));
-        assert_eq!(
-            classify("chart expenses -M"),
-            Command::Chart(Some("expenses -M"))
-        );
-        // hledger's own commands are untouched, including one that starts the same.
+    fn a_plugin_command_is_handed_over_untouched() {
+        // The vocabulary no longer knows about charts: a plugin's word reaches the
+        // app as an ordinary hledger command line, and the plugin takes it from
+        // there. `charting` is a different word, and hledger's own.
+        assert_eq!(classify("chart balance expenses -M"), Command::Hledger("chart balance expenses -M"));
+        assert_eq!(classify("chart"), Command::Hledger("chart"));
         assert_eq!(classify("charting"), Command::Hledger("charting"));
-        assert!(chart_note("balance -M expenses").contains("balance -M expenses"));
+
+        // And the plugin that owns it says so, which is how the app decides.
+        let chart = crate::plugins::owner("chart balance -M").expect("chart owns this");
+        assert_eq!(chart.name(), "chart");
+        assert!(crate::plugins::owner("balance -M").is_none());
+        assert!(crate::plugins::owner("charting").is_none());
     }
 
     #[test]
     fn the_help_mentions_every_command_the_app_owns() {
         // The help is the only place the vocabulary is written down, so a command
-        // that is classified but not documented is a command nobody will find.
-        let help = help();
-        for word in COMMANDS {
+        // that is classified but not documented is a command nobody will find. The
+        // plugins' words count: they are commands the user types.
+        let help = plain(&help(&crate::plugins::help_entries()));
+        for word in words() {
             assert!(help.contains(word), "help does not mention `{word}`");
         }
+    }
+
+    /// Everything the user can type as a command: the core's words and the plugins'.
+    fn words() -> Vec<&'static str> {
+        COMMANDS
+            .iter()
+            .copied()
+            .chain(crate::plugins::bundled().iter().map(|plugin| plugin.name()))
+            .collect()
     }
 
     #[test]
     fn the_readme_documents_every_command_the_app_owns() {
         // Documentation drifts silently: this README once described the deployed site
         // as HTTP-only and drag-and-drop as unwired long after both had changed. The
-        // command table is the part a test can hold to account, so it is.
+        // command table is the part a test can hold to account, so it is, plugins
+        // included.
         let readme = include_str!("../../README.md");
-        for word in COMMANDS {
+        for word in words() {
             assert!(
                 readme.contains(&format!("| `{word}")),
                 "the README has no table row for `{word}`"

@@ -23,7 +23,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlElement;
 
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
-use crate::chart;
+use crate::plugins;
 use crate::journal;
 use crate::remote;
 use crate::store::{Session, Store};
@@ -499,69 +499,89 @@ impl App {
     /// cost, and any argument overrides it. `-O csv` is added because it is the
     /// only output that keeps accounts, periods and amounts apart without parsing a
     /// text table whose columns move; a caller who asked for a format keeps theirs.
-    fn run_chart(self: &Rc<App>, arguments: &str) {
-        let arguments = if arguments.trim().is_empty() {
-            "balance -M expenses".to_string()
-        } else {
-            arguments.trim().to_string()
-        };
-        let mut argv = match argv_for(&arguments) {
+    /// Run what a plugin asked for.
+    ///
+    /// The plugin describes; the app carries it out. That is the whole contract, and
+    /// it is why a plugin needs no access to anything here.
+    fn run_plan(self: &Rc<App>, line: &str, plugin: &'static dyn plugins::Plugin) {
+        let (_, arguments) = terminal::split_first_token(line);
+        match plugin.plan(&arguments) {
+            plugins::Plan::Say(message) => self.announce(&message),
+            plugins::Plan::Run { command } => self.run_drawn(&command, plugin),
+        }
+    }
+
+    /// Run a command on a plugin's behalf, and let it present the output.
+    fn run_drawn(
+        self: &Rc<App>,
+        command: &str,
+        plugin: &'static dyn plugins::Plugin,
+    ) {
+        let argv = match argv_for(command) {
             Ok(argv) => argv,
             Err(complaint) => return self.announce(&complaint),
         };
-        // Asked for in tokens rather than by searching the text, so `-O "csv"` and
-        // a `-O` inside a quoted argument are told apart.
-        let chosen_format = argv
-            .iter()
-            .any(|part| part == "-O" || part == "--output-format");
-        if !chosen_format {
-            argv.push("-O".to_string());
-            argv.push("csv".to_string());
-        }
-
+        let command = command.to_string();
         let files = self.files.borrow().clone();
         self.busy.set(true);
         let app = Rc::clone(self);
         spawn_local(async move {
             let result = hledger::run(HledgerRequest::new(argv, files)).await;
-            app.finish_chart(&arguments, result);
+            app.finish_drawn(&command, plugin, result);
         });
     }
 
     /// A run whose output is drawn rather than printed.
-    fn finish_chart(
+    fn finish_drawn(
         self: &Rc<App>,
         command: &str,
+        plugin: &'static dyn plugins::Plugin,
         result: Result<HledgerOutput, EngineError>,
     ) {
         match result {
             Ok(output) => {
                 let (columns, rows) = self.screen.size();
-                // Only drawn from hledger's own numbers, never from the app's
-                // arithmetic: a chart that disagreed with the report would be worse
-                // than no chart at all.
-                let lines = if output.is_failure() {
-                    Vec::new()
+                // Drawn by the plugin, from hledger's own numbers, never from the
+                // app's arithmetic: a picture that disagreed with the report would be
+                // worse than no picture.
+                let presented = if output.is_failure() {
+                    None
                 } else {
-                    chart::render(&output.stdout, columns as usize, rows.saturating_sub(4) as usize)
+                    plugin.present(
+                        &output.stdout,
+                        columns as usize,
+                        rows.saturating_sub(4) as usize,
+                    )
                 };
 
-                if lines.is_empty() {
+                let Some(lines) = presented else {
                     if output.is_failure() {
                         self.output(&output.stderr, Some(terminal::RED));
                     } else {
                         self.say(&format!(
-                            "Nothing to draw: {} gave no amounts. Chart a filtered \
-                             report, like {} or {}.",
+                            "Nothing to show: {} gave nothing {} can present.",
                             terminal::bold(command),
-                            terminal::bold("chart balance expenses -M"),
-                            terminal::bold("chart balance --depth 2")
+                            terminal::bold(plugin.name())
                         ));
                     }
-                } else {
-                    self.say(&terminal::chart_note(command));
-                    self.output(&lines.join("\n"), None);
+                    self.record_writes(&output);
+                    if output.is_failure() {
+                        let status = format!(
+                            "[exit {} · {:.1} s]",
+                            output.exit_code,
+                            output.ms / 1000.0
+                        );
+                        self.block(&status, Some(terminal::DIM_RED));
+                        self.remember_chatter(&status);
+                    }
+                    return self.settle();
+                };
+
+                let note = plugin.note(command);
+                if !note.is_empty() {
+                    self.say(&note);
                 }
+                self.output(&lines.join("\n"), None);
 
                 self.record_writes(&output);
 
@@ -967,6 +987,10 @@ impl App {
             candidates.extend(accounts.iter().cloned());
         }
         candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
+        for plugin in plugins::bundled() {
+            candidates.push(plugin.name().to_string());
+            candidates.extend(plugin.completes().iter().map(|word| (*word).to_string()));
+        }
 
         if let Completion::Ambiguous(options) = self.editor.borrow_mut().complete(&candidates) {
             // The prompt is already on the line, so it is cleared first: the list
@@ -1087,7 +1111,11 @@ impl App {
                 self.prompt();
             }
             Command::Help => {
-                let help = format!("{}\n{}\n", terminal::help(), crate::hledger_info::describe());
+                let help = format!(
+                    "{}\n{}\n",
+                    terminal::help(&plugins::help_entries()),
+                    crate::hledger_info::describe()
+                );
                 self.announce(&help);
             }
             Command::Upload => self.upload(upload::Mode::Files),
@@ -1173,8 +1201,6 @@ impl App {
                 terminal::bold("append data/2024.journal"),
                 terminal::bold(".")
             )),
-            Command::Chart(None) => self.run_chart(""),
-            Command::Chart(Some(arguments)) => self.run_chart(arguments),
             Command::ScreenReader(Some(wanted)) => {
                 if let Some(wanted) = self.single(wanted) {
                     match terminal::parse_switch(&wanted) {
@@ -1216,7 +1242,20 @@ impl App {
                     self.set_journal(&path);
                 }
             }
-            Command::Hledger(command) => self.run_with(command, append),
+            Command::Hledger(command) => {
+                // A plugin gets first refusal on the word. The core does not know
+                // their names, which is what makes them plugins.
+                match plugins::owner(command) {
+                    Some(plugin) if append.is_some() => self.announce(&format!(
+                        "{} appends what an hledger command prints. {} is a plugin, so \
+                         there is nothing to append.",
+                        terminal::bold(">>"),
+                        terminal::bold(plugin.name())
+                    )),
+                    Some(plugin) => self.run_plan(command, plugin),
+                    None => self.run_with(command, append),
+                }
+            }
         }
     }
 

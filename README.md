@@ -332,7 +332,9 @@ assets/wasm/                hledger.wasm, fetched at build time, verified agains
 assets/icons/               drawn by scripts/make-icons.py
 src/terminal/mod.rs         the line editor, commands, quoting, search (pure)
 src/terminal/view.rs        xterm.js, wrapped (wasm)
-src/chart.rs                drawing a report (pure)
+src/plugins/mod.rs          the plugin contract and the bundled plugins (pure)
+src/plugins/chart.rs        chart, as a plugin (pure)
+src/chart.rs                drawing a report, used by the chart plugin (pure)
 src/remote/mod.rs           remoteStorage paths and listings (pure)
 src/remote/client.rs        the remoteStorage library, glued in (wasm)
 src/hledger/                the engine's request/response types, and the JS bridge
@@ -348,6 +350,18 @@ The crate is split along a wasm boundary, enforced by `cfg`: the pure modules co
 for the host and are covered by `cargo test`, and no `web_sys` import can leak into
 them. That is why the line editor, the quoting rules, the search matcher, the chart
 renderer and the remoteStorage path handling are all testable without a browser.
+
+**Plugins are how commands beyond the core's own are added.** The core is a
+terminal, a set of loaded files, and a way to run hledger on them. A plugin declares a
+word, how it reads in the help, what it adds to completion, and what to do with the
+text typed after it; it never touches the app, which is what keeps it testable. It can
+also say how to present the output it caused, or return nothing and get the ordinary
+terminal.
+
+`chart` is a plugin, and was the test case: it used to be a command in the core, with
+its own word in the vocabulary, its own branch in the dispatch, its own note and its
+own finish. Now it is `src/plugins/chart.rs`, and the app knows only that a plugin may
+want to present output itself. Adding another is a file and a line in `bundled()`.
 
 Three decisions worth knowing:
 

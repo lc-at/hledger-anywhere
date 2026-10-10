@@ -26,6 +26,7 @@ mod hledger;
 mod hledger_info;
 mod chart;
 mod journal;
+mod plugins;
 mod remote;
 mod terminal;
 
