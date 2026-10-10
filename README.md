@@ -49,6 +49,7 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `put <path>` | Save a file a command wrote with `-o` into that account. |
 | `disconnect` | Forget the account; the files already loaded stay loaded. |
 | `font [size]` | Show or set the font size — the keyboard shortcuts need a keyboard, and a phone has none. |
+| `screenreader on` | Turn xterm's accessibility tree on or off, remembered between visits. |
 | `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
 | `unalias <name>` | Remove one. |
 | `clear` | Clear the screen. |
@@ -74,6 +75,13 @@ re-rooted the same way in both directions: paths are re-rooted at the category, 
 under the `hledger` category, because remoteStorage grants access one category at
 a time; changing which one is a one-line change in `src/remote/mod.rs`. The library
 is 146 KB and is loaded the first time you use a remote command, not on page load.
+
+**A screen reader can read the terminal.** `screenreader on` turns on xterm's
+accessibility tree — a real text representation of the screen that a screen reader
+can walk line by line, instead of the canvas it otherwise sees. It is off by
+default because building and maintaining that second representation costs
+something, and the setting is remembered, so someone who needs it gets it from the
+first render of every visit rather than having to find a command first.
 
 **Dropping files anywhere on the page** loads them, the same as `upload` — most
 people reach for a drag before they read a help text, so the whole page accepts one

@@ -63,8 +63,15 @@ pub struct Screen {
 
 impl Screen {
     /// Create a terminal inside `element`, at `font` pixels.
-    pub fn mount(element: &HtmlElement, font: u32) -> Result<Screen, String> {
-        let terminal = Xterm::new(&options(font));
+    pub fn mount(
+        element: &HtmlElement,
+        font: u32,
+        screen_reader: bool,
+    ) -> Result<Screen, String> {
+        // The accessibility tree is asked for at construction when it was asked for
+        // last time: someone using a screen reader should not have to run a command
+        // before the terminal becomes readable.
+        let terminal = Xterm::new(&options(font, screen_reader));
 
         let fit = addon("FitAddon");
         if let Some(addon) = &fit {
@@ -113,6 +120,21 @@ impl Screen {
             );
         }
         self.fit();
+    }
+
+    /// Turn xterm's accessibility tree on or off.
+    ///
+    /// Without it the terminal is a canvas of rows and a screen reader can say
+    /// nothing useful about it. xterm watches this option specifically, so it can
+    /// be changed at runtime — `cols` and `rows` are the only options that cannot.
+    pub fn set_screen_reader(&self, on: bool) {
+        if let Ok(options) = Reflect::get(&self.terminal, &JsValue::from_str("options")) {
+            let _ = Reflect::set(
+                &options,
+                &JsValue::from_str("screenReaderMode"),
+                &JsValue::from_bool(on),
+            );
+        }
     }
 
     /// Resize the terminal to its element.
@@ -235,11 +257,12 @@ fn addon(name: &str) -> Option<JsValue> {
 ///
 /// Black and amber, like the trading terminals this kind of tool grew up beside,
 /// with enough contrast for a monospace report to be read for a long time.
-fn options(font: u32) -> JsValue {
+fn options(font: u32, screen_reader: bool) -> JsValue {
     let options = Object::new();
     set(&options, "cursorBlink", JsValue::TRUE);
     set(&options, "cursorStyle", JsValue::from_str("block"));
     set(&options, "fontSize", JsValue::from_f64(f64::from(font)));
+    set(&options, "screenReaderMode", JsValue::from_bool(screen_reader));
     set(
         &options,
         "fontFamily",

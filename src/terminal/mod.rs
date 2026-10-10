@@ -149,6 +149,8 @@ pub enum Command<'a> {
     Put(Option<&'a str>),
     /// `font [size]` shows or sets the terminal font size.
     Font(Option<&'a str>),
+    /// `screenreader [on|off]` shows or sets the accessibility tree.
+    ScreenReader(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -179,6 +181,7 @@ pub fn classify(line: &str) -> Command<'_> {
         "remote" => Command::Remote((!rest.is_empty()).then_some(rest)),
         "put" => Command::Put((!rest.is_empty()).then_some(rest)),
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
+        "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -517,6 +520,7 @@ pub fn candidates(paths: &[String]) -> Vec<String> {
         "disconnect",
         "put",
         "font",
+        "screenreader",
     ]
         .iter()
         .map(|word| (*word).to_string())
@@ -888,6 +892,15 @@ pub fn download_list(files: &[String]) -> String {
     text
 }
 
+/// Read an on/off argument, accepting the spellings people actually type.
+pub fn parse_switch(text: &str) -> Result<bool, String> {
+    match text.trim().to_lowercase().as_str() {
+        "on" | "yes" | "true" | "1" | "enable" | "enabled" => Ok(true),
+        "off" | "no" | "false" | "0" | "disable" | "disabled" => Ok(false),
+        other => Err(format!("`{other}` is not on or off. Try `screenreader on`.")),
+    }
+}
+
 /// Read a font size from a command argument, clamped to the usable range.
 ///
 /// Clamping rather than refusing on purpose: `font 100` plainly means "as big as
@@ -1018,6 +1031,7 @@ pub fn help() -> String {
        disconnect        forget the account (the files stay in the cache)\n\
        put <path>        save a file hledger wrote into the connected account\n\
        font [size]       show or set the font size (Ctrl+= / Ctrl+- / Ctrl+0 too)\n\
+       screenreader on   turn the accessibility tree on (off turns it off)\n\
        /text             search the output; n and N repeat the search\n\
        clear             clear the screen\n\
        ?                 this help\n\
@@ -1699,6 +1713,20 @@ mod tests {
         assert!(font_size("").is_err());
         let complaint = font_size("big").expect_err("not a number");
         assert!(complaint.contains("number"), "{complaint}");
+    }
+
+    #[test]
+    fn an_on_off_argument_is_read_generously() {
+        for yes in ["on", "ON", " yes ", "true", "1", "enable", "enabled"] {
+            assert_eq!(parse_switch(yes), Ok(true), "{yes}");
+        }
+        for no in ["off", "No", "false", "0", "disable", "disabled"] {
+            assert_eq!(parse_switch(no), Ok(false), "{no}");
+        }
+        // It has to say what to type instead, not just that it is wrong.
+        let complaint = parse_switch("maybe").expect_err("not a switch");
+        assert!(complaint.contains("on or off"), "{complaint}");
+        assert!(complaint.contains("screenreader on"), "{complaint}");
     }
 
     #[test]

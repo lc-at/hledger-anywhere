@@ -36,6 +36,9 @@ const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
 /// `localStorage` key for the command aliases.
 const ALIAS_KEY: &str = "hledger-anywhere.terminal.aliases.v1";
 
+/// `localStorage` key for the screen reader preference.
+const SCREEN_READER_KEY: &str = "hledger-anywhere.terminal.screenreader.v1";
+
 /// An event listener the app keeps alive for as long as it runs.
 ///
 /// A `Closure` dropped by its creator stops firing, so a listener that outlives
@@ -71,7 +74,7 @@ pub fn start() {
     let Some(element) = terminal_element() else {
         return;
     };
-    let screen = match Screen::mount(&element, load_font()) {
+    let screen = match Screen::mount(&element, load_font(), load_screen_reader()) {
         Ok(screen) => Rc::new(screen),
         Err(error) => {
             // Nothing to print to, so this is the one place a console message is
@@ -275,6 +278,8 @@ struct App {
     isearch: RefCell<Option<ISearch>>,
     /// The terminal font size, in pixels, kept between visits.
     font: Cell<u32>,
+    /// Whether the terminal's accessibility tree is on, kept between visits.
+    screen_reader: Cell<bool>,
     /// Command aliases, in the order they were defined.
     aliases: RefCell<Vec<(String, String)>>,
     /// The drop handler, kept alive. One listener serves all three drag events.
@@ -303,6 +308,7 @@ impl App {
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
             font: Cell::new(load_font()),
+            screen_reader: Cell::new(load_screen_reader()),
             aliases: RefCell::new(load_aliases()),
             _keys: RefCell::new(None),
             _resize: RefCell::new(None),
@@ -388,6 +394,25 @@ impl App {
             terminal::step_font(self.font.get(), direction)
         };
         self.set_font_size(next);
+    }
+
+    /// Turn the terminal's accessibility tree on or off, and remember it.
+    ///
+    /// xterm can do this at runtime, so there is no reload and no lost scrollback;
+    /// the setting is stored so the next visit starts the way this one ended.
+    fn set_screen_reader(self: &Rc<App>, on: bool) {
+        self.screen_reader.set(on);
+        save_screen_reader(on);
+        self.screen.set_screen_reader(on);
+        self.announce(&format!(
+            "The accessibility tree is now {}.{}",
+            if on { "on" } else { "off" },
+            if on {
+                " A screen reader can now read the terminal line by line."
+            } else {
+                ""
+            }
+        ));
     }
 
     /// Set the font size outright, from a key or from `font <size>`.
@@ -732,6 +757,16 @@ impl App {
                 terminal::MIN_FONT,
                 terminal::MAX_FONT
             )),
+            Command::ScreenReader(None) => self.announce(&format!(
+                "The accessibility tree is {}. `screenreader {}` changes it; it is \
+                 remembered between visits.",
+                if self.screen_reader.get() { "on" } else { "off" },
+                if self.screen_reader.get() { "off" } else { "on" }
+            )),
+            Command::ScreenReader(Some(wanted)) => match terminal::parse_switch(wanted) {
+                Ok(on) => self.set_screen_reader(on),
+                Err(complaint) => self.announce(&complaint),
+            },
             Command::Font(Some(size)) => match terminal::font_size(size) {
                 Ok(size) => {
                     self.set_font_size(size);
@@ -1517,6 +1552,23 @@ fn load_font() -> u32 {
     match stored {
         Some(size) => size.clamp(terminal::MIN_FONT, terminal::MAX_FONT),
         None => terminal::DEFAULT_FONT,
+    }
+}
+
+/// Whether the accessibility tree was on last time.
+///
+/// Off by default: it makes xterm build and maintain a second representation of
+/// the screen, which is a real cost for everyone who does not need it.
+fn load_screen_reader() -> bool {
+    storage()
+        .and_then(|storage| storage.get_item(SCREEN_READER_KEY).ok().flatten())
+        .map(|raw| raw == "on")
+        .unwrap_or(false)
+}
+
+fn save_screen_reader(on: bool) {
+    if let Some(storage) = storage() {
+        let _ = storage.set_item(SCREEN_READER_KEY, if on { "on" } else { "off" });
     }
 }
 
