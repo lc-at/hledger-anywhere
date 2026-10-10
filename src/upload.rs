@@ -228,6 +228,14 @@ fn picker_promise(input: &HtmlInputElement) -> Promise {
     })
 }
 
+/// Read files handed over by a drop, the same way the picker reads them.
+///
+/// Dropped files have no `webkitRelativePath` — a drop carries files, not a
+/// directory — so they land at the root exactly as `upload` puts them.
+pub async fn read_dropped(files: &[File]) -> Result<Picked, PickError> {
+    read_files(files, Mode::Files).await
+}
+
 /// Read every chosen file into memory, skipping what cannot be mounted.
 async fn read_files(files: &[File], mode: Mode) -> Result<Picked, PickError> {
     let mut picked = Picked::default();

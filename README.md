@@ -44,6 +44,8 @@ Four words are the app's own; everything else is hledger's, verbatim:
 | `demo` | Load a small built-in journal, so the app can be tried without uploading anything. |
 | `/text` | Search what commands have printed; `n` and `N` repeat it forwards and backwards, and it says which match you are on. |
 | `download <path>` | Save a file a command wrote with `-o`. |
+| `alias` | List your aliases. `alias bal=balance --tree` defines one; the app says which one expanded when a command runs. |
+| `unalias <name>` | Remove one. |
 | `clear` | Clear the screen. |
 | `?` | The app's own help, with the engine's version and checksum. |
 
@@ -56,8 +58,14 @@ What hledger does with the width is hledger's business: `register` and `aregiste
 lay their columns out to fill it, while `balance` and `print` size themselves to
 their content and look the same at any width.
 
-Keys: **Enter** runs, **Tab** completes hledger commands, flags, account names and
-uploaded paths, **↑/↓** recall history, and **Ctrl+C stops a running command**.
+**Dropping files anywhere on the page** loads them, the same as `upload` — most
+people reach for a drag before they read a help text, so the whole page accepts one
+and outlines itself while a drag is over it. Dropped files land at the root of the
+mount, like `upload`; a directory still needs `upload_dir`.
+
+Keys: **Enter** runs, **Tab** completes hledger commands, flags, account names,
+aliases and uploaded paths, **↑/↓** recall history, and **Ctrl+C stops a running
+command**.
 
 The **Emacs and readline keys** work as well, because that is what people who live
 in a terminal already have in their fingers:

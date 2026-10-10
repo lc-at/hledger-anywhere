@@ -32,6 +32,9 @@ use crate::upload::{self, Picked};
 /// `localStorage` key for the terminal font size.
 const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
 
+/// `localStorage` key for the command aliases.
+const ALIAS_KEY: &str = "hledger-anywhere.terminal.aliases.v1";
+
 /// An event listener the app keeps alive for as long as it runs.
 ///
 /// A `Closure` dropped by its creator stops firing, so a listener that outlives
@@ -88,6 +91,7 @@ pub fn start() {
     // The font-size keys are the one thing xterm does not report through
     // `onData`, so they are caught on the element instead.
     app.font_keys(&element);
+    app.drop_target();
 
     register_service_worker();
 
@@ -200,6 +204,10 @@ struct App {
     isearch: RefCell<Option<ISearch>>,
     /// The terminal font size, in pixels, kept between visits.
     font: Cell<u32>,
+    /// Command aliases, in the order they were defined.
+    aliases: RefCell<Vec<(String, String)>>,
+    /// The drop handler, kept alive. One listener serves all three drag events.
+    _drop: Listener<dyn FnMut(web_sys::DragEvent)>,
     /// Kept alive for the lifetime of the app: the font-size keys, which xterm
     /// sends nothing for and so cannot be seen through `onData`.
     _keys: Listener<dyn FnMut(web_sys::KeyboardEvent)>,
@@ -224,8 +232,10 @@ impl App {
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
             font: Cell::new(load_font()),
+            aliases: RefCell::new(load_aliases()),
             _keys: RefCell::new(None),
             _resize: RefCell::new(None),
+            _drop: RefCell::new(None),
         }
     }
 
@@ -548,6 +558,7 @@ impl App {
         if let Some(accounts) = self.accounts.borrow().as_ref() {
             candidates.extend(accounts.iter().cloned());
         }
+        candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
         let outcome = self.editor.borrow_mut().complete(&candidates);
         match outcome {
             Completion::Ambiguous(options) => self.announce(&options.join("  ")),
@@ -578,6 +589,22 @@ impl App {
         // echoing it here showed every command twice.
         self.screen.write("\r\n");
 
+        // Aliases are expanded only for commands that are hledger's: an alias
+        // called `upload` would otherwise shadow the app's own command, and the
+        // words the app owns are the one part of the vocabulary it must keep.
+        let line = match terminal::classify(&line) {
+            Command::Hledger(_) => {
+                let aliases = self.aliases.borrow().clone();
+                let (expanded, used) = terminal::expand_alias(&line, &aliases);
+                if let Some((name, expansion)) = used {
+                    let note = terminal::alias_note(&name, &expansion);
+                    self.say(&note);
+                }
+                expanded
+            }
+            _ => line,
+        };
+
         match terminal::classify(&line) {
             Command::Clear => {
                 self.screen.clear();
@@ -590,6 +617,15 @@ impl App {
             Command::Upload => self.upload(upload::Mode::Files),
             Command::UploadDir => self.upload(upload::Mode::Directory),
             Command::Demo => self.load_demo(),
+            Command::Alias(None) => {
+                let listing = terminal::alias_list(&self.aliases.borrow());
+                self.announce(&listing);
+            }
+            Command::Alias(Some(text)) => self.set_alias(text),
+            Command::Unalias(Some(name)) => self.remove_alias(name),
+            Command::Unalias(None) => {
+                self.announce("Which one? `unalias <name>`, or `alias` to list them.");
+            }
             Command::Search(term) => self.search(term.unwrap_or("")),
             Command::SearchAgain(backwards) => self.search_again(backwards),
             Command::Download(Some(path)) => self.download(path),
@@ -905,6 +941,101 @@ impl App {
         }
     }
 
+    /// `alias name=command`: define one.
+    fn set_alias(self: &Rc<App>, text: &str) {
+        match terminal::parse_alias(text) {
+            terminal::AliasEdit::Bad(message) => self.announce(&message),
+            terminal::AliasEdit::Set(name, expansion) => {
+                {
+                    let mut aliases = self.aliases.borrow_mut();
+                    aliases.retain(|(existing, _)| existing != &name);
+                    aliases.push((name.clone(), expansion.clone()));
+                    aliases.sort_by(|left, right| left.0.cmp(&right.0));
+                }
+                save_aliases(&self.aliases.borrow());
+                self.announce(&format!("`{name}` now runs `{expansion}`."));
+            }
+        }
+    }
+
+    fn remove_alias(self: &Rc<App>, name: &str) {
+        let removed = {
+            let mut aliases = self.aliases.borrow_mut();
+            let before = aliases.len();
+            aliases.retain(|(existing, _)| existing != name);
+            aliases.len() != before
+        };
+        if !removed {
+            let listing = terminal::alias_list(&self.aliases.borrow());
+            self.announce(&format!("No alias called `{name}`.\n{listing}"));
+            return;
+        }
+        save_aliases(&self.aliases.borrow());
+        self.announce(&format!("Removed `{name}`."));
+    }
+
+    /// Take files dropped anywhere on the page.
+    ///
+    /// One listener for all three drag events: they differ only in what should
+    /// happen, and the browser's own behaviour — navigating away to show a dropped
+    /// file — has to be suppressed on all of them, or a drop that misses the
+    /// terminal loses the app.
+    fn drop_target(self: &Rc<App>) {
+        let app = Rc::clone(self);
+        let closure = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::DragEvent)>::new(
+            move |event: web_sys::DragEvent| {
+                // A drag with no files is a text selection being moved; leave it.
+                let carries_files = event
+                    .data_transfer()
+                    .map(|transfer| transfer.types().length() > 0)
+                    .unwrap_or(false);
+                if !carries_files {
+                    return;
+                }
+                event.prevent_default();
+
+                match event.type_().as_str() {
+                    "dragover" => app.highlight_drop(true),
+                    "drop" => {
+                        app.highlight_drop(false);
+                        let files: Vec<web_sys::File> = event
+                            .data_transfer()
+                            .and_then(|transfer| transfer.files())
+                            .map(|list| (0..list.length()).filter_map(|i| list.get(i)).collect())
+                            .unwrap_or_default();
+                        if files.is_empty() {
+                            return;
+                        }
+                        let app = Rc::clone(&app);
+                        spawn_local(async move {
+                            match upload::read_dropped(&files).await {
+                                Ok(picked) => app.accept_upload(picked),
+                                Err(error) => app.announce(&error.message()),
+                            }
+                        });
+                    }
+                    _ => app.highlight_drop(false),
+                }
+            },
+        );
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            for name in ["dragover", "dragleave", "drop"] {
+                let _ = document
+                    .add_event_listener_with_callback(name, closure.as_ref().unchecked_ref());
+            }
+        }
+        *self._drop.borrow_mut() = Some(closure);
+    }
+
+    /// Show that a drop would land here.
+    fn highlight_drop(&self, on: bool) {
+        if let Some(document) = web_sys::window().and_then(|window| window.document())
+            && let Some(body) = document.body()
+        {
+            let _ = body.class_list().toggle_with_force("drop-target", on);
+        }
+    }
+
     /// `/text`: search the output, or repeat the last search when blank.
     fn search(self: &Rc<App>, term: &str) {
         let term = if term.trim().is_empty() {
@@ -1129,6 +1260,26 @@ fn load_history() -> Vec<String> {
     let excess = history.len().saturating_sub(MAX_HISTORY);
     history.drain(0..excess);
     history
+}
+
+/// The aliases to start with, from the last visit.
+fn load_aliases() -> Vec<(String, String)> {
+    let Some(raw) = storage().and_then(|storage| storage.get_item(ALIAS_KEY).ok().flatten())
+    else {
+        return Vec::new();
+    };
+    let mut aliases: Vec<(String, String)> = serde_json::from_str(&raw).unwrap_or_default();
+    aliases.sort_by(|left, right| left.0.cmp(&right.0));
+    aliases
+}
+
+fn save_aliases(aliases: &[(String, String)]) {
+    let Some(storage) = storage() else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_string(aliases) {
+        let _ = storage.set_item(ALIAS_KEY, &json);
+    }
 }
 
 /// The font size to start with: the last one chosen, or the default.

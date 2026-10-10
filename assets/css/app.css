@@ -25,6 +25,13 @@ body {
   overflow: hidden;
 }
 
+/* Dropping a file anywhere is how most people would try to load a journal, so the
+ * whole page says yes while a drag is over it. */
+body.drop-target #terminal {
+  outline: 2px solid var(--term-accent);
+  outline-offset: -2px;
+}
+
 #terminal {
   position: fixed;
   inset: 0;

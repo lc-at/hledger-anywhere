@@ -135,6 +135,10 @@ pub enum Command<'a> {
     SearchAgain(bool),
     /// `download <path>` — save a file hledger wrote in the last run.
     Download(Option<&'a str>),
+    /// `alias` lists them; `alias name=expansion` sets one.
+    Alias(Option<&'a str>),
+    /// `unalias name` removes one.
+    Unalias(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -159,6 +163,8 @@ pub fn classify(line: &str) -> Command<'_> {
         "?" => Command::Help,
         "demo" => Command::Demo,
         "download" => Command::Download((!rest.is_empty()).then_some(rest)),
+        "alias" => Command::Alias((!rest.is_empty()).then_some(rest)),
+        "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
         // nothing is shadowed; `/` alone repeats the last search.
@@ -489,6 +495,8 @@ pub fn candidates(paths: &[String]) -> Vec<String> {
         "?",
         "demo",
         "download",
+        "alias",
+        "unalias",
     ]
         .iter()
         .map(|word| (*word).to_string())
@@ -626,6 +634,94 @@ pub const DEMO_PRICES: &str = "\
 P 2024-02-01 EUR $1.08
 P 2024-02-01 GBP $1.27
 ";
+
+/// What `alias name=expansion` means.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AliasEdit {
+    /// Set `name` to `expansion`.
+    Set(String, String),
+    /// Something the user should be told about instead.
+    Bad(String),
+}
+
+/// Read an `alias` argument.
+///
+/// The first `=` separates name from expansion, so an expansion may contain `=`
+/// — queries do — and the name may not contain spaces, because that is what makes
+/// it a name.
+pub fn parse_alias(text: &str) -> AliasEdit {
+    let Some((name, expansion)) = text.split_once('=') else {
+        return AliasEdit::Bad(format!(
+            "Write it as `alias name=command`: `alias {text}=…`."
+        ));
+    };
+    let name = name.trim();
+    let expansion = expansion.trim();
+    if name.is_empty() || name.contains(char::is_whitespace) {
+        return AliasEdit::Bad(
+            "An alias name cannot be empty or contain spaces. Try `alias bal=balance --tree`."
+                .to_string(),
+        );
+    }
+    if expansion.is_empty() {
+        return AliasEdit::Bad(format!(
+            "`{name}` would expand to nothing. Try `alias {name}=balance --tree`."
+        ));
+    }
+    AliasEdit::Set(name.to_string(), expansion.to_string())
+}
+
+/// Expand the command word of `line` if it is an alias.
+///
+/// Only the first word is looked at, and only once: an alias whose expansion
+/// begins with another alias is left alone rather than followed, because a loop
+/// between two aliases would otherwise be a hang. The rest of the line is the
+/// argument list and passes through untouched, so `bal --depth 2` works.
+///
+/// Returns the line to run and the alias that was used, if any.
+pub fn expand_alias(
+    line: &str,
+    aliases: &[(String, String)],
+) -> (String, Option<(String, String)>) {
+    let trimmed = line.trim();
+    let (head, rest) = match trimmed.split_once(char::is_whitespace) {
+        Some((head, rest)) => (head, rest),
+        None => (trimmed, ""),
+    };
+    let Some((name, expansion)) = aliases
+        .iter()
+        .find(|(name, _)| name == head)
+        .map(|(name, expansion)| (name.clone(), expansion.clone()))
+    else {
+        return (trimmed.to_string(), None);
+    };
+    let expanded = if rest.trim().is_empty() {
+        expansion.clone()
+    } else {
+        format!("{expansion} {}", rest.trim())
+    };
+    (expanded, Some((name, expansion)))
+}
+
+/// What the terminal prints when `alias` is given the list of them.
+pub fn alias_list(aliases: &[(String, String)]) -> String {
+    if aliases.is_empty() {
+        return "No aliases yet. `alias bal=balance --tree` makes `bal` run that.\r\n"
+            .to_string();
+    }
+    let mut text = String::from("Aliases:\r\n");
+    for (name, expansion) in aliases {
+        text.push_str(&format!("  {name} = {expansion}\r\n"));
+    }
+    text.push_str("`unalias <name>` removes one.\r\n");
+    text
+}
+
+/// The note printed when a command was expanded, so it is never a surprise that
+/// something other than what was typed ran.
+pub fn alias_note(name: &str, expansion: &str) -> String {
+    format!("[{name} → {expansion}]")
+}
 
 /// The most recent history entry before `from` that contains `query`.
 ///
@@ -1400,6 +1496,62 @@ mod tests {
 
         // Case-insensitive, like the other search.
         assert!(reverse_search(&history, "BALANCE", None).is_some());
+    }
+
+    #[test]
+    fn an_alias_replaces_the_command_word_and_keeps_the_arguments() {
+        let aliases = vec![
+            ("bal".to_string(), "balance --tree".to_string()),
+            ("m".to_string(), "balance -M".to_string()),
+        ];
+        let (line, used) = expand_alias("bal", &aliases);
+        assert_eq!(line, "balance --tree");
+        assert_eq!(used.map(|(name, _)| name).as_deref(), Some("bal"));
+
+        // Arguments are the user's, and follow the expansion.
+        let (line, _) = expand_alias("bal --depth 2", &aliases);
+        assert_eq!(line, "balance --tree --depth 2");
+
+        // Only the command word is looked at, and only once.
+        let (line, used) = expand_alias("print bal", &aliases);
+        assert_eq!((line.as_str(), used), ("print bal", None));
+        let (line, _) = expand_alias("m m", &aliases);
+        assert_eq!(line, "balance -M m", "expansion is not followed twice");
+
+        // Nothing aliased, nothing changed.
+        let (line, used) = expand_alias("balance", &[]);
+        assert_eq!((line.as_str(), used), ("balance", None));
+        let (line, _) = expand_alias("  stats  ", &aliases);
+        assert_eq!(line, "stats", "the line is trimmed");
+    }
+
+    #[test]
+    fn an_alias_is_written_name_equals_command() {
+        assert_eq!(
+            parse_alias("bal=balance --tree"),
+            AliasEdit::Set("bal".to_string(), "balance --tree".to_string())
+        );
+        // The expansion may contain `=`, which a query often does.
+        assert_eq!(
+            parse_alias("nw=balance --value=cost"),
+            AliasEdit::Set("nw".to_string(), "balance --value=cost".to_string())
+        );
+
+        // And the complaints say what to do instead.
+        for bad in ["bal", "two words=x", "=balance", "bal="] {
+            match parse_alias(bad) {
+                AliasEdit::Bad(message) => assert!(!message.is_empty(), "{bad}"),
+                other => panic!("{bad} should not be accepted: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_alias_list_says_how_to_start_and_how_to_remove() {
+        assert!(alias_list(&[]).contains("alias bal=balance --tree"));
+        let listing = alias_list(&[("bal".to_string(), "balance --tree".to_string())]);
+        assert!(listing.contains("bal = balance --tree"));
+        assert!(listing.contains("unalias"));
     }
 
     #[test]
