@@ -36,6 +36,7 @@ mod hledger_info;
 mod journal;
 mod plugins;
 mod remote;
+mod settings;
 mod terminal;
 
 #[cfg(target_arch = "wasm32")]

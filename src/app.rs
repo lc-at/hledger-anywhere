@@ -15,16 +15,19 @@
 //!   to keep what was typed and replay it when the engine is free.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use js_sys::Reflect;
+use js_sys::{Promise, Reflect};
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlElement;
 
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
-use crate::plugins;
 use crate::journal;
+use crate::plugins::{self, Registry};
+use crate::settings::{Alias, Settings};
 use crate::remote;
 use crate::store::{Session, Store};
 use crate::terminal::{self, Command, Completion, Editor};
@@ -81,6 +84,10 @@ const MAX_HISTORY: usize = 100;
 
 /// Start the app. Called once, from `main`.
 pub fn start() {
+    // The settings record first: the font, the accessibility tree and the aliases all
+    // come from it, and it is where the installed repositories are listed.
+    load_settings();
+
     let Some(element) = terminal_element() else {
         return;
     };
@@ -110,6 +117,8 @@ pub fn start() {
     register_service_worker();
 
     app.remote_return();
+    // Plugins are installed from the settings, so this is where they arrive.
+    app.load_repositories();
 
     let booting = Rc::clone(&app);
     spawn_local(async move { boot(booting).await });
@@ -272,6 +281,10 @@ struct App {
     /// True while the engine is running: it cannot be interrupted, and it cannot
     /// run twice at once.
     busy: Cell<bool>,
+    /// The plugins installed this visit, and the words they answer to.
+    registry: RefCell<Registry>,
+    /// The API handed to each plugin, kept because a plugin may hold on to it.
+    hosts: RefCell<BTreeMap<String, JsValue>>,
     /// Whether the engine's download has been started yet.
     engine_warming: Cell<bool>,
     /// Whether the engine is loaded and ready to run.
@@ -319,6 +332,8 @@ impl App {
             main: RefCell::new(None),
             store: RefCell::new(None),
             busy: Cell::new(false),
+            registry: RefCell::new(Registry::default()),
+            hosts: RefCell::new(BTreeMap::new()),
             engine_warming: Cell::new(false),
             engine_ready: Cell::new(false),
             pending: RefCell::new(String::new()),
@@ -418,122 +433,8 @@ impl App {
     }
 
 
-    /// Run what a plugin asked for.
-    ///
-    /// The plugin describes; the app carries it out. That is the whole contract, and
-    /// it is why a plugin needs no access to anything here.
-    fn run_plan(self: &Rc<App>, line: &str, plugin: &'static dyn plugins::Plugin) {
-        let (_, arguments) = terminal::split_first_token(line);
-        // The title says what was typed, not the command the plugin decided to run:
-        // `running chart balance` is the user's line, `balance -O csv` is ours.
-        self.waiting_note();
-        self.title(&format!("running {}", line.trim()));
-        match plugin.plan(&arguments) {
-            plugins::Plan::Say(message) => self.announce(&message),
-            plugins::Plan::Run { command } => self.run_drawn(&command, plugin),
-        }
-    }
 
-    /// Run a command on a plugin's behalf, and let it present the output.
-    fn run_drawn(
-        self: &Rc<App>,
-        command: &str,
-        plugin: &'static dyn plugins::Plugin,
-    ) {
-        let argv = match argv_for(command) {
-            Ok(argv) => argv,
-            Err(complaint) => return self.announce(&complaint),
-        };
-        // The same rule for anything a plugin runs on hledger's behalf.
-        if let Some(clash) = terminal::output_over(&self.paths(), &argv) {
-            return self.announce(&format!(
-                "{} would write over the loaded file {}. This session is read-only, so an \
-                 output file needs a new name.",
-                terminal::bold("-o"),
-                terminal::bold(&clash)
-            ));
-        }
 
-        let command = command.to_string();
-        let files = self.files.borrow().clone();
-        self.busy.set(true);
-        let app = Rc::clone(self);
-        spawn_local(async move {
-            let result = hledger::run(HledgerRequest::new(argv, files)).await;
-            app.finish_drawn(&command, plugin, result);
-        });
-    }
-
-    /// A run whose output is drawn rather than printed.
-    fn finish_drawn(
-        self: &Rc<App>,
-        command: &str,
-        plugin: &'static dyn plugins::Plugin,
-        result: Result<HledgerOutput, EngineError>,
-    ) {
-        match result {
-            Ok(output) => {
-                let (columns, rows) = self.screen.size();
-                // Drawn by the plugin, from hledger's own numbers, never from the
-                // app's arithmetic: a picture that disagreed with the report would be
-                // worse than no picture.
-                let presented = if output.is_failure() {
-                    None
-                } else {
-                    plugin.present(
-                        &output.stdout,
-                        columns as usize,
-                        rows.saturating_sub(4) as usize,
-                    )
-                };
-
-                let Some(lines) = presented else {
-                    if output.is_failure() {
-                        self.output(&output.stderr, Some(terminal::RED));
-                    } else {
-                        self.say(&format!(
-                            "Nothing to show: {} gave nothing {} can present.",
-                            terminal::bold(command),
-                            terminal::bold(plugin.name())
-                        ));
-                    }
-                    self.record_writes(&output);
-                    if output.is_failure() {
-                        let status = format!(
-                            "[exit {} · {:.1} s]",
-                            output.exit_code,
-                            output.ms / 1000.0
-                        );
-                        self.block(&status, Some(terminal::DIM_RED));
-                        self.remember_chatter(&status);
-                    }
-                    return self.settle();
-                };
-
-                let note = plugin.note(command);
-                if !note.is_empty() {
-                    self.say(&note);
-                }
-                self.output(&lines.join("\n"), None);
-
-                self.record_writes(&output);
-
-                if output.is_failure() {
-                    let status = format!(
-                        "[exit {} · {:.1} s]",
-                        output.exit_code,
-                        output.ms / 1000.0
-                    );
-                    self.block(&status, Some(terminal::DIM_RED));
-                    self.remember_chatter(&status);
-                }
-            }
-            Err(EngineError::Cancelled) => self.say("[cancelled]"),
-            Err(error) => self.block(&error.to_string(), Some(terminal::RED)),
-        }
-
-        self.settle();
-    }
 
     /// Keep what a run wrote, for `download`, in this visit only.
     ///
@@ -927,10 +828,7 @@ impl App {
             candidates.extend(accounts.iter().cloned());
         }
         candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
-        for plugin in plugins::bundled() {
-            candidates.push(plugin.name().to_string());
-            candidates.extend(plugin.completes().iter().map(|word| (*word).to_string()));
-        }
+        candidates.extend(self.registry.borrow().words());
 
         if let Completion::Ambiguous(options) = self.editor.borrow_mut().complete(&candidates) {
             // The prompt is already on the line, so it is cleared first: the list
@@ -998,11 +896,16 @@ impl App {
                 self.prompt();
             }
             Command::Help => {
-                let help = format!(
-                    "{}\n{}\n",
-                    terminal::help(&plugins::help_entries()),
-                    crate::hledger_info::describe()
-                );
+                // Scoped: the help entries borrow the registry, and the text is what
+                // is kept, so the borrow ends before the line is printed.
+                let help = {
+                    let registry = self.registry.borrow();
+                    format!(
+                        "{}\n{}\n",
+                        terminal::help(&registry.help_entries()),
+                        crate::hledger_info::describe()
+                    )
+                };
                 self.announce(&help);
             }
             Command::Upload => self.upload(upload::Mode::Files),
@@ -1057,6 +960,8 @@ impl App {
                 terminal::bold("screenreader"),
                 if self.screen_reader.get() { "off" } else { "on" }
             )),
+            Command::Plugins(None) => self.list_plugins(),
+            Command::Plugins(Some(arguments)) => self.plugins_command(arguments),
             Command::ScreenReader(Some(wanted)) => {
                 if let Some(wanted) = self.single(wanted) {
                     match terminal::parse_switch(&wanted) {
@@ -1109,8 +1014,10 @@ impl App {
 
                 // A plugin gets first refusal on the word. The core does not know
                 // their names, which is what makes them plugins.
-                match plugins::owner(command) {
-                    Some(plugin) => self.run_plan(command, plugin),
+                // A plugin owns this word, if one is installed for it.
+                let owner = self.registry.borrow().owner(command).cloned();
+                match owner {
+                    Some(plugin) => self.run_plugin(plugin, command),
                     None => self.run_with(command),
                 }
             }
@@ -1358,6 +1265,273 @@ impl App {
             self.say(&terminal::dim(
                 "Starting hledger. The first command waits for the engine to load.",
             ));
+        }
+    }
+
+    /// Run a plugin command, in the page, with the app's own API.
+    ///
+    /// The plugin decides what happens. The app lends it a way to run hledger, a way to
+    /// print, and its own settings, and nothing else: no part of this API writes.
+    fn run_plugin(self: &Rc<App>, plugin: plugins::PluginInfo, line: &str) {
+        let (_, arguments) = terminal::split_first_token(line);
+        let name = plugin.name.clone();
+        if plugin.module.trim().is_empty() {
+            return self.announce(&format!(
+                "{} is installed without a module, so there is nothing to run.",
+                terminal::bold(&name)
+            ));
+        }
+
+        self.busy.set(true);
+        self.waiting_note();
+        self.title(&format!("running {}", line.trim()));
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            let host = app.host(&name);
+            if let Err(error) = plugins::loader::run(
+                &plugin.repository,
+                &plugin.module,
+                &name,
+                &arguments,
+                &host,
+            )
+            .await
+            {
+                app.announce(&format!("{} could not run: {error}", terminal::bold(&name)));
+            }
+            app.settle();
+        });
+    }
+
+    /// The API a plugin is handed.
+    ///
+    /// Built once per plugin and kept, because a plugin may hold on to it and these
+    /// closures have to outlive the call that made them.
+    fn host(self: &Rc<App>, name: &str) -> JsValue {
+        if let Some(host) = self.hosts.borrow().get(name) {
+            return host.clone();
+        }
+        let host = plugins::loader::empty_object();
+
+        // say(text): the plugin's own output, printed the way the app prints its own.
+        let app = Rc::clone(self);
+        let say = Closure::<dyn FnMut(String)>::new(move |text: String| app.say(&text));
+        let _ = Reflect::set(&host, &"say".into(), say.as_ref().unchecked_ref());
+        say.forget();
+
+        // hledger(command): a read-only engine run, resolving with its standard output
+        // and rejecting with the reason it could not run.
+        let app = Rc::clone(self);
+        let hledger = Closure::<dyn FnMut(String) -> Promise>::new(move |command: String| {
+            let app = Rc::clone(&app);
+            Promise::new(&mut move |resolve, reject| {
+                let app = Rc::clone(&app);
+                // Cloned for the task: the executor needs to own it, and this closure is
+                // called more than once in principle.
+                let command = command.clone();
+                spawn_local(async move {
+                    match app.host_run(&command).await {
+                        Ok(text) => {
+                            let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str(&text));
+                        }
+                        Err(message) => {
+                            let _ = reject.call1(&JsValue::NULL, &JsValue::from_str(&message));
+                        }
+                    }
+                });
+            })
+        });
+        let _ = Reflect::set(&host, &"hledger".into(), hledger.as_ref().unchecked_ref());
+        hledger.forget();
+
+        // setting(key) and remember(key, value): what this plugin asked to keep.
+        let plugin = name.to_string();
+        let setting = Closure::<dyn FnMut(String) -> JsValue>::new(move |key: String| {
+            settings(|settings| settings.plugin_settings(&plugin).get(&key).cloned())
+                .map(|value| JsValue::from_str(&value))
+                .unwrap_or(JsValue::NULL)
+        });
+        let _ = Reflect::set(&host, &"setting".into(), setting.as_ref().unchecked_ref());
+        setting.forget();
+
+        let plugin = name.to_string();
+        let remember = Closure::<dyn FnMut(String, String)>::new(move |key: String, value: String| {
+            update_settings(|settings| {
+                settings.set_plugin_setting(&plugin, &key, &value);
+            });
+        });
+        let _ = Reflect::set(&host, &"remember".into(), remember.as_ref().unchecked_ref());
+        remember.forget();
+
+        // window(title), and the plugin's own name, are added by the loader in
+        // JavaScript: a pop-up has to be opened by the browser, before the plugin awaits.
+        let host: JsValue = host.into();
+        self.hosts.borrow_mut().insert(name.to_string(), host.clone());
+        host
+    }
+
+    /// Run an hledger command for a plugin, under the same rules as the command line.
+    ///
+    /// A plugin gets no more power than the person typing: it cannot change a journal,
+    /// and it cannot write a report over a loaded file.
+    async fn host_run(self: &Rc<App>, command: &str) -> Result<String, String> {
+        if let Some(refusal) = terminal::read_only_refusal(command) {
+            return Err(refusal);
+        }
+        let argv = argv_for(command)?;
+        if let Some(clash) = terminal::output_over(&self.paths(), &argv) {
+            return Err(format!(
+                "-o would write over the loaded file {clash}, and this session is read-only"
+            ));
+        }
+        let files = self.files.borrow().clone();
+        let output = hledger::run(HledgerRequest::new(argv, files))
+            .await
+            .map_err(|error| error.to_string())?;
+        self.record_writes(&output);
+        if output.is_failure() {
+            let message = output.stderr.trim();
+            return Err(if message.is_empty() {
+                format!("hledger exited {}", output.exit_code)
+            } else {
+                message.to_string()
+            });
+        }
+        Ok(output.stdout)
+    }
+
+    /// Install the repositories this visitor added.
+    ///
+    /// Quiet when everything loads, since a repository is not news. A failure is news: a
+    /// word the user expects to work will not.
+    fn load_repositories(self: &Rc<App>) {
+        let repositories = settings(|settings| settings.repositories.clone());
+        if repositories.is_empty() {
+            return;
+        }
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            app.title("loading plugins");
+            for url in repositories {
+                if let Err(error) = app.install_repository(&url).await {
+                    app.announce(&format!("{}: {error}", terminal::bold(&url)));
+                }
+            }
+            app.title("");
+            app.prompt();
+        });
+    }
+
+    /// Fetch one manifest and take the plugins it offers.
+    async fn install_repository(self: &Rc<App>, url: &str) -> Result<plugins::Installed, String> {
+        let text = plugins::loader::fetch(url).await?;
+        self.registry.borrow_mut().install(&text, url)
+    }
+
+    /// `plugins`: what is installed, and where it came from.
+    fn list_plugins(self: &Rc<App>) {
+        let (installed, repositories) = {
+            let registry = self.registry.borrow();
+            let installed: Vec<(String, String)> = registry
+                .listing()
+                .into_iter()
+                .map(|(name, summary, _)| (name.to_string(), summary.to_string()))
+                .collect();
+            let repositories: Vec<String> = registry
+                .repositories()
+                .into_iter()
+                .map(|url| url.to_string())
+                .collect();
+            (installed, repositories)
+        };
+        self.say(&terminal::plugin_list(&installed, &repositories));
+        self.prompt();
+    }
+
+    /// `plugins add|remove|reload`.
+    ///
+    /// Adding is the only one that runs anything, and it runs nothing from the
+    /// repository: the manifest is read and its plugins are registered. Their module is
+    /// imported the first time one of their commands is used.
+    fn plugins_command(self: &Rc<App>, arguments: &str) {
+        let (head, rest) = terminal::split_first_token(arguments);
+        match head.as_str() {
+            "add" => {
+                let Some(url) = self.single(&rest) else {
+                    return;
+                };
+                if settings(|settings| settings.has_repository(&url)) {
+                    return self.announce(&format!(
+                        "{} is already installed. {} reads it again.",
+                        terminal::bold(&url),
+                        terminal::bold("plugins reload")
+                    ));
+                }
+                self.busy.set(true);
+                self.title(&format!("reading {url}"));
+                let app = Rc::clone(self);
+                spawn_local(async move {
+                    match app.install_repository(&url).await {
+                        Ok(installed) => {
+                            update_settings(|settings| {
+                                if !settings.has_repository(&url) {
+                                    settings.repositories.push(url.clone());
+                                }
+                            });
+                            app.say(&terminal::plugin_installed(
+                                &url,
+                                &installed.registered,
+                                &installed.refused,
+                            ));
+                        }
+                        Err(error) => {
+                            app.announce(&format!("{}: {error}", terminal::bold(&url)))
+                        }
+                    }
+                    app.settle();
+                });
+            }
+            "remove" => {
+                let Some(url) = self.single(&rest) else {
+                    return;
+                };
+                let removed = self.registry.borrow_mut().remove_repository(&url);
+                if removed > 0 {
+                    update_settings(|settings| {
+                        settings.repositories.retain(|known| known != &url);
+                    });
+                }
+                self.say(&terminal::plugin_removed(&url, removed));
+                self.prompt();
+            }
+            "reload" => {
+                let repositories = settings(|settings| settings.repositories.clone());
+                {
+                    let mut registry = self.registry.borrow_mut();
+                    for url in &repositories {
+                        registry.remove_repository(url);
+                    }
+                }
+                self.busy.set(true);
+                self.title("reading plugins");
+                let app = Rc::clone(self);
+                spawn_local(async move {
+                    // Modules are forgotten too, so a repository that changed is read
+                    // again rather than served from the import cache.
+                    let _ = plugins::loader::reset().await;
+                    for url in &repositories {
+                        if let Err(error) = app.install_repository(url).await {
+                            app.announce(&format!("{}: {error}", terminal::bold(url)));
+                        }
+                    }
+                    app.title("");
+                    app.settle();
+                });
+            }
+            other => {
+                self.say(&terminal::plugin_usage(other));
+                self.prompt();
+            }
         }
     }
 
@@ -1956,6 +2130,80 @@ fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
 }
 
+/// Where the one settings record is kept.
+const SETTINGS_KEY: &str = "hledger-anywhere.settings.v1";
+
+thread_local! {
+    /// The settings for this visit, loaded once and saved whenever they change.
+    ///
+    /// One record rather than a key per setting: it is what gets exported from one
+    /// instance and imported into another, and the rest of the app reads it here.
+    static SETTINGS: std::cell::RefCell<Settings> =
+        std::cell::RefCell::new(Settings::default());
+}
+
+/// Read a setting.
+fn settings<R>(read: impl FnOnce(&Settings) -> R) -> R {
+    SETTINGS.with(|settings| read(&settings.borrow()))
+}
+
+/// Change a setting, and keep it.
+fn update_settings(change: impl FnOnce(&mut Settings)) {
+    SETTINGS.with(|settings| {
+        let mut settings = settings.borrow_mut();
+        change(&mut settings);
+        let Some(storage) = storage() else {
+            return;
+        };
+        let _ = storage.set_item(SETTINGS_KEY, &settings.to_json());
+    });
+}
+
+/// Load the settings, migrating what an earlier version kept in separate keys.
+///
+/// The old keys are read only when the record is absent, so this happens once and then
+/// the record is the only thing that is written.
+fn load_settings() {
+    let record = storage().and_then(|storage| storage.get_item(SETTINGS_KEY).ok().flatten());
+    let loaded = match record.as_deref() {
+        Some(raw) => match Settings::from_json(raw) {
+            Ok(import) => import.settings,
+            // A damaged record is worse than none: start clean rather than refuse to
+            // start, since everything in it can be set again in one command.
+            Err(_) => Settings::default(),
+        },
+        None => {
+            let mut settings = Settings::default();
+            if let Some(storage) = storage() {
+                if let Some(size) = storage
+                    .get_item(FONT_KEY)
+                    .ok()
+                    .flatten()
+                    .and_then(|raw| raw.parse::<u32>().ok())
+                {
+                    settings.font = size;
+                }
+                settings.screen_reader = storage
+                    .get_item(SCREEN_READER_KEY)
+                    .ok()
+                    .flatten()
+                    .map(|raw| raw == "on")
+                    .unwrap_or(false);
+                if let Some(raw) = storage.get_item(ALIAS_KEY).ok().flatten() {
+                    let pairs: Vec<(String, String)> =
+                        serde_json::from_str(&raw).unwrap_or_default();
+                    settings.aliases = pairs
+                        .into_iter()
+                        .map(|(name, command)| Alias { name, command })
+                        .collect();
+                }
+            }
+            settings
+        }
+    };
+    SETTINGS.with(|settings| *settings.borrow_mut() = loaded);
+}
+
 fn load_history() -> Vec<String> {
     let Some(raw) = storage().and_then(|storage| storage.get_item(HISTORY_KEY).ok().flatten())
     else {
@@ -1967,58 +2215,49 @@ fn load_history() -> Vec<String> {
     history
 }
 
-/// The aliases to start with, from the last visit.
+/// The aliases to start with, from the last visit, in a stable order.
 fn load_aliases() -> Vec<(String, String)> {
-    let Some(raw) = storage().and_then(|storage| storage.get_item(ALIAS_KEY).ok().flatten())
-    else {
-        return Vec::new();
-    };
-    let mut aliases: Vec<(String, String)> = serde_json::from_str(&raw).unwrap_or_default();
+    let mut aliases: Vec<(String, String)> = settings(|settings| {
+        settings
+            .aliases
+            .iter()
+            .map(|alias| (alias.name.clone(), alias.command.clone()))
+            .collect()
+    });
     aliases.sort_by(|left, right| left.0.cmp(&right.0));
     aliases
 }
 
 fn save_aliases(aliases: &[(String, String)]) {
-    let Some(storage) = storage() else {
-        return;
-    };
-    if let Ok(json) = serde_json::to_string(aliases) {
-        let _ = storage.set_item(ALIAS_KEY, &json);
-    }
+    let wanted: Vec<Alias> = aliases
+        .iter()
+        .map(|(name, command)| Alias {
+            name: name.clone(),
+            command: command.clone(),
+        })
+        .collect();
+    update_settings(|settings| settings.aliases = wanted);
 }
 
-/// The font size to start with: the last one chosen, or the default.
+/// The font size to start with.
 fn load_font() -> u32 {
-    let stored = storage()
-        .and_then(|storage| storage.get_item(FONT_KEY).ok().flatten())
-        .and_then(|raw| raw.parse::<u32>().ok());
-    match stored {
-        Some(size) => size.clamp(terminal::MIN_FONT, terminal::MAX_FONT),
-        None => terminal::DEFAULT_FONT,
-    }
+    settings(|settings| settings.font)
 }
 
 /// Whether the accessibility tree was on last time.
 ///
-/// Off by default: it makes xterm build and maintain a second representation of
-/// the screen, which is a real cost for everyone who does not need it.
+/// Off by default: it makes xterm build and maintain a second representation of the
+/// screen, which is a real cost for everyone who does not need it.
 fn load_screen_reader() -> bool {
-    storage()
-        .and_then(|storage| storage.get_item(SCREEN_READER_KEY).ok().flatten())
-        .map(|raw| raw == "on")
-        .unwrap_or(false)
+    settings(|settings| settings.screen_reader)
 }
 
 fn save_screen_reader(on: bool) {
-    if let Some(storage) = storage() {
-        let _ = storage.set_item(SCREEN_READER_KEY, if on { "on" } else { "off" });
-    }
+    update_settings(|settings| settings.screen_reader = on);
 }
 
 fn save_font(size: u32) {
-    if let Some(storage) = storage() {
-        let _ = storage.set_item(FONT_KEY, &size.to_string());
-    }
+    update_settings(|settings| settings.font = size);
 }
 
 fn save_history(history: &[String]) {

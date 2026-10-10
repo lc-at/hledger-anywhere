@@ -109,6 +109,7 @@ Everything that is not in this table is passed to hledger verbatim.
 | `font [size]` | Show or set the font size, 8 to 32 px. |
 | `screenreader` | Turn xterm's accessibility tree `on` or `off`. |
 | `clear` | Clear the screen. |
+| `plugins [add\|remove\|reload]` | List the installed plugins, or install a repository by URL or path. |
 | `?` | The app's own help, the engine's version and its checksum. |
 
 ### Keys
@@ -183,6 +184,33 @@ through [remoteStorage](#remotestorage) is in your own account.
 **What a command writes lasts for this visit.** The file is in the engine's filesystem
 and in the list `download` reads, and it is deliberately not stored: an exported report
 is something you take away, not something that joins your journal.
+
+## Plugins
+
+Commands the app does not implement itself are plugins, loaded at runtime. A plugin is a
+JavaScript module listed in a repository manifest, which you install by URL or path:
+
+```
+hledger.journal » plugins add ./examples/plugins/plugins.json
+Read 1 plugin from ./examples/plugins/plugins.json: chart.
+hledger.journal » chart expenses
+chart: 3 months of expenses, $1200.00 last, in a new window.
+```
+
+The example repository ships with the app and is installed on request rather than by
+default: it is a `chart` plugin that opens a balance line chart in a window of its own,
+using hledger's own numbers from `balance expenses -M -O csv`. Nothing about it is in the
+app's core.
+
+The manifest is authoritative for the words, the help text and the completion, so an
+installed repository costs one fetch and runs no code until one of its commands is used.
+Plugins get a small API and nothing more: `host.hledger(command)` to run hledger,
+`host.say(text)` to print, `host.window(title)` to open a window, and their own settings.
+The read-only rule applies to them exactly as it does to the command line, so a plugin
+cannot change a journal either.
+
+A plugin is code running in this page, so installing a repository is trusting it. See
+[docs/plugins.md](docs/plugins.md) for the manifest fields, the API, and a worked example.
 
 ## Read-only, for now
 

@@ -84,6 +84,11 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
 
+      # The example plugin is the worked example in docs/plugins.md, and nothing in the
+      # Rust tests can reach it.
+      - name: Check the example plugin
+        run: node scripts/check-example-plugin.mjs
+
       - name: Engine smoke test
         # The shipped engine, driven the way the app drives it: no -f, with the
         # journal exported as $LEDGER_FILE. Nothing here needs a browser, so a

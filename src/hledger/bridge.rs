@@ -68,7 +68,7 @@ async fn bridge() -> Result<JsValue, EngineError> {
 }
 
 /// Yield to the browser's event loop for `ms` milliseconds.
-async fn delay(ms: i32) {
+pub(crate) async fn delay(ms: i32) {
     let promise = Promise::new(&mut |resolve, _reject| {
         let Some(window) = web_sys::window() else {
             return;

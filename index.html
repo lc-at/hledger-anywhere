@@ -9,6 +9,8 @@
     <link data-trunk rel="copy-dir" href="assets/js" />
     <link data-trunk rel="copy-dir" href="assets/wasm" />
     <link data-trunk rel="copy-dir" href="assets/icons" />
+    <!-- The example plugin repository, installed on request rather than by default. -->
+    <link data-trunk rel="copy-dir" href="assets/examples" />
 
     <!--
       A service worker only controls its own directory and below, so this has to
@@ -44,5 +46,7 @@
       is deferred automatically and cannot race the terminal's first command.
     -->
     <script type="module" src="/js/hledger-wasi.js"></script>
+    <!-- The plugin loader: repositories of plugins, and the API they are given. -->
+    <script type="module" src="/js/plugins.js"></script>
   </body>
 </html>

@@ -104,7 +104,7 @@ pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// hledger's commands, for completion. Not exhaustive, completion is a
 /// convenience, and anything missing can still be typed out.
-const HLEDGER_COMMANDS: [&str; 34] = [
+pub const HLEDGER_COMMANDS: [&str; 34] = [
     "accounts",
     "activity",
     "add",
@@ -216,6 +216,8 @@ pub enum Command<'a> {
     Font(Option<&'a str>),
     /// `screenreader [on|off]` shows or sets the accessibility tree.
     ScreenReader(Option<&'a str>),
+    /// `plugins` lists the installed plugins; `add`, `remove` and `reload` change them.
+    Plugins(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -246,6 +248,7 @@ pub fn classify(line: &str) -> Command<'_> {
         "remote" => Command::Remote((!rest.is_empty()).then_some(rest)),
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
+        "plugins" => Command::Plugins((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -711,7 +714,7 @@ pub enum Completion {
 /// One list, because three things have to agree about it: completion offers these
 /// first, the `?` help is expected to describe them, and the README is expected to
 /// document them. Tests check the last two against this.
-const COMMANDS: &[&str] = &[
+pub const COMMANDS: &[&str] = &[
     "upload",
     "upload_dir",
     "journal",
@@ -726,6 +729,7 @@ const COMMANDS: &[&str] = &[
     "disconnect",
     "font",
     "screenreader",
+    "plugins",
 ];
 
 pub fn candidates(paths: &[String]) -> Vec<String> {
@@ -1112,6 +1116,97 @@ pub fn output_over(paths: &[String], argv: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// What `plugins` prints: what is installed, and the repositories it came from.
+pub fn plugin_list(installed: &[(String, String)], repositories: &[String]) -> String {
+    let mut text = String::new();
+    if installed.is_empty() {
+        text.push_str(
+            "No plugins are installed. A plugin adds commands, and comes from a repository \
+             you name.\r\n",
+        );
+    } else {
+        text.push_str(&format!(
+            "{}, {}\r\n",
+            bold(&count(installed.len(), "plugin")),
+            dim("installed")
+        ));
+        for (name, summary) in installed {
+            text.push_str(&format!(
+                "  {}  {}\r\n",
+                bold(&format!("{name:<14}")),
+                dim(summary)
+            ));
+        }
+    }
+
+    if repositories.is_empty() {
+        text.push_str(&format!(
+            "\r\nAdd one with {}, or {} for the examples that ship with the app.\r\n",
+            bold("plugins add <url or path>"),
+            bold("plugins add ./examples/plugins/plugins.json")
+        ));
+    } else {
+        text.push_str(&format!("\r\n{}\r\n", bold("Repositories")));
+        for repository in repositories {
+            text.push_str(&format!("  {repository}\r\n"));
+        }
+        text.push_str(&format!(
+            "\r\n{} reads them again; {} forgets one.\r\n",
+            bold("plugins reload"),
+            bold("plugins remove <url>")
+        ));
+    }
+    text
+}
+
+/// What `plugins add` prints when a repository has been read.
+pub fn plugin_installed(url: &str, registered: &[String], refused: &[String]) -> String {
+    let mut text = String::new();
+    if registered.is_empty() {
+        text.push_str(&format!("{} has no plugin this app can use.\r\n", bold(url)));
+    } else {
+        text.push_str(&format!(
+            "Read {} from {}: {}.\r\n",
+            count(registered.len(), "plugin"),
+            bold(url),
+            registered
+                .iter()
+                .map(|name| bold(name))
+                .collect::<Vec<String>>()
+                .join(", ")
+        ));
+    }
+    for complaint in refused {
+        text.push_str(&format!("  {} {complaint}\r\n", dim("refused:")));
+    }
+    text
+}
+
+/// What `plugins remove` prints.
+pub fn plugin_removed(url: &str, count_: usize) -> String {
+    if count_ == 0 {
+        format!("Nothing was installed from {}.\r\n", bold(url))
+    } else {
+        format!(
+            "Forgot {} that came from {}.\r\n",
+            count(count_, "plugin"),
+            bold(url)
+        )
+    }
+}
+
+/// What `plugins` says about something that is not one of its own arguments.
+pub fn plugin_usage(word: &str) -> String {
+    format!(
+        "{} is not a plugins command. {} lists what is installed, {} reads a repository, \
+         and {} forgets one.\r\n",
+        bold(word),
+        bold("plugins"),
+        bold("plugins add <url or path>"),
+        bold("plugins remove <url>")
+    )
 }
 
 /// What `alias name=expansion` means.
@@ -1581,7 +1676,7 @@ pub fn file_list(files: &[String], main: Option<&str>) -> String {
 
 /// The app's own help, for `?`. Deliberately short: `hledger help` is one
 /// keystroke away and knows far more.
-pub fn help(plugins: &[(&'static str, &'static str, &'static str)]) -> String {
+pub fn help(plugins: &[(&str, &str, &str)]) -> String {
     let mut text = String::new();
     text.push_str(&format!("{}\r\n", bold("hledger-anywhere")));
     text.push_str(&format!(
@@ -1630,9 +1725,9 @@ pub fn help(plugins: &[(&'static str, &'static str, &'static str)]) -> String {
 ///
 /// A plugin is listed by the group it asks for, so `chart` reads as another way to
 /// get a report rather than as something bolted on.
-fn groups_with(
-    plugins: &[(&'static str, &'static str, &'static str)],
-) -> Vec<(&'static str, Vec<(String, String)>)> {
+fn groups_with<'a>(
+    plugins: &'a [(&'a str, &'a str, &'a str)],
+) -> Vec<(&'a str, Vec<(String, String)>)> {
     let mut sections: Vec<(&str, Vec<(String, String)>)> = GROUPS
         .iter()
         .map(|(heading, rows)| {
@@ -1677,6 +1772,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("/text", "search the output; n and N repeat the search"),
             ("alias name=cmd", "make a name run a command; alias lists them"),
             ("unalias <name>", "remove one"),
+            ("plugins", "list the installed plugins, or add and remove repositories"),
             ("clear", "clear the screen"),
         ],
     ),
@@ -2159,6 +2255,14 @@ mod tests {
             parse_switch("maybe").expect_err("a switch"),
             font_size("large").expect_err("a number"),
             read_only_refusal("import data/statement.csv").expect("a writer"),
+            plugin_list(&[], &[]),
+            plugin_list(
+                &[("chart".to_string(), "open a balance chart".to_string())],
+                &["./examples/plugins/plugins.json".to_string()],
+            ),
+            plugin_installed("./p.json", &["chart".to_string()], &["bad: no name".to_string()]),
+            plugin_removed("./p.json", 2),
+            plugin_usage("nonsense"),
             match parse_alias("nonsense") {
                 AliasEdit::Bad(message) => message,
                 other => panic!("{other:?}"),
@@ -2810,8 +2914,9 @@ mod tests {
             Command::Hledger("balance expenses -M")
         );
         assert_eq!(classify("reporting"), Command::Hledger("reporting"));
-        assert!(crate::plugins::owner("reporting").is_none());
-        assert!(crate::plugins::owner("balance -M").is_none());
+        let plugins = crate::plugins::Registry::default();
+        assert!(plugins.owner("reporting").is_none());
+        assert!(plugins.owner("balance -M").is_none());
     }
 
     #[test]
@@ -2819,19 +2924,19 @@ mod tests {
         // The help is the only place the vocabulary is written down, so a command
         // that is classified but not documented is a command nobody will find. The
         // plugins' words count: they are commands the user types.
-        let help = plain(&help(&crate::plugins::help_entries()));
+        let plugins = crate::plugins::Registry::default();
+        let help = plain(&help(&plugins.help_entries()));
         for word in words() {
-            assert!(help.contains(word), "help does not mention `{word}`");
+            assert!(help.contains(word.as_str()), "help does not mention {word}");
         }
     }
 
-    /// Everything the user can type as a command: the core's words and the plugins'.
-    fn words() -> Vec<&'static str> {
-        COMMANDS
-            .iter()
-            .copied()
-            .chain(crate::plugins::bundled().iter().map(|plugin| plugin.name()))
-            .collect()
+    /// Everything the user can type as a command: the core's words, and whatever the
+    /// installed plugins add. Nothing is installed in a test, so this is the core's.
+    fn words() -> Vec<String> {
+        let mut words: Vec<String> = COMMANDS.iter().map(|word| (*word).to_string()).collect();
+        words.extend(crate::plugins::Registry::default().words());
+        words
     }
 
     #[test]
@@ -2844,7 +2949,7 @@ mod tests {
         for word in words() {
             assert!(
                 readme.contains(&format!("| `{word}")),
-                "the README has no table row for `{word}`"
+                "the README has no table row for {word}"
             );
         }
     }
