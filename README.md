@@ -150,6 +150,26 @@ succeeded. The join is made well-formed: a file that does not end in a newline g
 one, so two entries can never become one broken one. A target that is a directory,
 climbs out of the mount, or is more than one word is refused with the reason.
 
+**Importing a bank statement works, and needs nothing special.** This is the primary
+way data gets in, and it was untested until it was tried end to end. Upload the
+journal, the CSV and its rules file, and:
+
+```
+$ import data/statement.csv
+imported 3 new transactions from statement.csv to /data/2024.journal
+[changed 2024.journal (386 bytes); wrote .latest.statement.csv (11 bytes) — saved]
+$ balance
+           $2,995.50  assets:bank:checking
+          $-1,995.50  expenses:unknown
+```
+
+Two things worth knowing. `import` **appends to the journal itself** — no `-o`, no
+`>>`, no redirect; the app notices the journal changed and keeps it, which is what
+the write-back work in this codebase was for. And hledger tracks what it has already
+imported in a state file (`.latest.statement.csv`) that it writes *into the mount*,
+so the app stores that too — which is why running the same import again reports `no
+new transactions found` and leaves the balance alone rather than doubling it.
+
 **What it does not do: OPFS.** A file-backed filesystem in the browser
 (Origin Private File System) has been on the roadmap since before the engine could
 write at all, on the theory that sending every file to the engine worker before
