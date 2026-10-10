@@ -109,7 +109,7 @@ Everything that is not in this table is passed to hledger verbatim.
 | `font [size]` | Show or set the font size, 8 to 32 px. |
 | `screenreader` | Turn xterm's accessibility tree `on` or `off`. |
 | `clear` | Clear the screen. |
-| `plugins [add\|remove\|reload]` | List the installed plugins, or install a repository by URL or path. |
+| `plugins [add\|remove\|reload]` | List the installed plugins, or install a repository by URL or path. One is bundled. |
 | `settings [export\|import <path>]` | Show what is remembered, or move it between instances as a file. |
 | `theme [name]` | List the colour themes, or select one. Plugin themes are listed too. |
 | `?` | The app's own help, the engine's version and its checksum. |
@@ -190,19 +190,36 @@ is something you take away, not something that joins your journal.
 ## Plugins
 
 Commands the app does not implement itself are plugins, loaded at runtime. A plugin is a
-JavaScript module listed in a repository manifest, which you install by URL or path:
+JavaScript module listed in a repository manifest. One repository is bundled and installed
+at every start, so its commands are simply there:
 
 ```
-hledger.journal » plugins add ./examples/plugins/plugins.json
-Read 1 plugin from ./examples/plugins/plugins.json: chart.
 hledger.journal » chart expenses
 chart: 3 months of expenses, $1200.00 last, in a new window.
 ```
 
-The example repository ships with the app and is installed on request rather than by
-default: it is a `chart` plugin that opens a balance line chart in a window of its own,
-using hledger's own numbers from `balance expenses -M -O csv`. Nothing about it is in the
-app's core.
+The bundled repository is `/plugins/plugins.json`, and its `chart` plugin opens a balance
+line chart in a window of its own, using hledger's own numbers from
+`balance expenses -M -O csv`. It also carries the colour themes. Nothing about it is in the
+app's core: remove it with `plugins remove /plugins/plugins.json` and it is back on the next
+visit, because bundled is where it came from, not what it is.
+
+```
+hledger.journal » plugins
+1 plugin, installed
+  chart           open a balance line chart in a window
+Repositories
+  /plugins/plugins.json  bundled
+
+plugins reload reads them again; plugins remove <url> forgets one.
+```
+
+A repository you add yourself works the same way:
+
+```
+hledger.journal » plugins add https://example.invalid/plugins.json
+Read 2 plugins from https://example.invalid/plugins.json: chart, forecast.
+```
 
 The manifest is authoritative for the words, the help text and the completion, so an
 installed repository costs one fetch and runs no code until one of its commands is used.
@@ -216,19 +233,21 @@ A plugin is code running in this page, so installing a repository is trusting it
 
 ## Themes
 
-The terminal is painted by a theme, and plugins can contribute one. `theme` lists what is
-on offer, marked with the one in use:
+The terminal is painted by a theme, and a plugin repository can contribute them. `theme`
+lists what is on offer, marked with the one in use:
 
 ```
 hledger.journal » theme
 Themes
- * default       built in (in use)
-   midnight      from chart
+ * default      built in (in use)
+   gruvbox      from hledger-anywhere plugins
+   midnight     from hledger-anywhere plugins
 
 theme <name> selects one and keeps it; plugin themes come from the repositories you install.
 ```
 
-`theme midnight` repaints the terminal, the page behind it, and the colours the app writes
+The bundled repository carries **gruvbox**, dark and warm, and **midnight**, dark and blue.
+`theme gruvbox` repaints the terminal, the page behind it, and the colours the app writes
 its own text in, without a reload: xterm takes colours as options, so the scrollback stays
 where it was. Text already on screen keeps the colours it was written with, since the app
 writes those explicitly; the palette behind it changes, and everything after it arrives in

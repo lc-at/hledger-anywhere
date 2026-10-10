@@ -1,0 +1,35 @@
+{
+  "manifest": 1,
+  "name": "hledger-anywhere plugins",
+  "themes": [
+    {
+      "name": "gruvbox",
+      "colors": {
+        "background": "#282828",
+        "foreground": "#ebdbb2",
+        "cursor": "#fe8019",
+        "accent": "#fabd2f",
+        "dim": "#928374"
+      }
+    },
+    {
+      "name": "midnight",
+      "colors": {
+        "background": "#0b1021",
+        "foreground": "#c9d1d9",
+        "cursor": "#7aa2f7",
+        "accent": "#7aa2f7",
+        "dim": "#6b7280"
+      }
+    }
+  ],
+  "plugins": [
+    {
+      "name": "chart",
+      "group": "Reports",
+      "summary": "open a balance line chart in a window",
+      "completes": ["balance", "assets", "expenses", "income", "-M", "--monthly"],
+      "module": "./chart.js"
+    }
+  ]
+}

@@ -18,7 +18,7 @@
 //
 // Run with: node scripts/check-example-plugin.mjs
 
-import Chart from '../assets/examples/plugins/chart.js';
+import Chart from '../assets/plugins/chart.js';
 
 const REAL_CSV = [
   '"account","2024-01","2024-02","2024-03"',

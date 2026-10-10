@@ -1212,7 +1212,7 @@ pub fn theme_usage(name: &str, available: &[String]) -> String {
 }
 
 /// What `plugins` prints: what is installed, and the repositories it came from.
-pub fn plugin_list(installed: &[(String, String)], repositories: &[String]) -> String {
+pub fn plugin_list(installed: &[(String, String)], repositories: &[(String, bool)]) -> String {
     let mut text = String::new();
     if installed.is_empty() {
         text.push_str(
@@ -1222,7 +1222,7 @@ pub fn plugin_list(installed: &[(String, String)], repositories: &[String]) -> S
     } else {
         text.push_str(&format!(
             "{}, {}\r\n",
-            bold(&count(installed.len(), "plugin")),
+            bold(&count(installed.len(), "plugin", "plugins")),
             dim("installed")
         ));
         for (name, summary) in installed {
@@ -1236,14 +1236,20 @@ pub fn plugin_list(installed: &[(String, String)], repositories: &[String]) -> S
 
     if repositories.is_empty() {
         text.push_str(&format!(
-            "\r\nAdd one with {}, or {} for the examples that ship with the app.\r\n",
-            bold("plugins add <url or path>"),
-            bold("plugins add ./examples/plugins/plugins.json")
+            "\r\nAdd one with {}.\r\n",
+            bold("plugins add <url or path>")
         ));
     } else {
         text.push_str(&format!("\r\n{}\r\n", bold("Repositories")));
-        for repository in repositories {
-            text.push_str(&format!("  {repository}\r\n"));
+        for (repository, bundled) in repositories {
+            text.push_str(&format!(
+                "  {repository}{}\r\n",
+                if *bundled {
+                    format!("  {}", dim("bundled"))
+                } else {
+                    String::new()
+                }
+            ));
         }
         text.push_str(&format!(
             "\r\n{} reads them again; {} forgets one.\r\n",
@@ -1262,7 +1268,7 @@ pub fn plugin_installed(url: &str, registered: &[String], refused: &[String]) ->
     } else {
         text.push_str(&format!(
             "Read {} from {}: {}.\r\n",
-            count(registered.len(), "plugin"),
+            count(registered.len(), "plugin", "plugins"),
             bold(url),
             registered
                 .iter()
@@ -1284,10 +1290,20 @@ pub fn plugin_removed(url: &str, count_: usize) -> String {
     } else {
         format!(
             "Forgot {} that came from {}.\r\n",
-            count(count_, "plugin"),
+            count(count_, "plugin", "plugins"),
             bold(url)
         )
     }
+}
+
+/// What `plugins remove` adds when the repository came with the app.
+pub fn bundled_returns(url: &str) -> String {
+    format!(
+        "{}\r\n",
+        dim(&format!(
+            "{url} is bundled: it is installed again on the next visit."
+        ))
+    )
 }
 
 /// What `plugins` says about something that is not one of its own arguments.
@@ -1346,7 +1362,7 @@ pub fn settings_imported(applied: &[String], dropped: &[String]) -> String {
     } else {
         format!(
             "Applied {}: {}.\r\n",
-            count(applied.len(), "setting"),
+            count(applied.len(), "setting", "settings"),
             applied.join(", ")
         )
     };
@@ -1718,11 +1734,11 @@ pub fn demo_loaded(files: usize, main: &str) -> String {
 }
 
 /// A count and its noun, spelled for the count.
-pub fn count(n: usize, noun: &str) -> String {
+pub fn count(n: usize, singular: &str, plural: &str) -> String {
     if n == 1 {
-        noun.to_string()
+        format!("1 {singular}")
     } else {
-        format!("{noun}s")
+        format!("{n} {plural}")
     }
 }
 
@@ -1756,8 +1772,16 @@ pub fn welcome(version: &str) -> String {
             dim(description)
         ));
     }
-    text.push_str(&format!("\r\n  {}\r\n", dim("No journal is loaded yet.")));
     text
+}
+
+/// What the terminal says when there is nothing to report a journal from.
+///
+/// Separate from the greeting because the greeting is written once the cache has been
+/// read: whether a journal is loaded is not known before that, and saying there is none
+/// and then resuming one is a lie told quickly.
+pub fn no_journal() -> String {
+    format!("{}\r\n", dim("No journal is loaded yet."))
 }
 
 /// What the terminal prints when files came back from a previous visit.
@@ -1779,8 +1803,8 @@ pub fn files_arrived(
     skipped: &[(String, String)],
     main: Option<&str>,
 ) -> String {
-    let noun = count(loaded.len(), "file");
-    let mut text = format!("{source} {} {noun}.\r\n", loaded.len());
+    let noun = count(loaded.len(), "file", "files");
+    let mut text = format!("{source} {noun}.\r\n");
     for path in loaded {
         text.push_str(&format!("  {path}\r\n"));
     }
@@ -1813,8 +1837,8 @@ pub fn file_list(files: &[String], main: Option<&str>) -> String {
             bold("upload")
         );
     }
-    let noun = count(files.len(), "file");
-    let mut text = format!("{} {noun} loaded:\r\n", files.len());
+    let noun = count(files.len(), "file", "files");
+    let mut text = format!("{noun} loaded:\r\n");
     for path in files {
         let marker = if Some(path.as_str()) == main {
             accent("*")
@@ -2419,8 +2443,10 @@ mod tests {
             plugin_list(&[], &[]),
             plugin_list(
                 &[("chart".to_string(), "open a balance chart".to_string())],
-                &["./examples/plugins/plugins.json".to_string()],
+                &[("/plugins/plugins.json".to_string(), true)],
             ),
+            no_journal(),
+            bundled_returns("/plugins/plugins.json"),
             plugin_installed("./p.json", &["chart".to_string()], &["bad: no name".to_string()]),
             plugin_removed("./p.json", 2),
             plugin_usage("nonsense"),
@@ -2460,7 +2486,10 @@ mod tests {
         assert!(visible.contains("upload"), "{visible}");
         assert!(visible.contains("upload_dir"), "a folder upload must be discoverable");
         assert!(visible.contains("demo"), "the sample journal must be discoverable");
-        assert!(visible.contains("No journal is loaded yet."), "{visible}");
+        // The state of the journal is not the greeting's to claim any more: it is
+        // written once the cache has been read.
+        assert!(!visible.contains("No journal is loaded yet."), "{visible}");
+        assert!(plain(&no_journal()).contains("No journal is loaded yet."));
         // A banner, not a sentence: the title carries weight, the asides recede.
         assert!(
             cold.contains(BOLD) && cold.contains(&dim_escape()),
@@ -2892,6 +2921,16 @@ mod tests {
         // it lasts: nothing a command writes is kept beyond the visit.
         assert!(plain(&note).contains("download bal.csv"), "{note}");
         assert!(note.contains("while this visit lasts"), "{note}");
+    }
+
+
+    #[test]
+    fn a_count_always_says_how_many() {
+        assert_eq!(count(0, "file", "files"), "0 files");
+        assert_eq!(count(1, "file", "files"), "1 file");
+        assert_eq!(count(2, "file", "files"), "2 files");
+        assert_eq!(count(1, "plugin", "plugins"), "1 plugin");
+        assert_eq!(count(3, "repository", "repositories"), "3 repositories");
     }
 
     #[test]

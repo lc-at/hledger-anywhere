@@ -1,15 +1,21 @@
 # Writing a plugin
 
 A plugin adds commands to hledger-anywhere without rebuilding it. It is a JavaScript
-module, loaded from a **repository**, which is a manifest you install by URL or path:
+module, loaded from a **repository**, which is a manifest installed by URL or path.
+
+One repository is bundled and installed at every start, so it needs no installing at all:
+[`assets/plugins`](../assets/plugins), whose `chart` plugin opens a balance line chart in
+its own window and which carries the colour themes. Read it as the worked example of
+everything below. Anything you add yourself works exactly the same way:
 
 ```
-hledger.journal » plugins add ./examples/plugins/plugins.json
+hledger.journal » plugins add https://example.invalid/plugins.json
+Read 2 plugins from https://example.invalid/plugins.json: chart, forecast.
 ```
 
-The app ships one example repository, in [`assets/examples/plugins`](../assets/examples/plugins):
-a `chart` plugin that opens a balance line chart in its own window. Install it to see the
-whole path work, and read it as the worked example of everything below.
+Being bundled means the app provides it, not that it is part of the core: `plugins` lists it
+with everything else, and removing it works until the next visit, when the app installs it
+again and says so.
 
 ## What a plugin is
 
@@ -22,10 +28,15 @@ journal, and neither can anything built on it.
 
 ## The repository manifest
 
+A manifest may also carry `themes` of its own, beside any a plugin declares:
+
 ```json
 {
   "manifest": 1,
   "name": "my plugins",
+  "themes": [
+    { "name": "gruvbox", "colors": { "background": "#282828", "accent": "#fabd2f" } }
+  ],
   "plugins": [
     {
       "name": "chart",
@@ -97,7 +108,8 @@ Two things worth knowing:
 
 ## Colour themes
 
-A plugin may offer themes in its manifest. Each is a name and some colours by role:
+A repository or a plugin may offer themes in the manifest. Each is a name and some colours
+by role:
 
 ```json
 "themes": [
@@ -128,8 +140,8 @@ travels to another instance with `settings export`.
 
 | command | what it does |
 | --- | --- |
-| `plugins` | Lists what is installed, and the repositories it came from. |
-| `plugins add <url or path>` | Reads a manifest and registers its plugins. |
+| `plugins` | Lists what is installed, and the repositories it came from. Bundled ones are marked. |
+| `plugins add <url or path>` | Reads a manifest and registers its plugins and themes. |
 | `plugins remove <url>` | Forgets them. |
 | `plugins reload` | Reads every installed repository again, importing modules afresh. |
 

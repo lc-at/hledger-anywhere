@@ -99,6 +99,12 @@ impl PluginInfo {
 pub struct Manifest {
     #[serde(default)]
     pub name: String,
+    /// Themes the repository offers itself, whatever its plugins do.
+    ///
+    /// A theme is app-wide, so tying every one of them to a command would be wrong: a
+    /// colour scheme is not part of whatever plugin happens to ship beside it.
+    #[serde(default)]
+    pub themes: Vec<ThemeInfo>,
     #[serde(default)]
     pub plugins: Vec<PluginInfo>,
 }
@@ -117,6 +123,8 @@ pub struct Installed {
 #[derive(Debug, Default)]
 pub struct Registry {
     plugins: Vec<PluginInfo>,
+    /// Themes a repository offered, with the repository and the label the listing shows.
+    themes: Vec<(String, String, ThemeInfo)>,
 }
 
 impl Registry {
@@ -129,8 +137,23 @@ impl Registry {
         let manifest: Manifest = serde_json::from_str(manifest_json)
             .map_err(|error| format!("that is not a plugin manifest: {error}"))?;
 
-        if manifest.plugins.is_empty() {
-            return Err(format!("the manifest at {repository} lists no plugins"));
+        if manifest.plugins.is_empty() && manifest.themes.is_empty() {
+            return Err(format!(
+                "the manifest at {repository} lists no plugins and no themes"
+            ));
+        }
+
+        // Read again rather than added to: a repository that is reloaded should not end up
+        // offering everything twice.
+        self.themes.retain(|(from, _, _)| from != repository);
+        let label = if manifest.name.trim().is_empty() {
+            repository.to_string()
+        } else {
+            manifest.name.trim().to_string()
+        };
+        for theme in manifest.themes {
+            self.themes
+                .push((repository.to_string(), label.clone(), theme));
         }
 
         let mut installed = Installed::default();
@@ -187,6 +210,7 @@ impl Registry {
     pub fn remove_repository(&mut self, repository: &str) -> usize {
         let before = self.plugins.len();
         self.plugins.retain(|plugin| plugin.repository != repository);
+        self.themes.retain(|(from, _, _)| from != repository);
         before - self.plugins.len()
     }
 
@@ -239,17 +263,22 @@ impl Registry {
             .collect()
     }
 
-    /// Every theme offered, with the plugin that offers it.
+    /// Every theme offered, with the repository or plugin it came from.
+    ///
+    /// A repository's own themes come first, then the ones a plugin declared for itself.
     pub fn themes(&self) -> Vec<(&str, &ThemeInfo)> {
-        self.plugins
+        let mut themes: Vec<(&str, &ThemeInfo)> = self
+            .themes
             .iter()
-            .flat_map(|plugin| {
-                plugin
-                    .themes
-                    .iter()
-                    .map(move |theme| (plugin.name.as_str(), theme))
-            })
-            .collect()
+            .map(|(_, label, theme)| (label.as_str(), theme))
+            .collect();
+        themes.extend(self.plugins.iter().flat_map(|plugin| {
+            plugin
+                .themes
+                .iter()
+                .map(move |theme| (plugin.name.as_str(), theme))
+        }));
+        themes
     }
 
     /// The theme with this name, if a plugin offers one.
@@ -354,6 +383,62 @@ mod tests {
     }
 
     #[test]
+    fn a_repository_may_offer_themes_of_its_own() {
+        // A colour scheme is not part of whichever plugin happens to ship beside it.
+        let mut registry = Registry::default();
+        registry
+            .install(
+                r##"{
+                    "name": "hledger-anywhere plugins",
+                    "themes": [
+                        {"name": "gruvbox", "colors": {"background": "#282828"}}
+                    ],
+                    "plugins": [{"name": "chart", "summary": "chart"}]
+                }"##,
+                "/plugins/plugins.json",
+            )
+            .expect("a readable manifest");
+        assert_eq!(registry.themes().len(), 1);
+        assert_eq!(registry.themes()[0].0, "hledger-anywhere plugins");
+        assert_eq!(
+            registry.theme("gruvbox").expect("the theme").colors["background"],
+            "#282828"
+        );
+        // And both kinds reach the same listing, the repository's first.
+        let mut both = Registry::default();
+        both.install(
+            r##"{"name": "one", "themes": [{"name": "a"}]}"##,
+            "/one/plugins.json",
+        )
+        .expect("themes only");
+        both.install(
+            r##"{"plugins": [{"name": "chart", "summary": "chart", "themes": [{"name": "b"}]}]}"##,
+            "/two/plugins.json",
+        )
+        .expect("a plugin theme");
+        let names: Vec<&str> = both.themes().into_iter().map(|(_, theme)| theme.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+
+        // A repository that is reloaded offers its themes once, and removing it takes them.
+        assert_eq!(both.remove_repository("/one/plugins.json"), 0);
+        assert_eq!(both.themes().len(), 1);
+        both.install(r##"{"name": "one", "themes": [{"name": "a"}]}"##, "/one/plugins.json")
+            .expect("reloaded");
+        both.install(r##"{"name": "one", "themes": [{"name": "a"}]}"##, "/one/plugins.json")
+            .expect("reloaded again");
+        assert_eq!(both.themes().len(), 2);
+    }
+
+    #[test]
+    fn a_manifest_with_nothing_in_it_says_so() {
+        let mut registry = Registry::default();
+        let error = registry
+            .install(r#"{"name": "empty"}"#, "/empty/plugins.json")
+            .expect_err("nothing to install");
+        assert!(error.contains("no plugins and no themes"), "{error}");
+    }
+
+    #[test]
     fn a_plugin_that_cannot_work_is_refused_without_losing_the_rest() {
         let manifest = r#"{
             "plugins": [
@@ -391,7 +476,7 @@ mod tests {
         let error = registry
             .install("{\"plugins\": []}", "https://example.invalid/p.json")
             .expect_err("nothing to install");
-        assert!(error.contains("lists no plugins"), "{error}");
+        assert!(error.contains("lists no plugins and no themes"), "{error}");
     }
 
     #[test]

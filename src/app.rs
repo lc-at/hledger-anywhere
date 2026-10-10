@@ -36,6 +36,13 @@ use crate::terminal::view::Screen;
 use crate::upload::{self, Picked};
 
 
+/// Repositories the app ships, installed at every start.
+///
+/// Bundled means provided by the app rather than by the visitor, not "part of the core":
+/// these are plugins like any other, listed by `plugins` with everything else, and a
+/// repository the visitor adds is installed the same way.
+const BUNDLED_REPOSITORIES: &[&str] = &["/plugins/plugins.json"];
+
 /// `localStorage` key for the terminal font size.
 const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
 
@@ -104,10 +111,9 @@ pub fn start() {
 
     let app = Rc::new(App::new(screen));
     // Before anything is written: the greeting should arrive in the colours that were
-    // chosen last time, not be repainted a moment later.
+    // chosen last time, not be repainted a moment later. The greeting itself is written by
+    // the boot task, once the cache has said whether there is a journal to resume.
     app.restore_theme();
-    app.screen
-        .write(&terminal::to_terminal_text(&terminal::welcome(crate::hledger_info::version())));
 
     let input = Rc::clone(&app);
     app.screen.on_data(move |data| input.on_input(data));
@@ -1417,25 +1423,38 @@ impl App {
     /// Quiet when everything loads, since a repository is not news. A failure is news: a
     /// word the user expects to work will not.
     fn load_repositories(self: &Rc<App>) {
-        let repositories = settings(|settings| settings.repositories.clone());
-        if repositories.is_empty() {
-            return;
+        // Bundled first, then what this visitor added, so the app's own plugins are there
+        // on a first visit and before anything that depends on them.
+        let mut wanted: Vec<(String, bool)> = BUNDLED_REPOSITORIES
+            .iter()
+            .map(|url| ((*url).to_string(), true))
+            .collect();
+        for url in settings(|settings| settings.repositories.clone()) {
+            if !wanted.iter().any(|(known, _)| *known == url) {
+                wanted.push((url, false));
+            }
         }
+
         let app = Rc::clone(self);
         spawn_local(async move {
             app.title("loading plugins");
-            for url in repositories {
+            for (url, bundled) in wanted {
                 if let Err(error) = app.install_repository(&url).await {
-                    app.announce(&format!("{}: {error}", terminal::bold(&url)));
+                    app.announce(&format!(
+                        "{}{}: {error}",
+                        if bundled { terminal::dim("bundled: ") } else { String::new() },
+                        terminal::bold(&url)
+                    ));
                 }
             }
             // A theme contributed by a plugin could not be applied before its repository
             // was read, which only happens here.
             app.restore_theme();
             app.title("");
-            app.prompt();
+            // No prompt: the greeting has not been written yet, and the boot task draws it.
         });
     }
+
 
     /// Fetch one manifest and take the plugins it offers.
     async fn install_repository(self: &Rc<App>, url: &str) -> Result<plugins::Installed, String> {
@@ -1452,10 +1471,15 @@ impl App {
                 .into_iter()
                 .map(|(name, summary, _)| (name.to_string(), summary.to_string()))
                 .collect();
-            let repositories: Vec<String> = registry
+            let repositories: Vec<(String, bool)> = registry
                 .repositories()
                 .into_iter()
-                .map(|url| url.to_string())
+                .map(|url| {
+                    (
+                        url.to_string(),
+                        BUNDLED_REPOSITORIES.contains(&url),
+                    )
+                })
                 .collect();
             (installed, repositories)
         };
@@ -1475,7 +1499,9 @@ impl App {
                 let Some(url) = self.single(&rest) else {
                     return;
                 };
-                if settings(|settings| settings.has_repository(&url)) {
+                // Asked of the registry rather than the settings: a bundled repository is
+                // installed without ever being in them.
+                if self.registry.borrow().repositories().contains(&url.as_str()) {
                     return self.announce(&format!(
                         "{} is already installed. {} reads it again.",
                         terminal::bold(&url),
@@ -1517,6 +1543,11 @@ impl App {
                     });
                 }
                 self.say(&terminal::plugin_removed(&url, removed));
+                // A bundled repository comes back, and saying so beats leaving the user to
+                // discover it on the next visit.
+                if BUNDLED_REPOSITORIES.contains(&url.as_str()) {
+                    self.say(&terminal::bundled_returns(&url));
+                }
                 self.prompt();
             }
             "reload" => {
@@ -1668,7 +1699,7 @@ impl App {
             "aliases".to_string(),
             "theme".to_string(),
             "plugin settings".to_string(),
-            terminal::count(repositories.len(), "repository"),
+            terminal::count(repositories.len(), "repository", "repositories"),
         ];
         let dropped: Vec<String> = dropped.to_vec();
         update_settings(|settings| *settings = imported);
@@ -2329,6 +2360,11 @@ impl App {
 
 /// What the app does before the first prompt.
 async fn boot(app: Rc<App>) {
+    // The greeting waits for the cache, because whether a journal is loaded is the one
+    // thing it has to say and the one thing it cannot know yet. Saying "No journal is
+    // loaded yet" and then resuming one is a lie told quickly.
+    let mut state = terminal::no_journal();
+
     match Store::open().await {
         Ok(store) => {
             let files = store.load_files().await.unwrap_or_default();
@@ -2345,23 +2381,26 @@ async fn boot(app: Rc<App>) {
                 *app.main.borrow_mut() = main.clone();
                 *app.files.borrow_mut() = files;
                 app.configure();
-                match main {
-                    Some(main) => app.announce(&terminal::resumed(app.files.borrow().len(), &main)),
-                    None => app.announce(
-                        "Resumed your upload, but none of it looks like a journal \
-                         (.journal, .hledger or .j).",
-                    ),
-                }
+                state = match main {
+                    Some(main) => terminal::resumed(app.files.borrow().len(), &main),
+                    None => "Resumed your upload, but none of it looks like a journal \
+                             (.journal, .hledger or .j)."
+                        .to_string(),
+                };
             }
         }
         Err(_) => {
             // No cache: this is simply a first visit, every time.
-            app.announce(
-                "This browser will not let the app remember your upload \
-                 (private mode, or storage disabled).",
-            );
+            state = "This browser will not let the app remember your upload \
+                     (private mode, or storage disabled)."
+                .to_string();
         }
     }
+
+    app.screen.write(&terminal::to_terminal_text(&terminal::welcome(
+        crate::hledger_info::version(),
+    )));
+    app.say(&state);
 
     // Compile the engine now, so the first real command is not the thing waiting
     // for the download.
@@ -2370,6 +2409,7 @@ async fn boot(app: Rc<App>) {
     }
     app.prompt();
 }
+
 
 /// The command line to hand the engine.
 ///
