@@ -120,6 +120,22 @@ Two things worth knowing:
 - **Open the window before you await anything.** A window opened after an `await` is
   blocked by the browser, which is why `host.window` returns a handle to fill in later.
 
+## What the bundled plugin shows
+
+[`assets/plugins/chart.js`](../assets/plugins/chart.js) is the worked example: a window of its
+own, drawn with `host.window`, `host.hledger` and `host.colors`. Three techniques in it are
+worth copying:
+
+- **Two modules.** The plugin decides *what to ask hledger*; `chart-window.js` decides *what to
+  draw*. The plugin imports the drawing to write the first page, and the window imports the
+  same file to redraw, so a chart type is one function from data to markup and both sides agree.
+- **Draw the first chart into the page**, rather than leaving it to the script. A window that
+  shows nothing until a module loads shows nothing if the module does not.
+- **A window can ask for more.** The plugin leaves a function on the opener
+  (`window.__chartBridges[token]`) that runs another hledger command and returns the parsed
+  result, and the page carries its token. That is how clicking a series charts it on its own,
+  without the window needing an API of its own.
+
 ## Colour themes
 
 A repository or a plugin may offer themes in the manifest. Each is a name and some colours

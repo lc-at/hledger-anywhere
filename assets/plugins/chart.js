@@ -16,17 +16,26 @@
  * The window is opened before anything is awaited, because a pop-up opened after an await is
  * blocked. That is the whole reason `window()` returns a handle rather than taking content.
  *
- * Two shapes come out of the same command, chosen by what hledger answers with:
+ * Named questions, each one hledger's own report:
  *
- *   chart expenses            monthly expenses, a line over time
- *   chart expenses -p 2024    a year, so one column, so a ranking of where it went
+ *     chart                     what spending did, month by month
+ *     chart spending            the same, said out loud
+ *     chart income              what came in
+ *     chart cashflow            income against expenses, per month
+ *     chart networth            assets against liabilities, running total
+ *     chart balances            every account, end of month
+ *     chart payees              spending by payee, month by month
+ *     chart top                 where it all went, largest first
+ *     chart expenses:food -p 2024   any account, any period
+ *     chart balance assets -M   any hledger report, verbatim
  *
- * The rule is the data's: one column is a ranking, several are a series. Nothing is guessed
- * from the arguments except whether to ask for months, which is only done when the caller
- * has not asked for a period of their own.
+ * The command is shown in the window, so what was asked for is never a mystery. Drawing lives
+ * in ./chart-window.js, which the window imports too: the same code draws the first page and
+ * every redraw after it.
  */
 
-const DEFAULT_ACCOUNT = 'expenses';
+import { page } from './chart-window.js';
+
 const FALLBACK_COLORS = {
   background: '#000000',
   foreground: '#d8d8d8',
@@ -41,45 +50,127 @@ const PERIOD_FLAGS = [
   '-Q', '--quarterly', '-Y', '--yearly', '-p', '--period',
 ];
 
+/** hledger's report commands, so `chart balance assets -M` is read as a report. */
+const REPORTS = [
+  'balance', 'bal', 'bs', 'balancesheet', 'is', 'incomestatement', 'cashflow',
+  'register', 'reg', 'aregister', 'print', 'stats',
+];
+
+/**
+ * The named questions.
+ *
+ * `account` means the preset takes one: everything else the caller typed is passed through to
+ * hledger, which is how `chart spending -p 2024` asks for a year of months.
+ */
+const PRESETS = [
+  { names: ['spending'], title: 'spending', report: () => 'balance expenses -M' },
+  { names: ['income'], title: 'income', report: () => 'balance income -M' },
+  { names: ['cashflow', 'savings'], title: 'cashflow', report: () => 'balance income expenses -M' },
+  {
+    names: ['networth', 'nw'],
+    title: 'net worth',
+    options: { total: true, label: 'net worth' },
+    report: () => 'balance assets liabilities -H -M',
+  },
+  { names: ['balances', 'everything'], title: 'balances', report: () => 'balance -H -M' },
+  {
+    names: ['payees'],
+    title: 'payees',
+    account: 'expenses',
+    report: (account) => `balance ${account} --pivot payee -M`,
+  },
+  { names: ['top'], title: 'top', account: 'expenses', report: (account) => `balance ${account}` },
+];
+
 export default {
   async run(args, host) {
     const asked = String(args == null ? '' : args).trim();
-    const account = asked || host.setting('account') || DEFAULT_ACCOUNT;
+    const query = build(asked);
     const colors = typeof host.colors === 'function' ? host.colors() : FALLBACK_COLORS;
 
     // Opened first, filled when the numbers arrive.
-    const view = host.window(`hledger: ${account}`);
+    const view = host.window(`hledger: ${query.title}`);
     if (!view) {
-      host.say(`${host.name}: the browser blocked the window for ${account}.`);
+      host.say(`${host.name}: the browser blocked the window for ${query.title}.`);
       return;
     }
-    view.write(shell(colors, account, 'Reading hledger…'));
+    view.write(shell(colors, query.title, 'Reading hledger…'));
 
-    const command = `balance ${account}${monthly(asked) ? ' -M' : ''} -O csv`;
-    let csv;
+    let report;
     try {
       // -O csv is the only hledger output that keeps periods, accounts and amounts apart
       // without parsing a table whose columns move.
-      csv = await host.hledger(command);
+      report = read(await host.hledger(query.command));
     } catch (error) {
       const why = error && error.message ? error.message : String(error);
-      view.write(shell(colors, account, why));
+      view.write(shell(colors, query.title, why));
       host.say(`${host.name}: ${why}`);
       return;
     }
 
-    const report = read(csv);
     if (!report) {
-      view.write(shell(colors, account, 'hledger returned nothing to chart.'));
-      host.say(`${host.name}: ${account} has no amounts to chart.`);
+      view.write(shell(colors, query.title, 'hledger returned nothing to chart.'));
+      host.say(`${host.name}: ${query.title} has no amounts to chart.`);
       return;
     }
 
-    host.remember('account', account);
-    view.write(page(colors, account, report, command));
-    host.say(`${host.name}: ${summary(account, report)}, in a new window.`);
+    const token = listen(host, query, colors);
+    view.write(page({
+      report,
+      colors,
+      title: query.title,
+      command: query.command,
+      token,
+      options: query.options,
+      module: new URL('./chart-window.js', import.meta.url).href,
+    }));
+    if (query.account) host.remember('account', query.account);
+    host.say(`${host.name}: ${summary(query, report)}, in a new window.`);
   },
 };
+
+/** What the caller asked for, as a command hledger can run. */
+export function build(args) {
+  const words = String(args == null ? '' : args).trim().split(/\s+/).filter(Boolean);
+  const [first, ...rest] = words;
+  const preset = PRESETS.find((entry) => entry.names.includes(first));
+
+  if (preset) {
+    let account = preset.account;
+    let flags = rest;
+    if (account && rest.length > 0 && !rest[0].startsWith('-')) {
+      [account, ...flags] = rest;
+    }
+    const report = preset.report(account);
+    return {
+      command: csv(`${report} ${flags.join(' ')}`.trim()),
+      title: account && preset.account ? `${preset.title} of ${account}` : preset.title,
+      account,
+      options: preset.options || {},
+    };
+  }
+
+  if (REPORTS.includes(first)) {
+    return { command: csv(words.join(' ')), title: words.join(' '), options: {} };
+  }
+
+  // Anything else is an account: for example `chart expenses:food`.
+  const named = words.join(' ');
+  const account = named || 'expenses';
+  return {
+    command: csv(`balance ${account}${monthly(named) ? ' -M' : ''}`),
+    title: account,
+    account,
+    options: {},
+  };
+}
+
+/** Add the CSV output format, unless the caller asked for one of their own. */
+function csv(report) {
+  const words = report.split(/\s+/).filter(Boolean);
+  const chosen = words.some((word) => word === '-O' || word === '--output-format');
+  return chosen ? words.join(' ') : `${words.join(' ')} -O csv`;
+}
 
 /** Whether to ask hledger for months: yes unless the caller named a period themselves. */
 function monthly(args) {
@@ -96,59 +187,40 @@ function monthly(args) {
  *   "expenses:food:coffee","0","$12.50"
  *   "Total:","$1286.40","$47.49"
  *
- * The Total row is skipped: it is the sum of the rows, and adding it would count everything
- * twice. Returns null when there is nothing to draw.
+ * The header row is *found* rather than assumed to be first, because balancesheet,
+ * incomestatement and cashflow put a title above it and section rows between, and a section
+ * row has no amounts. The Total row is skipped: it is the sum of the rows, and adding it
+ * would count everything twice. Returns null when there is nothing to draw.
  */
-function read(csv) {
-  const rows = String(csv).trim().split('\n').map(split);
-  if (rows.length < 2) return null;
+export function read(text) {
+  const rows = String(text == null ? '' : text).trim().split('\n').map(split);
+  const start = rows.findIndex((cells) => (cells[0] || '').trim().toLowerCase() === 'account');
+  if (start < 0) return null;
 
-  const [header, ...body] = rows;
-  const periods = header.slice(1).map((cell) => cell.trim());
+  const periods = rows[start].slice(1).map((cell) => cell.trim());
   if (periods.length === 0) return null;
 
-  const entries = [];
-  for (const cells of body) {
-    if (cells.length < periods.length + 1) continue;
+  const series = [];
+  for (const cells of rows.slice(start + 1)) {
     const label = (cells[0] || '').trim();
     if (!label || /^total:?$/i.test(label)) continue;
-    entries.push({
-      label,
-      amounts: periods.map((_, index) => money(cells[index + 1])),
-    });
+    if (cells.length < periods.length + 1) continue;
+    const amounts = periods.map((_, index) => money(cells[index + 1]));
+    // A section title such as "Assets" or "Cash flows" has no amounts of its own.
+    if (amounts.every((amount) => amount.raw === '')) continue;
+    series.push({ label, amounts });
   }
-  if (entries.length === 0) return null;
+  if (series.length === 0) return null;
 
-  if (periods.length > 1) {
-    // A series: one point per period, the sum of the accounts shown.
-    const points = periods.map((label, index) => ({
-      label,
-      amount: total(entries.map((entry) => entry.amounts[index])),
-    }));
-    return {
-      shape: 'series',
-      labels: periods,
-      points,
-      entries,
-      unit: unit(entries.flatMap((entry) => entry.amounts)),
-    };
-  }
-
-  // A ranking: one column, so one value per account, largest first.
-  const points = entries
-    .map((entry) => ({ label: entry.label, amount: entry.amounts[0] }))
-    .sort((left, right) => Math.abs(right.amount.value) - Math.abs(left.amount.value));
   return {
-    shape: 'ranking',
-    labels: [periods[0]],
-    points,
-    entries,
-    unit: unit(points.map((point) => point.amount)),
+    periods,
+    series,
+    unit: unitOf(series.flatMap((entry) => entry.amounts)),
   };
 }
 
 /** One CSV line, honouring quoted cells. */
-function split(line) {
+export function split(line) {
   const cells = [];
   let cell = '';
   let quoted = false;
@@ -171,15 +243,32 @@ function split(line) {
  *
  * hledger writes "$1,286.40", "-$12.00" or "1234.56 EUR" depending on the journal, and the
  * currency belongs on the chart. Both decimal styles are read, since `--decimal-mark` is a
- * thing a journal can set.
+ * thing a journal can set. `raw` is kept so a section row can be told from a row of zeroes.
  */
-function money(text) {
+export function money(text) {
   const raw = String(text == null ? '' : text).trim();
-  const empty = { value: 0, prefix: '', suffix: '' };
+  const empty = { value: 0, prefix: '', suffix: '', raw: '' };
   if (raw === '') return empty;
 
-  const found = raw.match(/-?[\d.,]+/);
-  if (!found) return empty;
+  // The sign is read before the digits are looked for, because hledger puts the commodity
+  // between them: `-$12.00` is negative, and a digit match that never saw the minus read it
+  // as twelve. `$12.00-` and the accounting `(12.00)` are read too.
+  let body = raw;
+  let sign = 1;
+  if (/^\(.*\)$/.test(body)) {
+    sign = -1;
+    body = body.slice(1, -1).trim();
+  }
+  if (body.startsWith('-')) {
+    sign = -1;
+    body = body.slice(1).trim();
+  } else if (body.endsWith('-')) {
+    sign = -1;
+    body = body.slice(0, -1).trim();
+  }
+
+  const found = body.match(/[\d.,]+/);
+  if (!found) return { ...empty, raw };
   let digits = found[0];
   const comma = digits.lastIndexOf(',');
   const dot = digits.lastIndexOf('.');
@@ -187,75 +276,57 @@ function money(text) {
     ? digits.replace(/\./g, '').replace(',', '.')   // 1.234,56
     : digits.replace(/,/g, '');                     // 1,234.56
   const value = Number(digits);
-  if (!Number.isFinite(value)) return empty;
+  if (!Number.isFinite(value)) return { ...empty, raw };
 
   return {
-    value,
-    prefix: raw.slice(0, found.index).replace(/-/g, '').trim(),
-    suffix: raw.slice(found.index + found[0].length).trim(),
+    value: sign * value,
+    prefix: body.slice(0, found.index).trim(),
+    suffix: body.slice(found.index + found[0].length).trim(),
+    raw,
   };
 }
 
+/** The commodity to label an axis with: the first one hledger actually wrote. */
+function unitOf(amounts) {
+  const found = amounts.find((amount) => amount.prefix || amount.suffix);
+  return { prefix: found ? found.prefix : '', suffix: found ? found.suffix : '' };
+}
+
 /**
- * The commodity to label the axis with.
+ * Let this window ask for another report.
  *
- * Taken from the first amount that has one, not from the first amount: hledger writes `0`
- * for a period with nothing in it, and an axis labelled 500 instead of $500 is a chart that
- * forgot what it was counting.
+ * Only one thing does: clicking a series charts it on its own, which needs hledger again and
+ * therefore the plugin on this side of the window. The window is a page with no API of its
+ * own, so the bridge is a function on the opener, kept by a token the page carries.
  */
-function unit(amounts) {
-  return amounts.find((amount) => amount.prefix || amount.suffix)
-    || amounts[0]
-    || { value: 0, prefix: '', suffix: '' };
-}
-
-/** Amounts added up, keeping the first commodity seen. */
-function total(amounts) {
-  return {
-    value: amounts.reduce((sum, amount) => sum + amount.value, 0),
-    prefix: amounts[0] ? amounts[0].prefix : '',
-    suffix: amounts[0] ? amounts[0].suffix : '',
+function listen(host, query, colors) {
+  const token = `chart-${(listen.count = (listen.count || 0) + 1)}-${Date.now().toString(36)}`;
+  // `window` in a browser, `globalThis` anywhere else: this runs in the app's page, and the
+  // check runs it in node to see what it would have written.
+  const scope = typeof window === 'undefined' ? globalThis : window;
+  const bridges = (scope.__chartBridges = scope.__chartBridges || {});
+  bridges[token] = {
+    async requery(what) {
+      const command = csv(`balance ${what}${monthly(what) ? ' -M' : ''}`);
+      const report = read(await host.hledger(command));
+      if (!report) throw new Error(`nothing to chart for ${what}`);
+      return { report, command, options: {}, title: what, colors };
+    },
   };
+  return token;
 }
 
-/** 1234567.891 -> "1,234,567.89", without asking the browser's locale. */
-function group(number, decimals = 2) {
-  const fixed = Math.abs(number).toFixed(decimals);
-  const [whole, fraction] = fixed.split('.');
-  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : '');
-}
-
-/** An amount as a person writes it: -$1,286.40. */
-function format(amount, decimals = 2) {
-  const sign = amount.value < 0 ? '-' : '';
-  return `${sign}${amount.prefix}${group(amount.value, decimals)}${amount.suffix}`;
-}
-
-/** A short form for axis labels: -$1.2k, $986, $0. */
-function compact(amount) {
-  const size = Math.abs(amount.value);
-  const sign = amount.value < 0 ? '-' : '';
-  if (size >= 1000) {
-    return `${sign}${amount.prefix}${group(amount.value / 1000, 1)}k${amount.suffix}`;
-  }
-  return format(amount, size !== 0 && size < 10 ? 2 : 0);
-}
-
-/**
- * Round numbers for the axis: a step of 1, 2 or 5 times a power of ten, and the ticks that
- * come from it. An axis whose labels are 1,037.42 and 2,074.84 is not an axis.
- */
-function ticks(low, high) {
-  if (high === low) return [low];
-  const raw = (high - low) / 4;
-  const power = Math.pow(10, Math.floor(Math.log10(raw)));
-  const step = [1, 2, 5, 10].map((multiple) => multiple * power).find((size) => size >= raw) || power;
-  const start = Math.floor(low / step) * step;
-  const ticks = [];
-  for (let value = start; value <= high + step / 2; value += step) {
-    ticks.push(Math.abs(value) < step / 1000 ? 0 : value);
-  }
-  return ticks;
+/** The window before there is anything to show, and when something went wrong. */
+function shell(colors, title, message) {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>hledger: ${escape(title)}</title></head>
+<body style="margin:0;background:${colors.background};color:${colors.foreground};
+  font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif">
+<main style="max-width:960px;margin:0 auto;padding:24px">
+  <h1 style="font-size:18px;font-weight:600;margin:0 0 4px">${escape(title)}</h1>
+  <p style="color:${colors.dim};margin:0">${escape(message)}</p>
+</main>
+</body></html>`;
 }
 
 function escape(text) {
@@ -264,186 +335,31 @@ function escape(text) {
   }[character]));
 }
 
-/** The window before there is anything to show, and when something went wrong. */
-function shell(colors, account, message) {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>hledger: ${escape(account)}</title></head>
-<body style="margin:0;background:${colors.background};color:${colors.foreground};
-  font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif">
-<main style="max-width:960px;margin:0 auto;padding:24px">
-  <h1 style="font-size:18px;font-weight:600;margin:0 0 4px">${escape(account)}</h1>
-  <p style="color:${colors.dim};margin:0">${escape(message)}</p>
-</main>
-</body></html>`;
-}
-
-/**
- * The whole window: a heading, the numbers that matter, the chart, and the data in a table
- * for anyone who wants to read or copy it rather than look at it.
- */
-function page(colors, account, report, command) {
-  const drawing = report.shape === 'series'
-    ? series(colors, report)
-    : ranking(colors, report);
-
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>hledger: ${escape(account)}</title></head>
-<body style="margin:0;background:${colors.background};color:${colors.foreground};
-  font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif">
-<main style="max-width:960px;margin:0 auto;padding:24px">
-  <h1 style="font-size:18px;font-weight:600;margin:0 0 2px">${escape(account)}${report.shape === 'series' ? ', over time' : ''}</h1>
-  <p style="color:${colors.dim};margin:0 0 16px">${escape(headline(report))}</p>
-  ${drawing}
-  <details style="margin-top:20px">
-    <summary style="cursor:pointer;color:${colors.dim}">The numbers</summary>
-    ${table(colors, report)}
-  </details>
-  <p style="color:${colors.dim};margin:20px 0 0;font-size:12px">
-    from hledger's own numbers:
-    <code style="color:${colors.foreground}">${escape(command)}</code>
-  </p>
-</main>
-</body></html>`;
-}
-
-/** The line, the area under it, and a dot per period. */
-function series(colors, report) {
-  const width = 900;
-  const height = 360;
-  const padding = { top: 22, right: 24, bottom: 44, left: 84 };
-  const plot = {
-    left: padding.left,
-    right: width - padding.right,
-    top: padding.top,
-    bottom: height - padding.bottom,
-  };
-
-  const values = report.points.map((point) => point.amount.value);
-  const marks = ticks(Math.min(0, ...values), Math.max(0, ...values));
-  const low = marks[0];
-  const high = marks[marks.length - 1];
-  const span = high - low || 1;
-  const step = report.points.length > 1
-    ? (plot.right - plot.left) / (report.points.length - 1)
-    : 0;
-  const x = (index) => plot.left + index * step;
-  const y = (value) => plot.bottom - ((value - low) / span) * (plot.bottom - plot.top);
-  const zero = y(0);
-
-  const grid = marks.map((value) => `
-    <line x1="${plot.left}" y1="${y(value)}" x2="${plot.right}" y2="${y(value)}"
-      stroke="${colors.dim}" stroke-opacity="${value === 0 ? '0.8' : '0.25'}"
-      stroke-dasharray="${value === 0 ? '' : '3 4'}"/>
-    <text x="${plot.left - 10}" y="${y(value) + 4}" text-anchor="end" font-size="11"
-      fill="${colors.dim}">${escape(compact({ value, prefix: report.unit.prefix, suffix: report.unit.suffix }))}</text>`).join('');
-
-  const line = report.points.map((point, index) => `${x(index)},${y(point.amount.value)}`).join(' ');
-  const area = `${plot.left},${zero} ${line} ${x(report.points.length - 1)},${zero}`;
-  const dots = report.points.map((point, index) => `
-    <circle cx="${x(index)}" cy="${y(point.amount.value)}" r="4" fill="${colors.accent}"
-      stroke="${colors.background}" stroke-width="1.5">
-      <title>${escape(point.label)}: ${escape(format(point.amount))}</title>
-    </circle>`).join('');
-
-  // Every label when there is room, otherwise every few, so they never overlap.
-  const every = Math.max(1, Math.ceil(report.points.length / 12));
-  const labels = report.points.map((point, index) => (index % every === 0 || index === report.points.length - 1
-    ? `<text x="${x(index)}" y="${height - 16}" text-anchor="middle" font-size="11"
-        fill="${colors.dim}">${escape(point.label)}</text>`
-    : '')).join('');
-
-  return `<div style="overflow-x:auto">
-<svg viewBox="0 0 ${width} ${height}" width="100%" style="max-width:960px;display:block"
-  role="img" aria-label="Balance over time">
-  <title>${escape(headline(report))}</title>
-  ${grid}
-  <polygon points="${area}" fill="${colors.accent}" fill-opacity="0.14"/>
-  <polyline points="${line}" fill="none" stroke="${colors.accent}" stroke-width="2"
-    stroke-linejoin="round" stroke-linecap="round"/>
-  ${dots}
-  ${labels}
-</svg>
-</div>`;
-}
-
-/** Horizontal bars, longest first: how "where did it go" is read. */
-function ranking(colors, report) {
-  const width = 900;
-  const row = 26;
-  const height = report.points.length * row + 24;
-  const labelWidth = 240;
-  const barWidth = width - labelWidth - 130;
-  const largest = Math.max(...report.points.map((point) => Math.abs(point.amount.value)), 0) || 1;
-  const negatives = report.points.some((point) => point.amount.value < 0);
-  const zero = negatives ? labelWidth + barWidth / 2 : labelWidth;
-
-  const bars = report.points.map((point, index) => {
-    const top = index * row + 8;
-    const length = (Math.abs(point.amount.value) / largest) * (negatives ? barWidth / 2 : barWidth);
-    const x = point.amount.value < 0 ? zero - length : zero;
-    const label = point.label.length > 34 ? `${point.label.slice(0, 33)}…` : point.label;
-    return `
-    <g>
-      <title>${escape(point.label)}: ${escape(format(point.amount))}</title>
-      <text x="${labelWidth - 12}" y="${top + 13}" text-anchor="end" font-size="12"
-        fill="${colors.foreground}">${escape(label)}</text>
-      <rect x="${x}" y="${top}" width="${Math.max(length, 1)}" height="14" rx="2"
-        fill="${colors.accent}" fill-opacity="${point.amount.value < 0 ? '0.55' : '1'}"/>
-      <text x="${zero + barWidth / 2 + 12}" y="${top + 13}" font-size="12"
-        fill="${colors.dim}">${escape(format(point.amount))}</text>
-    </g>`;
-  }).join('');
-
-  const axis = negatives
-    ? `<line x1="${zero}" y1="4" x2="${zero}" y2="${height - 8}" stroke="${colors.dim}" stroke-opacity="0.5"/>`
-    : '';
-
-  return `<div style="overflow-x:auto">
-<svg viewBox="0 0 ${width} ${height}" width="100%" style="max-width:960px;display:block"
-  role="img" aria-label="Balance by account">
-  <title>${escape(headline(report))}</title>
-  ${axis}
-  ${bars}
-</svg>
-</div>`;
-}
-
-/** The data, for reading or copying: a chart is not a table, and sometimes a table is
- *  what is wanted. */
-function table(colors, report) {
-  const first = report.shape === 'series' ? 'Period' : 'Account';
-  const rows = report.points.map((point) => `<tr>
-      <td style="padding:2px 0">${escape(point.label)}</td>
-      <td align="right" style="padding:2px 0;font-variant-numeric:tabular-nums">${escape(format(point.amount))}</td>
-    </tr>`).join('');
-  return `<table style="border-collapse:collapse;margin-top:8px;font-size:13px;width:100%">
-    <thead><tr style="color:${colors.dim};text-align:left">
-      <th style="font-weight:500;padding-bottom:4px">${first}</th>
-      <th style="font-weight:500;padding-bottom:4px;text-align:right">Balance</th>
-    </tr></thead>
-    <tbody>${rows}</tbody>
-  </table>`;
-}
-
-/** The line under the heading: what this chart is of, in words. */
-function headline(report) {
-  if (report.shape === 'series') {
-    const first = report.points[0];
-    const last = report.points[report.points.length - 1];
-    return `${report.points.length} periods, ${first.label} to ${last.label}`;
-  }
-  return `${report.points.length} accounts, ${report.labels[0]}`;
-}
-
 /** One line for the terminal, so the window is not the only place the answer lives. */
-function summary(account, report) {
-  if (report.shape === 'series') {
-    const first = report.points[0].amount.value;
-    const last = report.points[report.points.length - 1].amount;
+function summary(query, report) {
+  const total = (amounts) => amounts.reduce((sum, amount) => sum + amount.value, 0);
+  const unit = report.unit;
+  if (report.periods.length > 1) {
+    const perPeriod = report.periods.map((_, index) => ({
+      value: total(report.series.map((series) => series.amounts[index])),
+      ...unit,
+    }));
+    const first = perPeriod[0].value;
+    const last = perPeriod[perPeriod.length - 1];
     const change = last.value - first;
-    return `${report.points.length} periods of ${account}, ${format(last)}, ${
-      change >= 0 ? 'up' : 'down'} ${format({ ...last, value: Math.abs(change) })}`;
+    const sign = change >= 0 ? 'up' : 'down';
+    return `${report.periods.length} periods of ${query.title}, ${
+      formatAmount(last)}, ${sign} ${formatAmount({ value: Math.abs(change), ...unit })}`;
   }
-  const biggest = report.points[0];
-  return `${report.points.length} accounts, ${format(biggest.amount)} in ${biggest.label}`;
+  const biggest = report.series
+    .map((series) => ({ label: series.label, amount: series.amounts[0] }))
+    .sort((left, right) => Math.abs(right.amount.value) - Math.abs(left.amount.value))[0];
+  return `${report.series.length} accounts, ${formatAmount(biggest.amount)} in ${biggest.label}`;
+}
+
+function formatAmount(amount) {
+  const sign = amount.value < 0 ? '-' : '';
+  const fixed = Math.abs(amount.value).toFixed(2);
+  const [whole, fraction] = fixed.split('.');
+  return `${sign}${amount.prefix || ''}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}${amount.suffix || ''}`;
 }

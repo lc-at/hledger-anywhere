@@ -199,16 +199,33 @@ hledger.journal » chart expenses
 chart: 2 periods of expenses, $47.49, down $1,238.91, in a new window.
 ```
 
-The bundled repository is `/plugins/plugins.json`, and its `chart` plugin opens a balance
-chart in a window of its own, using hledger's own numbers from `balance expenses -M -O csv`:
+The bundled repository is `/plugins/plugins.json`, and its `chart` plugin opens a chart in a
+window of its own, using hledger's own numbers. It answers to named questions, and to any
+report you write out yourself:
 
-- **A line over time** when the report has several periods: `chart expenses` asks for months
-  and charts them, with round axis labels, a dot per period, the value on hover, and the data
-  in a table underneath for reading or copying.
-- **A ranking** when the report has one column, largest first, because that is how "where did
-  it go" is read: `chart expenses -p 2024`.
-- **In the app's own colours**, from the theme in use, so a chart opened from gruvbox light
-  is cream rather than a dark window beside a light terminal. It also carries the colour themes. Nothing about it is in the
+| command | what it charts |
+| --- | --- |
+| `chart` or `chart spending` | what spending did, month by month |
+| `chart income` | what came in |
+| `chart cashflow` | income against expenses, per month |
+| `chart networth` | assets against liabilities, as a running total |
+| `chart balances` | every account, end of month |
+| `chart payees` | spending by payee, month by month |
+| `chart top` | where it all went, largest first |
+| `chart expenses:food -p 2024` | any account, any period |
+| `chart balance assets -M` | any hledger report, verbatim |
+
+Nothing is guessed from the arguments except whether to ask for months, and that is not
+guessed when you named a period yourself.
+
+**The window is interactive.** Five ways to look at the same numbers, chosen by buttons:
+line, stacked, columns, ranking and donut. The range buttons (3, 6, 12, all) slice the
+periods already fetched, so they are instant. The legend switches series off and on. Hovering
+a point or a bar names it and gives its value, and clicking it charts that account on its own,
+which is the question behind the question. There is a table of the numbers under a disclosure
+and a button to copy them as CSV. The command that produced them is always at the bottom, and
+the whole thing is in the theme's colours, so a chart opened from gruvbox light is cream
+rather than a dark window beside a light terminal. It also carries the colour themes. Nothing about it is in the
 app's core: remove it with `plugins remove /plugins/plugins.json` and it is back on the next
 visit, because bundled is where it came from, not what it is.
 
