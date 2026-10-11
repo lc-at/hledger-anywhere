@@ -135,10 +135,11 @@ worth copying:
   (`window.__chartBridges[token]`) that runs another hledger command and returns the parsed
   result, and the page carries its token. That is how clicking a series charts it on its own,
   and how the query bar changes the question, without the window needing an API of its own.
-- **The window asks in the plugin's terms, not hledger's.** It sends a preset name, an account
-  and a period; the plugin composes the command, in `compose`, where it can be tested. Only the
-  plugin knows what a preset means, and a window that built commands itself would be a second
-  place for that to be wrong.
+- **Vendor what the window needs.** The chart window loads Chart.js, its zoom plugin and
+  Hammer from `vendor/` beside the plugin, by absolute URL built from `import.meta.url`. A
+  window is a `blob:` document, so a relative path in it resolves against nothing, and a
+  repository may live anywhere: everything the window needs travels with the plugin that opens
+  it.
 
 ## Colour themes
 

@@ -80,6 +80,13 @@ const PRESETS = [
     report: (account) => `balance ${account} --pivot payee -M`,
   },
   { names: ['top'], title: 'top', account: 'expenses', report: (account) => `balance ${account}` },
+  {
+    names: ['shares'],
+    title: 'shares',
+    account: 'expenses',
+    kind: 'shares',
+    report: (account) => `balance ${account}`,
+  },
 ];
 
 export default {
@@ -121,38 +128,15 @@ export default {
       title: query.title,
       command: query.command,
       token,
+      kind: query.kind,
       options: query.options,
-      preset: query.preset,
-      presets: PRESETS.map((entry) => ({ id: entry.names[0], name: entry.title })),
-      module: new URL('./chart-window.js', import.meta.url).href,
+      module: beside('chart-window.js'),
+      scripts: [beside('vendor/chart.umd.js'), beside('vendor/hammer.min.js'), beside('vendor/chartjs-plugin-zoom.umd.js')],
     }));
     if (query.account) host.remember('account', query.account);
     host.say(`${host.name}: ${summary(query, report)}, in a new window.`);
   },
 };
-
-/**
- * What the window asked for, as a command hledger can run.
- *
- * A request is a preset name, an account of your own, a period, or a bare account string from a
- * drill-down. An account overrides a preset, because typing one is a more specific thing to say
- * than pressing a button, and a period is passed to hledger as `-p`, quoted so a period
- * expression with spaces in it arrives as one argument.
- */
-export function compose(request) {
-  if (typeof request === 'string') return build(request);
-  const parts = [];
-  if (request.account) parts.push(request.account);
-  else if (request.preset) parts.push(request.preset);
-  if (request.period) parts.push('-p', quote(request.period));
-  return build(parts.join(' '));
-}
-
-/** One argument, quoted if it has spaces in it. */
-function quote(text) {
-  const trimmed = String(text).trim();
-  return /\s/.test(trimmed) ? `"${trimmed.replace(/"/g, '')}"` : trimmed;
-}
 
 /** What the caller asked for, as a command hledger can run. */
 export function build(args) {
@@ -171,7 +155,7 @@ export function build(args) {
       command: csv(`${report} ${flags.join(' ')}`.trim()),
       title: account && preset.account ? `${preset.title} of ${account}` : preset.title,
       account,
-      preset: preset.names[0],
+      kind: preset.kind || null,
       options: preset.options || {},
     };
   }
@@ -332,8 +316,8 @@ function listen(host, query, colors) {
   const scope = typeof window === 'undefined' ? globalThis : window;
   const bridges = (scope.__chartBridges = scope.__chartBridges || {});
   bridges[token] = {
-    async requery(request) {
-      const query = compose(request);
+    async requery(account) {
+      const query = build(account);
       const report = read(await host.hledger(query.command));
       if (!report) {
         throw new Error(`hledger had nothing to chart for ${query.title}`);
@@ -342,12 +326,22 @@ function listen(host, query, colors) {
         report,
         command: query.command,
         options: query.options || {},
+        kind: query.kind || null,
         title: query.title,
-        preset: query.preset || null,
       };
     },
   };
   return token;
+}
+
+/**
+ * A file beside this plugin, as an absolute URL.
+ *
+ * The window is a `blob:` document, so a relative path in it would resolve against nothing, and
+ * a repository may live anywhere: everything the plugin needs travels with the plugin.
+ */
+function beside(name) {
+  return new URL(`./${name}`, import.meta.url).href;
 }
 
 /** The window before there is anything to show, and when something went wrong. */

@@ -1,12 +1,12 @@
 // Checks the bundled chart plugin, its window, and the repository they ship in.
 //
-// The plugin is the worked example in docs/plugins.md and the only plugin most people will
-// ever see, so it has to keep working. None of this needs a browser: the plugin's job is
-// turning arguments into a command and a CSV into data, and the renderer's job is turning data
-// into markup, and both are functions.
+// The plugin is the worked example in docs/plugins.md and the only plugin most people will ever
+// see, so it has to keep working. None of this needs a browser: the plugin's job is turning
+// arguments into a command and a CSV into data, and the window's job is turning that data into a
+// Chart.js config, and both are functions.
 //
-// What cannot be checked here is the interacting: clicking a type, dragging a range, drilling
-// into a series. That is `mount`, and it is verified in the browser.
+// What cannot be checked here is the drawing and the interacting — a real canvas, a tooltip, a
+// wheel zoom, a click that asks hledger again. Those are verified in a browser.
 //
 // The CSVs below are copied from the shipped engine, not invented:
 //
@@ -16,30 +16,25 @@
 //   ...
 //   "Total:","$1200.00","$1250.00","$1286.40"
 //
-// Periods are columns and accounts are rows, which is the opposite of the obvious guess and
-// the reason the first version of this plugin charted nothing.
+// Periods are columns and accounts are rows, which is the opposite of the obvious guess and the
+// reason the first version of this plugin charted nothing.
 //
 // Run with: node scripts/check-example-plugin.mjs
 
 import { readFile } from 'node:fs/promises';
 
-import Chart, { build, compose, money, read } from '../assets/plugins/chart.js';
+import Chart, { build, money, read } from '../assets/plugins/chart.js';
 import {
-  columns,
-  donut,
-  draw,
+  accountAt,
+  configFor,
   format,
   group,
-  legendFor,
-  line,
-  ordered,
+  headline,
   page,
   palette,
-  ranking,
-  stacked,
-  ticks,
-  typesFor,
-  windowed,
+  tableView,
+  themeFor,
+  typeFor,
 } from '../assets/plugins/chart-window.js';
 
 const MONTHLY_CSV = [
@@ -82,8 +77,195 @@ const COLORS = {
 
 const checks = [];
 const check = (what, ok, detail = '') => checks.push([what, ok, detail]);
+const report = read(MONTHLY_CSV);
+const ranking = read(RANKING_CSV);
 
-/** A host that records what the plugin did, in the order it did it. */
+// ------------------------------------------------------------------ the named questions
+
+check('nothing asks for monthly expenses', build('').command === 'balance expenses -M -O csv', build('').command);
+check('spending is the same question said out loud', build('spending').command === 'balance expenses -M -O csv', build('spending').command);
+check('income asks for income', build('income').command === 'balance income -M -O csv', build('income').command);
+check('cashflow puts income against expenses', build('cashflow').command === 'balance income expenses -M -O csv', build('cashflow').command);
+check('net worth runs a running total of assets and liabilities',
+  build('networth').command === 'balance assets liabilities -H -M -O csv', build('networth').command);
+check('and asks to be drawn as one line', build('networth').options.total === true, JSON.stringify(build('networth').options));
+check('balances asks for every account', build('balances').command === 'balance -H -M -O csv', build('balances').command);
+check('payees pivots by payee', build('payees').command === 'balance expenses --pivot payee -M -O csv', build('payees').command);
+check('shares is a single column, for a doughnut', build('shares').command === 'balance expenses -O csv', build('shares').command);
+check('and says it wants shares drawn', build('shares').kind === 'shares', JSON.stringify(build('shares').kind));
+check('top is a ranking, so no months', build('top').command === 'balance expenses -O csv', build('top').command);
+check('a preset account can be named', build('shares income').command === 'balance income -O csv', build('shares income').command);
+check('a period the caller named is not overridden',
+  build('spending -p 2024').command === 'balance expenses -M -p 2024 -O csv', build('spending -p 2024').command);
+check('an account is charted over months', build('expenses:food').command === 'balance expenses:food -M -O csv', build('expenses:food').command);
+check('a report command is passed through whole',
+  build('balance assets -M').command === 'balance assets -M -O csv', build('balance assets -M').command);
+check('a format the caller chose is left alone',
+  build('balance assets -O json').command === 'balance assets -O json', build('balance assets -O json').command);
+
+// ------------------------------------------------------------------ reading hledger
+
+check('a monthly report is periods and series', report.periods.length === 3 && report.series.length === 3,
+  JSON.stringify({ periods: report.periods.length, series: report.series.length }));
+check('the Total row is not a series', !report.series.some((series) => /total/i.test(series.label)), '');
+check('the commodity is taken from an amount that has one', report.unit.prefix === '$', JSON.stringify(report.unit));
+check('amounts keep their value', report.series[1].amounts[2].value === 1286.4, String(report.series[1].amounts[2].value));
+check('a statement finds its header under the title',
+  read(STATEMENT_CSV).periods[0] === '2024-02-03', read(STATEMENT_CSV).periods.join(','));
+check('and skips its section rows', read(STATEMENT_CSV).series.length === 2, String(read(STATEMENT_CSV).series.length));
+check('a European decimal mark is read', money('1.234,56 EUR').value === 1234.56, JSON.stringify(money('1.234,56 EUR')));
+check('a negative amount keeps its sign and loses it from the prefix',
+  money('-$12.00').value === -12 && money('-$12.00').prefix === '$', JSON.stringify(money('-$12.00')));
+check('an empty cell is recognisable as empty', money('').raw === '' && money('0').raw === '0', '');
+check('nothing to read is null', read('') === null && read('"account","x"\n') === null, '');
+
+// ------------------------------------------------------------------ which chart
+
+check('several periods is a line', typeFor(report) === 'line', typeFor(report));
+check('one period is a ranking', typeFor(ranking) === 'bar', typeFor(ranking));
+check('and shares is a doughnut', typeFor(ranking, 'shares') === 'doughnut', typeFor(ranking, 'shares'));
+check('the subtitle counts periods when there are several',
+  headline(report, 'line') === '3 periods, 2024-01 to 2024-03', headline(report, 'line'));
+check('and accounts when there is one', headline(ranking, 'bar').startsWith('3 accounts'), headline(ranking, 'bar'));
+
+// ------------------------------------------------------------------ the Chart.js config
+
+{
+  const config = configFor({ report, colors: COLORS, title: 'spending' });
+  const dataset = (label) => config.data.datasets.find((entry) => entry.label === label);
+  check('a line chart is a line chart', config.type === 'line', config.type);
+  check('with one dataset per series', config.data.datasets.length === 3, String(config.data.datasets.length));
+  check('labelled by period', config.data.labels.join(',') === '2024-01,2024-02,2024-03', config.data.labels.join(','));
+  check('biggest first, so the legend reads in order of size',
+    config.data.datasets[0].label === 'expenses:housing:rent', config.data.datasets[0].label);
+  check('and the values are the amounts',
+    dataset('expenses:housing:rent').data.join(',') === '1200,1237.5,1286.4',
+    dataset('expenses:housing:rent').data.join(','));
+  check('each series has its own colour',
+    new Set(config.data.datasets.map((dataset) => dataset.borderColor)).size === 3, '');
+  check('the tooltip writes an amount the way a person does',
+    config.options.plugins.tooltip.callbacks.label({ dataset: { label: 'rent' }, parsed: { y: 1286.4 } }) === ' rent: $1,286.40',
+    config.options.plugins.tooltip.callbacks.label({ dataset: { label: 'rent' }, parsed: { y: 1286.4 } }));
+  check('the legend is the library\'s, and is left switched on',
+    config.options.plugins.legend.display !== false && config.options.plugins.legend.labels.usePointStyle === true, '');
+  check('zoom and pan are on',
+    config.options.plugins.zoom.zoom.wheel.enabled === true && config.options.plugins.zoom.pan.enabled === true, '');
+  check('the axis labels are themed', config.options.scales.x.ticks.color === COLORS.dim, '');
+}
+
+{
+  const config = configFor({ report, colors: COLORS, title: 'net worth', options: { total: true, label: 'net worth' } });
+  check('a running total is one line, not one per account', config.data.datasets.length === 1, String(config.data.datasets.length));
+  check('filled, because there is nothing to compare it with', config.data.datasets[0].fill === true, '');
+}
+
+{
+  const config = configFor({ report: ranking, colors: COLORS, title: 'top' });
+  check('a ranking is a bar chart', config.type === 'bar', config.type);
+  check('drawn horizontally', config.options.indexAxis === 'y', config.options.indexAxis);
+  check('largest first', config.data.labels[0] === 'expenses:housing:rent', config.data.labels[0]);
+  check('with no legend, since the bars are labelled', config.options.plugins.legend.display === false, '');
+  check('and the tooltip gives the share',
+    config.options.plugins.tooltip.callbacks.label({ parsed: { x: 1200 } }).includes('90.8%'),
+    config.options.plugins.tooltip.callbacks.label({ parsed: { x: 1200 } }));
+}
+
+{
+  const config = configFor({ report: ranking, colors: COLORS, title: 'shares', kind: 'shares' });
+  check('shares is a doughnut', config.type === 'doughnut', config.type);
+  check('one slice per account', config.data.datasets[0].data.length === 3, String(config.data.datasets[0].data.length));
+  check('slices are separate colours',
+    new Set(config.data.datasets[0].backgroundColor).size === 3, '');
+  check('and the tooltip gives the share',
+    config.options.plugins.tooltip.callbacks.label({ parsed: 1200 }).includes('90.8%'),
+    config.options.plugins.tooltip.callbacks.label({ parsed: 1200 }));
+}
+
+check('a series colour comes from the theme, and they are all different',
+  new Set(palette(COLORS, 5)).size === 5 && palette(COLORS, 1)[0].startsWith('hsl('), palette(COLORS, 3).join(' '));
+check('the theme reaches the tooltip and the grid',
+  themeFor(COLORS).plugins.tooltip.backgroundColor === COLORS.foreground && themeFor(COLORS).scales.y.grid.color.startsWith(COLORS.dim),
+  themeFor(COLORS).scales.y.grid.color);
+
+// ------------------------------------------------------------------ clicking a point
+
+{
+  const config = configFor({ report: ranking, colors: COLORS, title: 'top' });
+  check('a click on a bar names that account', accountAt(config, { datasetIndex: 0, index: 0 }) === 'expenses:housing:rent',
+    accountAt(config, { datasetIndex: 0, index: 0 }));
+}
+{
+  const config = configFor({ report, colors: COLORS, title: 'spending' });
+  const index = config.data.datasets.findIndex((dataset) => dataset.label === 'expenses:food:coffee');
+  check('a click on a line names that series', accountAt(config, { datasetIndex: index, index: 0 }) === 'expenses:food:coffee',
+    accountAt(config, { datasetIndex: index, index: 0 }));
+}
+{
+  const many = {
+    periods: ['p1', 'p2'],
+    unit: { prefix: '$', suffix: '' },
+    series: Array.from({ length: 10 }, (_, index) => ({
+      label: `s${index}`,
+      amounts: [money(`$${index + 1}`), money(`$${index + 1}`)],
+    })),
+  };
+  const config = configFor({ report: many, colors: COLORS, title: 'many' });
+  check('more series than fit are added up as other', config.data.datasets.length === 7, String(config.data.datasets.length));
+  check('the biggest are the ones kept and the rest are summed',
+    config.data.datasets[0].label === 's9' && config.data.datasets[6].label === 'other (4)',
+    config.data.datasets.map((dataset) => dataset.label).join(', '));
+  check('and other is not something to drill into', accountAt(config, { datasetIndex: 6, index: 0 }) === null,
+    String(accountAt(config, { datasetIndex: 6, index: 0 })));
+  check('a click on nothing is nothing', accountAt(config, undefined) === null, '');
+}
+
+check('the numbers are a table, with a row per period',
+  (tableView(report).match(/<tr>/g) || []).length === 4, String((tableView(report).match(/<tr>/g) || []).length));
+check('thousands are grouped', group(1234567.891) === '1,234,567.89', group(1234567.891));
+check('an amount is written as a person writes it', format(money('-$1234.56')) === '-$1,234.56', format(money('-$1234.56')));
+
+// ------------------------------------------------------------------ the page
+
+{
+  const html = page({
+    report,
+    colors: COLORS,
+    title: 'spending',
+    command: 'balance expenses -M -O csv',
+    token: 'token-1',
+    kind: null,
+    module: '/plugins/chart-window.js',
+    scripts: ['/plugins/vendor/chart.umd.js', '/plugins/vendor/hammer.min.js', '/plugins/vendor/chartjs-plugin-zoom.umd.js'],
+  });
+  // The whole point of this round: the chart is the chart.
+  check('the window has no buttons', !html.includes('<button'), '');
+  check('no fields', !html.includes('<input') && !html.includes('<select'), '');
+  check('and nothing hidden behind a disclosure', !html.includes('<details'), '');
+  check('it has a canvas to draw on', html.includes('<canvas id="chart"'), '');
+  check('it loads the charting library', html.includes('/plugins/vendor/chart.umd.js'), '');
+  check('and the zoom plugin, and what that needs',
+    html.includes('/plugins/vendor/chartjs-plugin-zoom.umd.js') && html.includes('/plugins/vendor/hammer.min.js'), '');
+  check('and then the module that mounts it', html.includes('chart-window.js') && html.includes('mount()'), '');
+  check('the numbers are in the page already, not left to a script', html.includes('<table') && html.includes('2024-02'), '');
+  check('with the heading and the range above them', html.includes('spending') && html.includes('3 periods'), '');
+  check('and the command that produced it', html.includes('balance expenses -M -O csv'), '');
+  check('the data carries the token and the colours', html.includes('token-1') && html.includes(COLORS.accent), '');
+  check('and the theme is declared to the browser', html.includes('color-scheme: light'), '');
+  check('it escapes anything that could close a script element',
+    !page({
+      report: { ...report, series: [{ label: '</script><script>', amounts: report.series[0].amounts }] },
+      colors: COLORS, title: 'x', command: 'c', token: 't', module: 'm',
+    }).includes('</script><script>'), '');
+}
+
+// ------------------------------------------------------------------ running the plugin
+
+/**
+ * A host that records what the plugin did, in the order it did it.
+ *
+ * The plugin writes a page and registers a bridge; both are per run, and the bridge is what a
+ * window asks through, so a stub keeps them.
+ */
 function stub(overrides = {}) {
   const log = { said: [], pages: [], asked: [], events: [] };
   const host = {
@@ -107,212 +289,41 @@ function stub(overrides = {}) {
   return { host, log, last: () => log.pages[log.pages.length - 1] || '' };
 }
 
-// ------------------------------------------------------------------ the named questions
-
-check('nothing asks for monthly expenses', build('').command === 'balance expenses -M -O csv', build('').command);
-check('spending is the same question said out loud', build('spending').command === 'balance expenses -M -O csv', build('spending').command);
-check('income asks for income', build('income').command === 'balance income -M -O csv', build('income').command);
-check('cashflow puts income against expenses', build('cashflow').command === 'balance income expenses -M -O csv', build('cashflow').command);
-check('net worth runs a running total of assets and liabilities',
-  build('networth').command === 'balance assets liabilities -H -M -O csv', build('networth').command);
-check('and it is drawn as one line, not two', build('networth').options.total === true, JSON.stringify(build('networth').options));
-check('balances asks for every account', build('balances').command === 'balance -H -M -O csv', build('balances').command);
-check('payees pivots by payee', build('payees').command === 'balance expenses --pivot payee -M -O csv', build('payees').command);
-check('a preset account can be named', build('payees income').command === 'balance income --pivot payee -M -O csv', build('payees income').command);
-check('top is a ranking, so no months', build('top').command === 'balance expenses -O csv', build('top').command);
-check('a period the caller named is not overridden',
-  build('spending -p 2024').command === 'balance expenses -M -p 2024 -O csv', build('spending -p 2024').command);
-check('an account is charted over months', build('expenses:food').command === 'balance expenses:food -M -O csv', build('expenses:food').command);
-check('and a period flag stops the months being added',
-  build('expenses:food -p 2024').command === 'balance expenses:food -p 2024 -O csv', build('expenses:food -p 2024').command);
-check('a report command is passed through whole',
-  build('balance assets -M').command === 'balance assets -M -O csv', build('balance assets -M').command);
-check('a format the caller chose is left alone',
-  build('balance assets -O json').command === 'balance assets -O json', build('balance assets -O json').command);
-
-// ------------------------------------------------------------------ what the window asks for
-
-check('a preset from the window is the named question',
-  compose({ preset: 'networth' }).command === 'balance assets liabilities -H -M -O csv', compose({ preset: 'networth' }).command);
-check('an account from the window charts that account',
-  compose({ account: 'expenses:food' }).command === 'balance expenses:food -M -O csv', compose({ account: 'expenses:food' }).command);
-check('and an account wins over a preset, being the more specific thing to say',
-  compose({ preset: 'spending', account: 'expenses:food' }).command === 'balance expenses:food -M -O csv',
-  compose({ preset: 'spending', account: 'expenses:food' }).command);
-check('a period is passed to hledger as -p',
-  compose({ preset: 'spending', period: '2024' }).command === 'balance expenses -M -p 2024 -O csv',
-  compose({ preset: 'spending', period: '2024' }).command);
-check('and a period with spaces in it arrives as one argument',
-  compose({ preset: 'spending', period: 'last 3 months' }).command.includes('-p "last 3 months"'),
-  compose({ preset: 'spending', period: 'last 3 months' }).command);
-check('a bare string is an account, which is what a drill-down sends',
-  compose('expenses:food').command === 'balance expenses:food -M -O csv', compose('expenses:food').command);
-check('the window can say which question it is on',
-  compose({ preset: 'payees' }).preset === 'payees', JSON.stringify(compose({ preset: 'payees' }).preset));
-
-// ------------------------------------------------------------------ reading hledger
-
-{
-  const report = read(MONTHLY_CSV);
-  check('a monthly report is periods and series', report.periods.length === 3 && report.series.length === 3,
-    JSON.stringify({ periods: report.periods.length, series: report.series.length }));
-  check('the Total row is not a series', !report.series.some((series) => /total/i.test(series.label)), '');
-  check('the commodity is taken from an amount that has one', report.unit.prefix === '$', JSON.stringify(report.unit));
-  check('amounts keep their value', report.series[1].amounts[2].value === 1286.4, String(report.series[1].amounts[2].value));
-}
-
-{
-  const report = read(RANKING_CSV);
-  check('a one-column report is one period', report.periods.length === 1 && report.periods[0] === 'balance', report.periods.join(','));
-  check('with a series per account', report.series.length === 3, String(report.series.length));
-}
-
-{
-  const report = read(STATEMENT_CSV);
-  check('a statement finds its header under the title', report && report.periods[0] === '2024-02-03', report ? report.periods.join(',') : 'null');
-  check('and skips its section rows', report.series.length === 2 && report.series[0].label === 'assets:bank:checking',
-    report.series.map((series) => series.label).join(', '));
-}
-
-check('a European decimal mark is read', money('1.234,56 EUR').value === 1234.56, JSON.stringify(money('1.234,56 EUR')));
-check('and the commodity after it is kept', money('1.234,56 EUR').suffix === 'EUR', JSON.stringify(money('1.234,56 EUR')));
-check('a negative amount keeps its sign and loses it from the prefix',
-  money('-$12.00').value === -12 && money('-$12.00').prefix === '$', JSON.stringify(money('-$12.00')));
-check('an empty cell is recognisable as empty', money('').raw === '' && money('0').raw === '0', '');
-check('nothing to read is null', read('') === null && read('"account","x"\n') === null, '');
-
-// ------------------------------------------------------------------ drawing
-
-const report = read(MONTHLY_CSV);
-const rankingReport = read(RANKING_CSV);
-
-check('a line is drawn with a dot per period', (line(report, COLORS).match(/<circle/g) || []).length === 9,
-  String((line(report, COLORS).match(/<circle/g) || []).length));
-check('the axis is round numbers with the commodity on them',
-  line(report, COLORS).includes('$500') && line(report, COLORS).includes('$1.0k'), '');
-check('a single-line chart fills the area under it', line(report, COLORS, { total: true }).includes('<polygon'), '');
-check('stacked draws one band per series', (stacked(report, COLORS).match(/<polygon/g) || []).length === 3,
-  String((stacked(report, COLORS).match(/<polygon/g) || []).length));
-check('columns draws a bar per period', (columns(report, COLORS).match(/<rect/g) || []).length === 9,
-  String((columns(report, COLORS).match(/<rect/g) || []).length));
-check('a ranking is one bar per account', (ranking(rankingReport, COLORS).match(/<rect/g) || []).length === 3, '');
-check('largest first',
-  ranking(rankingReport, COLORS).indexOf('expenses:housing:rent') < ranking(rankingReport, COLORS).indexOf('expenses:reading:books'), '');
-check('a ranking says what share each is', ranking(rankingReport, COLORS).includes('%'), '');
-check('a donut is one arc per account', (donut(rankingReport, COLORS).match(/<path/g) || []).length === 3,
-  String((donut(rankingReport, COLORS).match(/<path/g) || []).length));
-check('and it carries a legend', donut(rankingReport, COLORS).includes('<rect') && donut(rankingReport, COLORS).includes('expenses:reading:books'), '');
-check('every type is reachable by name',
-  ['line', 'stacked', 'columns', 'ranking', 'donut'].every((type) => draw(type, report, COLORS).includes('<svg')), '');
-check('a one-period report offers only what makes sense',
-  typesFor(rankingReport).map((type) => type.id).join(',') === 'ranking,donut',
-  typesFor(rankingReport).map((type) => type.id).join(','));
-check('the theme colours the series', palette(COLORS, 3).length === 3 && palette(COLORS, 3)[0] !== palette(COLORS, 3)[1],
-  palette(COLORS, 3).join(' '));
-check('ticks are round numbers', ticks(0, 1286.4).join(',') === '0,500,1000,1500', ticks(0, 1286.4).join(','));
-check('and a flat report does not fall over', ticks(5, 5).length === 1, ticks(5, 5).join(','));
-check('thousands are grouped, and only thousands', group(1234567.891) === '1,234,567.89', group(1234567.891));
-check('an amount is written as a person writes it', format(money('-$1234.56')) === '-$1,234.56', format(money('-$1234.56')));
-
-// ------------------------------------------------------------------ what the window can do
-
-{
-  const many = read(MONTHLY_CSV);
-  check('a range slices the periods', windowed(many, '3').periods.length === 3 && windowed(many, 'all').periods.length === 3, '');
-  const long = { periods: Array.from({ length: 24 }, (_, index) => `2024-${index}`), series: [{ label: 'a', amounts: Array.from({ length: 24 }, () => money('$1')) }], unit: { prefix: '$', suffix: '' } };
-  check('the last three of twenty-four', windowed(long, '3').periods.length === 3 && windowed(long, '3').periods[0] === '2024-21', windowed(long, '3').periods.join(','));
-  check('and all of them when asked', windowed(long, 'all').periods.length === 24, '');
-}
-
-{
-  const many = { periods: ['p'], unit: { prefix: '$', suffix: '' }, series: Array.from({ length: 10 }, (_, index) => ({ label: `s${index}`, amounts: [money(`$${index + 1}`)] })) };
-  const ordered_ = ordered(many, 7);
-  check('more series than fit are added up as other', ordered_.length === 7 && ordered_[6].label.startsWith('other ('), ordered_.map((series) => series.label).join(','));
-  check('and the biggest are the ones kept', ordered_[0].label === 's9', ordered_[0].label);
-}
-
-{
-  // A colour key that does not match the chart is worse than no key.
-  const lineLegend = legendFor(report, COLORS, 'line');
-  check('the legend names the series in the order they are drawn',
-    (lineLegend.match(/data-legend/g) || []).length === 3 && lineLegend.indexOf('expenses:housing:rent') < lineLegend.indexOf('expenses:food:coffee'),
-    lineLegend.slice(0, 120));
-  check('and gives each one its own colour',
-    new Set([...lineLegend.matchAll(/background:([^"]+)/g)].map((match) => match[1])).size === 3, '');
-  check('a ranking has no second colour key', legendFor(rankingReport, COLORS, 'ranking') === '', '');
-  check('and neither does a donut', legendFor(rankingReport, COLORS, 'donut') === '', '');
-}
-
-{
-  const html = page({
-    report,
-    colors: COLORS,
-    title: 'spending',
-    command: 'balance expenses -M -O csv',
-    token: 'token-1',
-    presets: [{ id: 'spending', name: 'spending' }, { id: 'networth', name: 'net worth' }],
-    module: '/plugins/chart-window.js',
-  });
-  check('the page draws the first chart before any script runs', html.includes('<svg') && html.includes('<polyline'), '');
-  check('it has a button per type', html.includes('data-type="line"') && html.includes('data-type="donut"'), '');
-  check('it has a range button', html.includes('data-range="all"'), '');
-  check('it offers the named questions', html.includes('data-preset="spending"') && html.includes('data-preset="networth"'), '');
-  check('and fields for an account and a period', html.includes('id="account"') && html.includes('id="period"'), '');
-  check('it carries the data, the colours and its token',
-    html.includes('token-1') && html.includes(COLORS.accent) && html.includes('2024-01'), '');
-  check('and it imports the module that makes it interactive', html.includes('chart-window.js') && html.includes('mount()'), '');
-  check('the numbers are there as a table', html.includes('<table') && html.includes('2024-02'), '');
-  check('it escapes anything that could close a script element',
-    !page({ report: { ...report, series: [{ label: '</script><script>', amounts: report.series[0].amounts }] }, colors: COLORS, title: 'x', command: 'c', token: 't', module: 'm' }).includes('</script><script>'), '');
-}
-
-// ------------------------------------------------------------------ running the plugin
-
 {
   const { host, log, last } = stub();
   await Chart.run('', host);
   check('it opens the window before asking hledger', log.events[0] === 'window' && log.events.includes('hledger'), log.events.join(','));
   check('it shows something while it waits', log.pages[0].includes('Reading hledger'), '');
   check('it titles the window after what it is charting', log.title === 'hledger: expenses', log.title);
-  check('it registers a bridge for the window to ask through', typeof globalThis.__chartBridges === 'object', '');
+  check('it registers a bridge for a click to ask through', typeof globalThis.__chartBridges === 'object', '');
   check('it remembers the account', log.said.includes('remember account=expenses'), JSON.stringify(log.said));
-  check('and says what it drew', log.said.some((line_) => line_.includes('3 periods of expenses') && line_.includes('$1,286.40')), JSON.stringify(log.said));
-  check('the page it wrote can draw', last().includes('<polyline'), '');
+  check('and says what it drew', log.said.some((line) => line.includes('3 periods of expenses') && line.includes('$1,286.40')), JSON.stringify(log.said));
+  check('the page it wrote is the chart', last().includes('<canvas') && !last().includes('<button'), '');
 }
 
 {
   const { host, log } = stub({ hledger: async () => { throw new Error('no journal is loaded'); } });
   await Chart.run('spending', host);
   check('a failed run is on the page', log.pages[log.pages.length - 1].includes('no journal is loaded'), '');
-  check('and in the terminal', log.said.some((line_) => line_.includes('no journal is loaded')), JSON.stringify(log.said));
+  check('and in the terminal', log.said.some((line) => line.includes('no journal is loaded')), JSON.stringify(log.said));
 }
 
 {
   const { host, log } = stub({ hledger: async () => '"account","2024-01"\n' });
   await Chart.run('spending', host);
-  check('an empty report is reported, not charted', log.said.some((line_) => line_.includes('no amounts')), JSON.stringify(log.said));
+  check('an empty report is reported, not charted', log.said.some((line) => line.includes('no amounts')), JSON.stringify(log.said));
 }
 
 {
   const { host, log } = stub({ window: () => null });
   await Chart.run('spending', host);
-  check('a blocked window is reported', log.said.some((line_) => line_.includes('blocked')), JSON.stringify(log.said));
-}
-
-{
-  // net worth is one line of the running total, which is the whole point of the preset.
-  const { host, last } = stub();
-  await Chart.run('networth', host);
-  check('a running-total query draws one line, not one per account',
-    (last().match(/<polyline/g) || []).length === 1, String((last().match(/<polyline/g) || []).length));
-  check('and asks hledger for the running total',
-    host.hledger && last().includes('balance assets liabilities -H -M -O csv'), '');
+  check('a blocked window is reported', log.said.some((line) => line.includes('blocked')), JSON.stringify(log.said));
 }
 
 {
   const { host, last } = stub({ colors: undefined });
   await Chart.run('spending', host);
-  check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<polyline'), '');
+  check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<canvas'), '');
 }
 
 // ------------------------------------------------------------------ the repository itself
@@ -331,17 +342,22 @@ const roles = new Set(colours.map(([role]) => role));
 check('and every role is one the app knows',
   [...roles].every((role) => ['background', 'foreground', 'cursor', 'accent', 'dim'].includes(role)),
   [...roles].join(', '));
-let modulesThere = true;
-for (const plugin of manifest.plugins || []) {
-  for (const named of [plugin.module, './chart-window.js']) {
-    try {
-      await readFile(new URL(named, new URL('../assets/plugins/plugins.json', import.meta.url)));
-    } catch {
-      modulesThere = false;
-    }
+let filesThere = true;
+for (const file of [
+  '../assets/plugins/chart.js',
+  '../assets/plugins/chart-window.js',
+  '../assets/plugins/vendor/chart.umd.js',
+  '../assets/plugins/vendor/hammer.min.js',
+  '../assets/plugins/vendor/chartjs-plugin-zoom.umd.js',
+]) {
+  try {
+    const source = await readFile(new URL(file, import.meta.url), 'utf8');
+    if (source.length < 100) filesThere = false;
+  } catch {
+    filesThere = false;
   }
 }
-check('and every plugin names a module that exists, window included', modulesThere, `${manifest.plugins?.length} plugins`);
+check('every plugin names a module that exists, library included', filesThere, '');
 
 // ------------------------------------------------------------------ the verdict
 

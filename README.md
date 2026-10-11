@@ -212,25 +212,27 @@ report you write out yourself:
 | `chart balances` | every account, end of month |
 | `chart payees` | spending by payee, month by month |
 | `chart top` | where it all went, largest first |
+| `chart shares` | what share each account is of the total |
 | `chart expenses:food -p 2024` | any account, any period |
 | `chart balance assets -M` | any hledger report, verbatim |
 
 Nothing is guessed from the arguments except whether to ask for months, and that is not
 guessed when you named a period yourself.
 
-**The window is interactive, including the question.** The named questions are buttons along
-the top, so `spending` becomes `net worth` or `payees` without going back to the terminal, and
-an account and a period can be typed in and charted the same way. Whatever asked for the chart,
-the command that produced it is at the bottom.
+The shape comes from the report: several periods is a line, one column is a ranking with the
+largest first, and `chart shares` is a doughnut.
 
-Five ways to look at the same numbers, chosen by buttons: line, stacked, columns, ranking and
-donut. The range buttons (3, 6, 12, all) slice the
-periods already fetched, so they are instant. The legend switches series off and on. Hovering
-a point or a bar names it and gives its value, and clicking it charts that account on its own,
-which is the question behind the question. There is a table of the numbers under a disclosure
-and a button to copy them as CSV. The command that produced them is always at the bottom, and
-the whole thing is in the theme's colours, so a chart opened from gruvbox light is cream
-rather than a dark window beside a light terminal. It also carries the colour themes. Nothing about it is in the
+**The chart is the chart.** The window has no buttons, no fields, and nothing hidden behind a
+disclosure. What is drawn comes from the command, and everything else is done to the chart
+itself, which is what a chart is for: hover a point or a bar for its value, click a legend
+entry to take a series out and put it back, scroll to zoom, drag to pan, double-click to reset,
+and click a point to chart that account on its own. Escape goes back to the chart you came
+from. The numbers are always there as a table underneath, which is also what a screen reader
+reads instead of a canvas, and the command that produced them is at the bottom.
+
+It is drawn by [Chart.js](https://www.chartjs.org), vendored beside the plugin so the window
+needs nothing from the network, and coloured from the theme in use, so a chart opened from
+gruvbox light is cream rather than a dark window beside a light terminal. Nothing about it is in the
 app's core: remove it with `plugins remove /plugins/plugins.json` and it is back on the next
 visit, because bundled is where it came from, not what it is.
 

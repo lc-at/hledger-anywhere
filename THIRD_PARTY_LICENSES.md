@@ -64,6 +64,22 @@ Vendored in `assets/js/vendor/remotestorage/`, loaded on demand by
 - Upstream: <https://github.com/remotestorage/remotestorage.js>
 - Pinned version: **2.0.0-beta.10** (npm's `latest` and `stable` both point at it)
 
+## Chart.js, chartjs-plugin-zoom, Hammer.js, MIT
+
+Vendored in `assets/plugins/vendor/`, because the bundled chart plugin loads them into the
+window it opens:
+
+| File | Upstream |
+|---|---|
+| `chart.umd.js` | `chart.js@4.4.7`, <https://github.com/chartjs/Chart.js> |
+| `hammer.min.js` | `hammerjs@2.0.8`, <https://github.com/hammerjs/hammer.js> |
+| `chartjs-plugin-zoom.umd.js` | `chartjs-plugin-zoom@2.2.0`, <https://github.com/chartjs/chartjs-plugin-zoom> |
+
+They are loaded only in a chart window's own document, never in the app's page, so they are not
+part of loading hledger-anywhere. They are vendored rather than fetched at runtime so the app
+has no network dependency and no JavaScript build step, which is how xterm.js and
+remoteStorage.js are handled too.
+
 ## Rust crates
 
 The Rust dependency tree is not listed here; run `cargo license` or
