@@ -437,12 +437,17 @@ export function typesFor(report) {
  * redraws from what is already here. Only a drill-down asks hledger again, through the plugin
  * on the other side of the window.
  */
-export function page({ report, colors, title, command, range = 'all', type, token, options = {}, module }) {
+export function page({
+  report, colors, title, command, range = 'all', type, token, options = {},
+  preset = null, presets = [], module,
+}) {
   const chosen = type || (report.periods.length > 1 ? 'line' : 'ranking');
   // The page carries everything it needs to redraw: the data, the colours, the options, and
   // the token its bridge is filed under. `<` is escaped because a JSON block inside a
   // script element ends at the first `</script>`, and an account name could contain one.
-  const data = JSON.stringify({ report, colors, token, options, command, range, type: chosen })
+  const data = JSON.stringify({
+    report, colors, token, options, command, range, type: chosen, preset, presets,
+  })
     .replace(/</g, '\\u003c');
   const buttons = typesFor(report)
     .map((entry) => `<button data-type="${entry.id}" class="tool">${entry.name}</button>`)
@@ -468,6 +473,10 @@ export function page({ report, colors, title, command, range = 'all', type, toke
   .tool[aria-pressed="true"] { background:${colors.accent}; border-color:${colors.accent};
     color:${isLight(colors.accent) ? '#1d2021' : '#ffffff'}; }
   .spacer { flex:1; }
+  .field { font-size:12px; color:${colors.dim}; display:flex; align-items:center; gap:5px; }
+  .field input { font:inherit; font-size:12px; padding:3px 8px; border-radius:6px;
+    border:1px solid ${colors.dim}44; background:${colors.background}; color:${colors.foreground}; }
+  .field input:focus { outline:none; border-color:${colors.accent}; }
   .legend { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 0; font-size:12px; }
   .legend button { border:0; background:transparent; color:${colors.foreground}; cursor:pointer;
     font:inherit; font-size:12px; display:flex; align-items:center; gap:6px; padding:0; }
@@ -488,6 +497,13 @@ export function page({ report, colors, title, command, range = 'all', type, toke
 <main>
   <h1 id="heading">${escape(title)}</h1>
   <p class="sub" id="sub">${escape(headline(report, range))}</p>
+  <form class="toolbar" id="query-form">
+    <span id="presets">${presets.map((entry) => `<button type="button" class="tool" data-preset="${escape(entry.id)}">${escape(entry.name)}</button>`).join('')}</span>
+    <span class="spacer"></span>
+    <label class="field">account <input id="account" size="16" placeholder="expenses:food" autocomplete="off"></label>
+    <label class="field">period <input id="period" size="12" placeholder="all time" autocomplete="off"></label>
+    <button class="tool" type="submit">Chart it</button>
+  </form>
   <div class="toolbar">
     <span id="types">${buttons}</span>
     <span class="spacer"></span>
@@ -526,6 +542,8 @@ export function mount(root = document) {
     hidden: new Set(),
   };
   const chart = root.getElementById('chart');
+  const accountField = root.getElementById('account');
+  const periodField = root.getElementById('period');
   const legend = root.getElementById('legend');
   const table = root.getElementById('table');
   const tip = root.getElementById('tip');
@@ -534,12 +552,15 @@ export function mount(root = document) {
   const command = root.getElementById('command');
 
   /** Ask the plugin on the other side of this window for another report. */
-  async function requery(args) {
+  async function requery(request) {
     const bridges = window.opener && window.opener.__chartBridges;
     const bridge = bridges && bridges[data.token];
-    if (!bridge) return null;
+    if (!bridge) {
+      sub.textContent = 'This window has lost touch with the app. Run the command again.';
+      return null;
+    }
     try {
-      return await bridge.requery(args);
+      return await bridge.requery(request);
     } catch (error) {
       sub.textContent = error && error.message ? error.message : String(error);
       return null;
@@ -577,6 +598,11 @@ export function mount(root = document) {
     for (const button of root.querySelectorAll('[data-range]')) {
       button.setAttribute('aria-pressed', String(button.dataset.range === state.range));
     }
+    for (const button of root.querySelectorAll('[data-preset]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.preset === state.preset));
+    }
+    if (accountField) accountField.value = state.account || '';
+    if (periodField) periodField.value = state.period || '';
   }
 
   function showTip(event) {
@@ -591,29 +617,69 @@ export function mount(root = document) {
     tip.style.opacity = '1';
   }
 
+  /**
+   * Ask hledger something else, and keep where we were so Escape can come back.
+   *
+   * A request is a preset from the buttons, an account and period from the fields, or an
+   * account on its own from a drill-down. The plugin turns it into a command; this side only
+   * knows what the person asked for.
+   */
+  async function query(request) {
+    sub.textContent = 'Asking hledger…';
+    const answer = await requery(request);
+    // `requery` has already said what went wrong, and the chart is unchanged.
+    if (!answer) return;
+    state.history = [...(state.history || []), {
+      report: state.report, command: state.command, title: heading.textContent,
+      preset: state.preset, account: state.account, period: state.period, options: state.options,
+    }];
+    Object.assign(state, {
+      report: answer.report,
+      command: answer.command,
+      options: answer.options || {},
+      title: answer.title,
+      preset: request.account ? null : (answer.preset || null),
+      account: request.account !== undefined ? request.account : state.account,
+      period: request.period !== undefined ? request.period : state.period,
+    });
+    heading.textContent = answer.title;
+    document.title = `hledger: ${answer.title}`;
+    state.hidden = new Set();
+    render();
+  }
+
   /** Clicking a series charts it on its own, which is the question behind the question. */
   async function drill(label) {
     if (!label || label.startsWith('other (')) return;
-    sub.textContent = `Asking hledger about ${label}…`;
-    const answer = await requery(label);
-    if (!answer) return;
-    state.history = [...(state.history || []), { report: state.report, command: state.command, title: heading.textContent }];
-    Object.assign(state, { report: answer.report, command: answer.command, options: answer.options });
-    heading.textContent = answer.title || label;
-    state.hidden = new Set();
-    document.title = `hledger: ${label}`;
-    render();
+    await query({ account: label });
   }
 
   async function back() {
     const previous = (state.history || []).pop();
     if (!previous) return;
-    Object.assign(state, { report: previous.report, command: previous.command, options: {} });
+    Object.assign(state, {
+      report: previous.report,
+      command: previous.command,
+      options: previous.options || {},
+      preset: previous.preset || null,
+      account: previous.account || null,
+      period: previous.period || null,
+    });
     heading.textContent = previous.title;
     document.title = previous.title;
     render();
   }
 
+  for (const button of root.querySelectorAll('[data-preset]')) {
+    button.addEventListener('click', () => query({ preset: button.dataset.preset, account: '', period: state.period }));
+  }
+  const queryForm = root.getElementById('query-form');
+  if (queryForm) {
+    queryForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      query({ account: accountField.value.trim(), period: periodField.value.trim() });
+    });
+  }
   for (const button of root.querySelectorAll('[data-type]')) {
     button.addEventListener('click', () => { state.type = button.dataset.type; render(); });
   }

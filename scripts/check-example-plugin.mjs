@@ -23,7 +23,7 @@
 
 import { readFile } from 'node:fs/promises';
 
-import Chart, { build, money, read } from '../assets/plugins/chart.js';
+import Chart, { build, compose, money, read } from '../assets/plugins/chart.js';
 import {
   columns,
   donut,
@@ -130,6 +130,26 @@ check('a report command is passed through whole',
 check('a format the caller chose is left alone',
   build('balance assets -O json').command === 'balance assets -O json', build('balance assets -O json').command);
 
+// ------------------------------------------------------------------ what the window asks for
+
+check('a preset from the window is the named question',
+  compose({ preset: 'networth' }).command === 'balance assets liabilities -H -M -O csv', compose({ preset: 'networth' }).command);
+check('an account from the window charts that account',
+  compose({ account: 'expenses:food' }).command === 'balance expenses:food -M -O csv', compose({ account: 'expenses:food' }).command);
+check('and an account wins over a preset, being the more specific thing to say',
+  compose({ preset: 'spending', account: 'expenses:food' }).command === 'balance expenses:food -M -O csv',
+  compose({ preset: 'spending', account: 'expenses:food' }).command);
+check('a period is passed to hledger as -p',
+  compose({ preset: 'spending', period: '2024' }).command === 'balance expenses -M -p 2024 -O csv',
+  compose({ preset: 'spending', period: '2024' }).command);
+check('and a period with spaces in it arrives as one argument',
+  compose({ preset: 'spending', period: 'last 3 months' }).command.includes('-p "last 3 months"'),
+  compose({ preset: 'spending', period: 'last 3 months' }).command);
+check('a bare string is an account, which is what a drill-down sends',
+  compose('expenses:food').command === 'balance expenses:food -M -O csv', compose('expenses:food').command);
+check('the window can say which question it is on',
+  compose({ preset: 'payees' }).preset === 'payees', JSON.stringify(compose({ preset: 'payees' }).preset));
+
 // ------------------------------------------------------------------ reading hledger
 
 {
@@ -230,11 +250,14 @@ check('an amount is written as a person writes it', format(money('-$1234.56')) =
     title: 'spending',
     command: 'balance expenses -M -O csv',
     token: 'token-1',
+    presets: [{ id: 'spending', name: 'spending' }, { id: 'networth', name: 'net worth' }],
     module: '/plugins/chart-window.js',
   });
   check('the page draws the first chart before any script runs', html.includes('<svg') && html.includes('<polyline'), '');
   check('it has a button per type', html.includes('data-type="line"') && html.includes('data-type="donut"'), '');
   check('it has a range button', html.includes('data-range="all"'), '');
+  check('it offers the named questions', html.includes('data-preset="spending"') && html.includes('data-preset="networth"'), '');
+  check('and fields for an account and a period', html.includes('id="account"') && html.includes('id="period"'), '');
   check('it carries the data, the colours and its token',
     html.includes('token-1') && html.includes(COLORS.accent) && html.includes('2024-01'), '');
   check('and it imports the module that makes it interactive', html.includes('chart-window.js') && html.includes('mount()'), '');

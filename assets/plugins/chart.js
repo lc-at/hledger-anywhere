@@ -122,12 +122,37 @@ export default {
       command: query.command,
       token,
       options: query.options,
+      preset: query.preset,
+      presets: PRESETS.map((entry) => ({ id: entry.names[0], name: entry.title })),
       module: new URL('./chart-window.js', import.meta.url).href,
     }));
     if (query.account) host.remember('account', query.account);
     host.say(`${host.name}: ${summary(query, report)}, in a new window.`);
   },
 };
+
+/**
+ * What the window asked for, as a command hledger can run.
+ *
+ * A request is a preset name, an account of your own, a period, or a bare account string from a
+ * drill-down. An account overrides a preset, because typing one is a more specific thing to say
+ * than pressing a button, and a period is passed to hledger as `-p`, quoted so a period
+ * expression with spaces in it arrives as one argument.
+ */
+export function compose(request) {
+  if (typeof request === 'string') return build(request);
+  const parts = [];
+  if (request.account) parts.push(request.account);
+  else if (request.preset) parts.push(request.preset);
+  if (request.period) parts.push('-p', quote(request.period));
+  return build(parts.join(' '));
+}
+
+/** One argument, quoted if it has spaces in it. */
+function quote(text) {
+  const trimmed = String(text).trim();
+  return /\s/.test(trimmed) ? `"${trimmed.replace(/"/g, '')}"` : trimmed;
+}
 
 /** What the caller asked for, as a command hledger can run. */
 export function build(args) {
@@ -146,6 +171,7 @@ export function build(args) {
       command: csv(`${report} ${flags.join(' ')}`.trim()),
       title: account && preset.account ? `${preset.title} of ${account}` : preset.title,
       account,
+      preset: preset.names[0],
       options: preset.options || {},
     };
   }
@@ -306,11 +332,19 @@ function listen(host, query, colors) {
   const scope = typeof window === 'undefined' ? globalThis : window;
   const bridges = (scope.__chartBridges = scope.__chartBridges || {});
   bridges[token] = {
-    async requery(what) {
-      const command = csv(`balance ${what}${monthly(what) ? ' -M' : ''}`);
-      const report = read(await host.hledger(command));
-      if (!report) throw new Error(`nothing to chart for ${what}`);
-      return { report, command, options: {}, title: what, colors };
+    async requery(request) {
+      const query = compose(request);
+      const report = read(await host.hledger(query.command));
+      if (!report) {
+        throw new Error(`hledger had nothing to chart for ${query.title}`);
+      }
+      return {
+        report,
+        command: query.command,
+        options: query.options || {},
+        title: query.title,
+        preset: query.preset || null,
+      };
     },
   };
   return token;

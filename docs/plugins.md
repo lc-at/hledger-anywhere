@@ -134,7 +134,11 @@ worth copying:
 - **A window can ask for more.** The plugin leaves a function on the opener
   (`window.__chartBridges[token]`) that runs another hledger command and returns the parsed
   result, and the page carries its token. That is how clicking a series charts it on its own,
-  without the window needing an API of its own.
+  and how the query bar changes the question, without the window needing an API of its own.
+- **The window asks in the plugin's terms, not hledger's.** It sends a preset name, an account
+  and a period; the plugin composes the command, in `compose`, where it can be tested. Only the
+  plugin knows what a preset means, and a window that built commands itself would be a second
+  place for that to be wrong.
 
 ## Colour themes
 

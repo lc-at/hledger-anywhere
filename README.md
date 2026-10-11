@@ -218,8 +218,13 @@ report you write out yourself:
 Nothing is guessed from the arguments except whether to ask for months, and that is not
 guessed when you named a period yourself.
 
-**The window is interactive.** Five ways to look at the same numbers, chosen by buttons:
-line, stacked, columns, ranking and donut. The range buttons (3, 6, 12, all) slice the
+**The window is interactive, including the question.** The named questions are buttons along
+the top, so `spending` becomes `net worth` or `payees` without going back to the terminal, and
+an account and a period can be typed in and charted the same way. Whatever asked for the chart,
+the command that produced it is at the bottom.
+
+Five ways to look at the same numbers, chosen by buttons: line, stacked, columns, ranking and
+donut. The range buttons (3, 6, 12, all) slice the
 periods already fetched, so they are instant. The legend switches series off and on. Hovering
 a point or a bar names it and gives its value, and clicking it charts that account on its own,
 which is the question behind the question. There is a table of the numbers under a disclosure
