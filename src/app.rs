@@ -310,6 +310,12 @@ struct App {
     /// Account names for completion: fetched once per journal, on the first Tab,
     /// because on a large journal that fetch is a whole engine run.
     accounts: RefCell<Option<Vec<String>>>,
+    /// True while those names are on their way, so asking twice does not run hledger
+    /// twice.
+    accounts_loading: Cell<bool>,
+    /// Why they could not be read, kept until the next Tab rather than printed at
+    /// someone mid-sentence.
+    accounts_error: RefCell<Option<String>>,
     /// Lines the app itself put on screen: the command echoes and its own
     /// messages. The search skips them, so `/foo` finds what a command printed
     /// rather than the `/foo` you just typed or the count line that followed it.
@@ -351,6 +357,8 @@ impl App {
             last_hit: RefCell::new(None),
             written: RefCell::new(Vec::new()),
             accounts: RefCell::new(None),
+            accounts_loading: Cell::new(false),
+            accounts_error: RefCell::new(None),
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
             remote_reported: Cell::new(false),
@@ -816,6 +824,16 @@ impl App {
     /// guess at, so the candidates are listed and the first goes on the line, and
     /// every Tab after that steps to the next one. Shift+Tab steps back, Escape puts
     /// the line back as it was typed, and anything else takes what is there.
+    ///
+    /// Matching ignores case. When nothing starts with what was typed, the closest
+    /// names are listed instead, and the line is not touched: a guess is worth
+    /// showing, not worth typing over someone.
+    ///
+    /// Account names are not waited for. They are a whole engine run on a large
+    /// journal, so a Tab while they load completes from the commands, flags, aliases,
+    /// paths and plugin words that are already here, and the names are there for the
+    /// next Tab. Nothing about the wait is written into the scrollback, because being
+    /// told to try again is exactly the interruption to avoid.
     fn complete_or_menu(self: &Rc<App>) {
         // Tab with a menu open means "the next one", not "complete again".
         if self.editor.borrow_mut().menu_next() {
@@ -823,13 +841,9 @@ impl App {
             return;
         }
 
-        if self.accounts.borrow().is_none() && !self.files.borrow().is_empty() {
-            self.say(&terminal::dim(
-                "Reading account names, which takes a moment. Press Tab again shortly.",
-            ));
-            self.title("reading account names");
-            self.fetch_accounts();
-            return;
+        self.ensure_accounts();
+        if let Some(why) = self.accounts_error.borrow_mut().take() {
+            self.say(&terminal::dim(&why));
         }
 
         let paths = self.paths();
@@ -840,16 +854,31 @@ impl App {
         candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
         candidates.extend(self.registry.borrow().words());
 
-        if let Completion::Ambiguous(options) = self.editor.borrow_mut().complete(&candidates) {
-            // The prompt is already on the line, so it is cleared first: the list
-            // belongs above it, not appended to the command being typed. It is
-            // printed once; stepping through afterwards changes the line only.
-            self.screen.write("\r\u{1b}[K");
-            let (columns, _) = self.screen.size();
-            for line in terminal::format_columns(&options, columns as usize) {
-                self.remember_chatter(&line);
-                self.block(&line, Some(&terminal::dim_escape()));
+        match self.editor.borrow_mut().complete(&candidates) {
+            Completion::Ambiguous(options) => {
+                // The prompt is already on the line, so it is cleared first: the list
+                // belongs above it, not appended to the command being typed. It is
+                // printed once; stepping through afterwards changes the line only.
+                self.screen.write("\r\u{1b}[K");
+                let (columns, _) = self.screen.size();
+                for line in terminal::format_columns(&options, columns as usize) {
+                    self.remember_chatter(&line);
+                    self.block(&line, Some(&terminal::dim_escape()));
+                }
             }
+            Completion::Fuzzy(options) => {
+                // No menu, and nothing on the line: this is a list to read, not a
+                // choice made on someone's behalf. The line is redrawn as typed.
+                self.screen.write("\r\u{1b}[K");
+                let (columns, _) = self.screen.size();
+                let mut lines = vec!["Nothing starts with that. Closest names:".to_string()];
+                lines.extend(terminal::format_columns(&options, columns as usize));
+                for line in lines {
+                    self.remember_chatter(&line);
+                    self.block(&line, Some(&terminal::dim_escape()));
+                }
+            }
+            Completion::None | Completion::Completed | Completion::Extended => {}
         }
         self.prompt();
     }
@@ -2365,19 +2394,36 @@ impl App {
         }
     }
 
+    /// Start reading the account names, unless they are here or already coming.
+    ///
+    /// Nothing here interrupts. No message goes into the scrollback, so the prompt is
+    /// not pushed down mid-sentence; the run is not marked busy, so a command typed
+    /// while it loads is not held back; and the only sign of it is the window title,
+    /// which is the one place a browser lets an application speak without writing to
+    /// the terminal. Failures are kept until the next Tab for the same reason.
+    fn ensure_accounts(self: &Rc<App>) {
+        if self.accounts.borrow().is_some() || self.files.borrow().is_empty() {
+            return;
+        }
+        if self.accounts_loading.replace(true) {
+            return;
+        }
+        self.title("reading account names");
+        self.fetch_accounts();
+    }
+
     /// Ask the engine for the account names, once, so Tab can complete them.
     ///
-    /// On a large journal this is a whole run, several seconds, so it happens
-    /// when someone first presses Tab rather than at startup, and it says so.
+    /// On a large journal this is a whole run, several seconds, so it happens when
+    /// someone first presses Tab rather than at startup.
     fn fetch_accounts(self: &Rc<App>) {
         let files = self.files.borrow().clone();
-        self.busy.set(true);
         let app = Rc::clone(self);
         spawn_local(async move {
             let request =
                 HledgerRequest::new(vec!["hledger".to_string(), "accounts".to_string()], files);
             let outcome = hledger::run(request).await;
-            app.busy.set(false);
+            app.accounts_loading.set(false);
             match outcome {
                 Ok(output) if !output.is_failure() => {
                     let names: Vec<String> = output
@@ -2387,12 +2433,21 @@ impl App {
                         .filter(|line| !line.is_empty())
                         .map(str::to_string)
                         .collect();
-                    let count = names.len();
                     *app.accounts.borrow_mut() = Some(names);
-                    app.announce(&format!("{count} account names ready, press Tab again."));
                 }
-                Ok(output) => app.announce(&output.failure_message()),
-                Err(error) => app.announce(&error.to_string()),
+                Ok(output) => {
+                    *app.accounts_error.borrow_mut() =
+                        Some(format!("Account names could not be read: {}", output.failure_message()));
+                }
+                Err(error) => {
+                    *app.accounts_error.borrow_mut() =
+                        Some(format!("Account names could not be read: {error}"));
+                }
+            }
+            // Leave the title alone while a command is running: that is the more
+            // useful thing for it to be saying.
+            if !app.busy.get() {
+                app.title("");
             }
         });
     }

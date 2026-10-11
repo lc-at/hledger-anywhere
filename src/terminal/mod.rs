@@ -582,24 +582,37 @@ impl Editor {
     /// One match completes outright; several extend as far as they agree, and
     /// otherwise the caller lists them. That is what a shell does, and it is the
     /// behaviour that makes Tab worth pressing twice.
+    ///
+    /// Matching ignores case, in both directions: `EXP` completes `expenses:food`,
+    /// and what goes on the line is the account's own spelling rather than the typed
+    /// one, the way a shell does it. When nothing starts with what was typed, the
+    /// nearest names are offered as a list and the line is left alone: completing a
+    /// guess over someone's typing is worse than showing them the guess.
     pub fn complete(&mut self, candidates: &[String]) -> Completion {
         let token = self.token();
         let mut matches: Vec<&String> = candidates
             .iter()
-            .filter(|candidate| candidate.starts_with(&token))
+            .filter(|candidate| starts_with_ignoring_case(candidate, &token))
             .collect();
         matches.sort();
         matches.dedup();
 
         match matches.as_slice() {
-            [] => Completion::None,
+            [] => {
+                let fuzzy = fuzzy_matches(&token, candidates, FUZZY_LIMIT);
+                if fuzzy.is_empty() {
+                    Completion::None
+                } else {
+                    Completion::Fuzzy(fuzzy)
+                }
+            }
             [only] => {
                 let replacement = format!("{only} ");
                 self.replace_token(&replacement);
                 Completion::Completed
             }
             many => {
-                let prefix = common_prefix(many);
+                let prefix = common_prefix_ignoring_case(many);
                 if prefix.chars().count() > token.chars().count() {
                     self.replace_token(&prefix);
                     Completion::Extended
@@ -736,11 +749,24 @@ pub fn format_columns(items: &[String], width: usize) -> Vec<String> {
 /// What completion did, so the caller knows whether to print the options.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Completion {
+    /// Nothing was there to complete from.
     None,
+    /// One match: it is on the line, with a space after it.
     Completed,
+    /// Several: the line now holds as much as they agree on.
     Extended,
+    /// Several, and no more to agree on: offered as a menu, first one on the line.
     Ambiguous(Vec<String>),
+    /// Nothing starts with what was typed. These come closest, and the line is left
+    /// exactly as it was typed, because a guess must not overwrite typing.
+    Fuzzy(Vec<String>),
 }
+
+/// How many fuzzy matches are worth showing. More than this is a wall of names.
+pub const FUZZY_LIMIT: usize = 12;
+
+/// The shortest token worth matching fuzzily: one letter matches almost everything.
+const FUZZY_MINIMUM: usize = 2;
 
 /// Every word completion can offer: the app's commands, hledger's, the common
 /// flags, and the uploaded file paths.
@@ -778,22 +804,109 @@ pub fn candidates(paths: &[String]) -> Vec<String> {
     all
 }
 
-fn common_prefix(values: &[&String]) -> String {
-    let mut iter = values.iter();
-    let Some(first) = iter.next() else {
+/// Whether two characters are the same letter, whatever their case.
+fn same_ignoring_case(left: char, right: char) -> bool {
+    left == right || left.to_lowercase().eq(right.to_lowercase())
+}
+
+/// Whether `candidate` starts with `token`, ignoring case.
+///
+/// An empty token matches everything, which is what makes a bare Tab list the
+/// commands rather than doing nothing.
+pub fn starts_with_ignoring_case(candidate: &str, token: &str) -> bool {
+    let mut letters = candidate.chars();
+    token
+        .chars()
+        .all(|wanted| letters.next().is_some_and(|found| same_ignoring_case(found, wanted)))
+}
+
+/// As much as every value agrees on, ignoring case, spelled the first value's way.
+///
+/// The spelling matters: completing `EXP` against `expenses:food` and
+/// `expenses:rent` should leave `expenses:`, not `EXPenses:`.
+fn common_prefix_ignoring_case(values: &[&String]) -> String {
+    let Some(first) = values.first() else {
         return String::new();
     };
-    let mut prefix: Vec<char> = first.chars().collect();
-    for value in iter {
-        let other: Vec<char> = value.chars().collect();
-        let shared = prefix
-            .iter()
-            .zip(other.iter())
-            .take_while(|(a, b)| a == b)
-            .count();
-        prefix.truncate(shared);
+    let mut shared = first.chars().count();
+    for value in values.iter().skip(1) {
+        shared = shared.min(
+            first
+                .chars()
+                .zip(value.chars())
+                .take_while(|(a, b)| same_ignoring_case(*a, *b))
+                .count(),
+        );
     }
-    prefix.into_iter().collect()
+    first.chars().take(shared).collect()
+}
+
+/// The names that come closest to `token` without starting with it.
+///
+/// "Closest" is a subsequence match, scored so that the useful ones come first: a
+/// name that contains the token as a run beats one with the letters scattered, a
+/// letter that starts a word (`:` in an account path, say) is worth more than one in
+/// the middle, and between equals the shorter name wins. Sorted best first, and
+/// capped, because a list nobody reads is not help.
+pub fn fuzzy_matches(token: &str, candidates: &[String], limit: usize) -> Vec<String> {
+    let needle: Vec<char> = token.chars().collect();
+    if needle.len() < FUZZY_MINIMUM {
+        return Vec::new();
+    }
+    let mut scored: Vec<(i32, &String)> = candidates
+        .iter()
+        .filter_map(|candidate| fuzzy_score(&needle, candidate).map(|score| (score, candidate)))
+        .collect();
+    scored.sort_by(|(left, a), (right, b)| right.cmp(left).then_with(|| a.cmp(b)));
+
+    let mut best: Vec<String> = Vec::new();
+    for (_, candidate) in scored {
+        if !best.iter().any(|seen| seen == candidate) {
+            best.push(candidate.clone());
+        }
+        if best.len() == limit {
+            break;
+        }
+    }
+    best
+}
+
+/// How well `token` matches `candidate` as a subsequence, or `None` if it does not.
+fn fuzzy_score(needle: &[char], candidate: &str) -> Option<i32> {
+    let letters: Vec<char> = candidate.to_lowercase().chars().collect();
+    let wanted: Vec<char> = needle.iter().flat_map(|c| c.to_lowercase()).collect();
+    let mut score = 0;
+    let mut cursor = 0;
+    let mut previous: Option<usize> = None;
+    for letter in &wanted {
+        let found = cursor + letters[cursor..].iter().position(|c| c == letter)?;
+        // Letters next to each other are a better sign than letters far apart.
+        let expected = previous.map_or(0, |index| index + 1);
+        score -= found as i32 - expected as i32;
+        if found == 0 || starts_a_word(&letters, found) {
+            score += 8;
+        }
+        previous = Some(found);
+        cursor = found + 1;
+    }
+    // A run of the token inside the name is the strongest sign of all.
+    if wanted.len() <= letters.len()
+        && letters.windows(wanted.len()).any(|window| window == wanted.as_slice())
+    {
+        score += 20;
+    }
+    // Between equals, the shorter name is the likelier one.
+    score -= letters.len() as i32 / 4;
+    Some(score)
+}
+
+/// Whether the letter at `index` begins a word: the start of the name, or just after
+/// a separator. Account names are paths, so `f` in `expenses:food` starts one.
+fn starts_a_word(letters: &[char], index: usize) -> bool {
+    matches!(
+        letters.get(index.wrapping_sub(1)),
+        None | Some(':') | Some('-') | Some('_') | Some(' ') | Some('.') | Some('/')
+    )
 }
 
 /// stdout as it should be shown, and a note when it had to be cut.
@@ -1911,8 +2024,10 @@ pub fn help(plugins: &[(&str, &str, &str)]) -> String {
 
     text.push_str(&format!("{}\r\n", bold("Keys")));
     for line in [
-        "Enter runs a command. Tab completes commands, flags, accounts, aliases and paths.",
-        "A second Tab offers a menu: Tab and Shift+Tab step through it, Escape undoes it.",
+        "Enter runs a command. Tab completes commands, flags, accounts, aliases and paths,",
+        "ignoring case. A second Tab offers a menu: Tab and Shift+Tab step through it,",
+        "Escape undoes it. When nothing starts with what you typed, the closest names are",
+        "listed and the line is left as you typed it.",
         "Up and Down recall history. Ctrl+C stops a running command, or clears the line.",
         "Ctrl+A and Ctrl+E are the ends of the line, Ctrl+B and Ctrl+F move by character,",
         "Alt+B and Alt+F by word. Ctrl+K, Ctrl+U and Ctrl+W cut to the end, the start and",
@@ -2153,6 +2268,95 @@ mod tests {
             other => panic!("expected an ambiguous completion, got {other:?}"),
         }
         assert_eq!(e.line(), "prices", "the first candidate goes on the line");
+    }
+
+    #[test]
+    fn tab_ignores_case_in_both_directions() {
+        // Typed in the wrong case, completed in the right one: what goes on the line
+        // is the account's own spelling, not the typed one.
+        let mut e = Editor::default();
+        e.insert("EXP");
+        let offered = options(&["expenses:food", "expenses:rent"]);
+        assert_eq!(e.complete(&offered), Completion::Extended);
+        assert_eq!(e.line(), "expenses:");
+
+        let mut e = Editor::default();
+        e.insert("BaLaNcE");
+        assert_eq!(e.complete(&options(&["balance"])), Completion::Completed);
+        assert_eq!(e.line(), "balance ");
+    }
+
+    #[test]
+    fn a_case_insensitive_match_still_extends_the_token_that_was_typed() {
+        // The common prefix has to come from the candidates, not from the typed
+        // token, or completing "ex" against two expenses would leave "ex".
+        let mut e = Editor::default();
+        e.insert("ex");
+        assert_eq!(
+            e.complete(&options(&["Expenses:food", "expenses:rent"])),
+            Completion::Extended
+        );
+        assert_eq!(e.line(), "Expenses:");
+    }
+
+    #[test]
+    fn when_nothing_starts_with_the_token_the_closest_names_are_offered() {
+        let mut e = Editor::default();
+        e.insert("bnc");
+        let offered = options(&["balance", "income", "expenses:food"]);
+        match e.complete(&offered) {
+            Completion::Fuzzy(closest) => {
+                assert_eq!(closest, vec!["balance".to_string()], "bnc is balance as a subsequence");
+            }
+            other => panic!("expected closest names, got {other:?}"),
+        }
+        // The point of the whole thing: a guess is offered, never typed over what
+        // someone wrote.
+        assert_eq!(e.line(), "bnc", "the line is left exactly as it was typed");
+    }
+
+    #[test]
+    fn a_fuzzy_list_is_ranked_best_first_and_capped() {
+        let offered = options(&["housing:food", "expenses:food", "food:snacks"]);
+        assert_eq!(
+            fuzzy_matches("food", &offered, FUZZY_LIMIT),
+            vec![
+                "food:snacks".to_string(),
+                "housing:food".to_string(),
+                "expenses:food".to_string()
+            ],
+            "the earliest match wins: all three contain food, food:snacks at the start, \
+             then housing:food, then expenses:food"
+        );
+
+        let many: Vec<String> = (0..40).map(|index| format!("account{index}bnc")).collect();
+        assert_eq!(fuzzy_matches("bnc", &many, FUZZY_LIMIT).len(), FUZZY_LIMIT);
+        assert_eq!(fuzzy_matches("bnc", &many, FUZZY_LIMIT)[0], "account0bnc");
+    }
+
+    #[test]
+    fn a_letter_or_two_is_not_worth_guessing_at() {
+        let offered = options(&["balance", "income"]);
+        // One letter matches nearly everything, so it is not offered as a guess.
+        let mut e = Editor::default();
+        e.insert("z");
+        assert_eq!(e.complete(&offered), Completion::None);
+
+        // Nothing resembles it either.
+        let mut e = Editor::default();
+        e.insert("qqqq");
+        assert_eq!(e.complete(&offered), Completion::None);
+    }
+
+    #[test]
+    fn the_closest_names_are_shown_without_opening_a_menu() {
+        // A menu would put its first candidate on the line. Closest names must not:
+        // there is nothing to step through until the line has been changed to match
+        // it, and Tab never changes the line for a guess.
+        let mut e = Editor::default();
+        e.insert("bnc");
+        let _ = e.complete(&options(&["balance", "income"]));
+        assert!(!e.menu_next(), "no menu was opened");
     }
 
     fn options(items: &[&str]) -> Vec<String> {

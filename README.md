@@ -118,10 +118,13 @@ Everything that is not in this table is passed to hledger verbatim.
 ### Keys
 
 **Enter** runs. **Tab** completes hledger's commands and flags, account names, your
-aliases, and the paths of loaded files. When there is more than one option left, a
-second Tab lists them in columns and puts the first on the line; every Tab after that
-steps to the next one, Shift+Tab steps back, and Escape puts back what you typed. The
-choice is made by pressing Tab, not by typing the rest of it. While a command runs, the
+aliases, and the paths of loaded files. Matching **ignores case**, and what lands on the
+line is the account's own spelling: `EXP` completes to `expenses:`. When there is more
+than one option left, a second Tab lists them in columns and puts the first on the line;
+every Tab after that steps to the next one, Shift+Tab steps back, and Escape puts back
+what you typed. The choice is made by pressing Tab, not by typing the rest of it. When
+nothing starts with what you typed, the closest names are listed instead, and the line is
+left exactly as you wrote it: a guess is worth showing you, not worth typing over you. While a command runs, the
 window title says which one, since a report on a large journal takes a few seconds and
 the terminal is silent until it has something to print. **↑/↓** recall history (the last 100
 commands, kept between visits). **Ctrl+C** stops a running command, or clears the
@@ -153,7 +156,13 @@ find the thing you typed it into.
 
 Account names for completion are fetched the **first time you press Tab** with a
 journal loaded, rather than at startup: on a large journal that fetch is a whole
-engine run, and it should be something you asked for.
+engine run, and it should be something you asked for. It never makes you wait for it.
+That Tab completes from the commands, flags, aliases, paths and plugin words already
+at hand, and the names are there for the next Tab. Nothing about the wait is written
+into the terminal, so the prompt is not pushed down and the line is not disturbed
+while you type; the window title says account names are being read, and if they cannot
+be read at all, the app says so the next time you press Tab, when it is not in the
+middle of a sentence.
 
 ## Loading a journal
 
