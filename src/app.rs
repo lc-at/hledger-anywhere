@@ -846,41 +846,60 @@ impl App {
             self.say(&terminal::dim(&why));
         }
 
-        let paths = self.paths();
-        let mut candidates = terminal::candidates(&paths);
-        if let Some(accounts) = self.accounts.borrow().as_ref() {
-            candidates.extend(accounts.iter().cloned());
+        // Where the cursor is decides what can be there: the start of a line takes
+        // commands, and anything after it takes flags, accounts, aliases and paths. Tab
+        // on an empty line lists the commands rather than completing one of them.
+        let first = self.editor.borrow().at_command_position();
+        let mut candidates = if first {
+            terminal::starting_words()
+        } else {
+            terminal::argument_words(&self.paths())
+        };
+        if !first {
+            if let Some(accounts) = self.accounts.borrow().as_ref() {
+                candidates.extend(accounts.iter().cloned());
+            }
+            candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
+            candidates.extend(self.registry.borrow().words());
         }
-        candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
-        candidates.extend(self.registry.borrow().words());
 
         match self.editor.borrow_mut().complete(&candidates) {
-            Completion::Ambiguous(options) => {
-                // The prompt is already on the line, so it is cleared first: the list
-                // belongs above it, not appended to the command being typed. It is
-                // printed once; stepping through afterwards changes the line only.
-                self.screen.write("\r\u{1b}[K");
-                let (columns, _) = self.screen.size();
-                for line in terminal::format_columns(&options, columns as usize) {
-                    self.remember_chatter(&line);
-                    self.block(&line, Some(&terminal::dim_escape()));
-                }
-            }
+            // The menu case: the line already shows the choice, so no heading.
+            Completion::Ambiguous(options) => self.show_options(&options, ""),
+            Completion::Listed(options) => self.show_options(
+                &options,
+                if first {
+                    "Commands you can run:"
+                } else {
+                    "Flags, accounts and paths:"
+                },
+            ),
             Completion::Fuzzy(options) => {
-                // No menu, and nothing on the line: this is a list to read, not a
-                // choice made on someone's behalf. The line is redrawn as typed.
-                self.screen.write("\r\u{1b}[K");
-                let (columns, _) = self.screen.size();
-                let mut lines = vec!["Nothing starts with that. Closest names:".to_string()];
-                lines.extend(terminal::format_columns(&options, columns as usize));
-                for line in lines {
-                    self.remember_chatter(&line);
-                    self.block(&line, Some(&terminal::dim_escape()));
-                }
+                self.show_options(&options, "Nothing starts with that. Closest names:")
             }
             Completion::None | Completion::Completed | Completion::Extended => {}
         }
         self.prompt();
+    }
+
+    /// List candidates above the prompt, leaving the line exactly as it was.
+    ///
+    /// The prompt is already on the line, so it is cleared first: the list belongs above
+    /// it, not appended to the command being typed. It is printed once, and stepping
+    /// through a menu afterwards changes the line only. An empty heading is allowed,
+    /// for the menu case, where the line itself shows what was chosen.
+    fn show_options(&self, options: &[String], heading: &str) {
+        self.screen.write("\r\u{1b}[K");
+        let (columns, _) = self.screen.size();
+        let mut lines: Vec<String> = Vec::new();
+        if !heading.is_empty() {
+            lines.push(heading.to_string());
+        }
+        lines.extend(terminal::format_columns(options, columns as usize));
+        for line in lines {
+            self.remember_chatter(&line);
+            self.block(&line, Some(&terminal::dim_escape()));
+        }
     }
 
     /// The uploaded paths, in upload order.

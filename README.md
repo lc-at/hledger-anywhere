@@ -124,7 +124,12 @@ than one option left, a second Tab lists them in columns and puts the first on t
 every Tab after that steps to the next one, Shift+Tab steps back, and Escape puts back
 what you typed. The choice is made by pressing Tab, not by typing the rest of it. When
 nothing starts with what you typed, the closest names are listed instead, and the line is
-left exactly as you wrote it: a guess is worth showing you, not worth typing over you. While a command runs, the
+left exactly as you wrote it: a guess is worth showing you, not worth typing over you.
+
+Tab on an **empty line** lists the commands you can run, the app's own first, rather than
+completing one of them for you. Tab after a command lists the flags, accounts, aliases and
+paths that can follow it. Neither touches what you have typed, because there was nothing there
+to complete from. While a command runs, the
 window title says which one, since a report on a large journal takes a few seconds and
 the terminal is silent until it has something to print. **↑/↓** recall history (the last 100
 commands, kept between visits). **Ctrl+C** stops a running command, or clears the

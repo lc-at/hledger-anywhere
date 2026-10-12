@@ -568,6 +568,17 @@ impl Editor {
         self.history.push(line.to_string());
     }
 
+    /// Whether the cursor is in the first word of the line.
+    ///
+    /// What can be typed at the start of a line is not what can be typed after it: one
+    /// takes commands, the other takes flags, accounts and paths. Tab shows different
+    /// lists in the two places, so it has to be able to tell them apart.
+    pub fn at_command_position(&self) -> bool {
+        !self.chars[..self.cursor]
+            .iter()
+            .any(|character| character.is_whitespace())
+    }
+
     /// The token under the cursor, for completion.
     pub fn token(&self) -> String {
         let head: String = self.chars[..self.cursor].iter().collect();
@@ -590,6 +601,25 @@ impl Editor {
     /// guess over someone's typing is worse than showing them the guess.
     pub fn complete(&mut self, candidates: &[String]) -> Completion {
         let token = self.token();
+        if token.is_empty() {
+            // Nothing was typed, so there is nothing to complete *from*. Every
+            // candidate matches an empty token, and completing one of them would type
+            // a guess onto an empty line: press Tab to see what there is and end up
+            // with `--account` in front of you. So the candidates are listed, in the
+            // order they were offered, and the line is left alone.
+            let mut offered: Vec<String> = Vec::new();
+            for candidate in candidates {
+                if !offered.contains(candidate) {
+                    offered.push(candidate.clone());
+                }
+            }
+            return if offered.is_empty() {
+                Completion::None
+            } else {
+                Completion::Listed(offered)
+            };
+        }
+
         let mut matches: Vec<&String> = candidates
             .iter()
             .filter(|candidate| starts_with_ignoring_case(candidate, &token))
@@ -757,6 +787,9 @@ pub enum Completion {
     Extended,
     /// Several, and no more to agree on: offered as a menu, first one on the line.
     Ambiguous(Vec<String>),
+    /// Nothing was typed to complete, or *where* it was typed offers these: listed
+    /// above the prompt, with the line left exactly as it was.
+    Listed(Vec<String>),
     /// Nothing starts with what was typed. These come closest, and the line is left
     /// exactly as it was typed, because a guess must not overwrite typing.
     Fuzzy(Vec<String>),
@@ -796,10 +829,22 @@ pub const COMMANDS: &[&str] = &[
     "find",
 ];
 
-pub fn candidates(paths: &[String]) -> Vec<String> {
+/// The words a line can start with: the app's own commands, then hledger's reports.
+///
+/// In that order rather than alphabetically, because this is also the list Tab shows on
+/// an empty line, and the app's own commands are the ones worth learning first.
+pub fn starting_words() -> Vec<String> {
     let mut all: Vec<String> = COMMANDS.iter().map(|word| (*word).to_string()).collect();
     all.extend(HLEDGER_COMMANDS.iter().map(|word| (*word).to_string()));
-    all.extend(FLAGS.iter().map(|word| (*word).to_string()));
+    all
+}
+
+/// The words that can follow: report and query flags, then the loaded file paths.
+///
+/// Accounts, aliases and plugin words are added by the caller, which is the only side
+/// that knows whether they have arrived yet.
+pub fn argument_words(paths: &[String]) -> Vec<String> {
+    let mut all: Vec<String> = FLAGS.iter().map(|word| (*word).to_string()).collect();
     all.extend(paths.iter().cloned());
     all
 }
@@ -2026,8 +2071,9 @@ pub fn help(plugins: &[(&str, &str, &str)]) -> String {
     for line in [
         "Enter runs a command. Tab completes commands, flags, accounts, aliases and paths,",
         "ignoring case. A second Tab offers a menu: Tab and Shift+Tab step through it,",
-        "Escape undoes it. When nothing starts with what you typed, the closest names are",
-        "listed and the line is left as you typed it.",
+        "Escape undoes it. Tab on an empty line lists the commands you can run; when the",
+        "start of a word matches nothing, the closest names are listed instead. Either way",
+        "the line is left exactly as you typed it.",
         "Up and Down recall history. Ctrl+C stops a running command, or clears the line.",
         "Ctrl+A and Ctrl+E are the ends of the line, Ctrl+B and Ctrl+F move by character,",
         "Alt+B and Alt+F by word. Ctrl+K, Ctrl+U and Ctrl+W cut to the end, the start and",
@@ -2245,7 +2291,7 @@ mod tests {
         // next test's subject.
         let mut e = Editor::default();
         e.insert("cash");
-        assert_eq!(e.complete(&candidates(&[])), Completion::Completed);
+        assert_eq!(e.complete(&everything()), Completion::Completed);
         assert_eq!(e.line(), "cashflow ");
     }
 
@@ -2255,12 +2301,12 @@ mod tests {
         e.insert("pr");
         // prices / print / print-unique agree up to "pri", so Tab extends that
         // far and stops.
-        assert_eq!(e.complete(&candidates(&[])), Completion::Extended);
+        assert_eq!(e.complete(&everything()), Completion::Extended);
         assert_eq!(e.line(), "pri");
 
         // A second Tab has nothing left to extend, so it lists the options and
         // offers the first of them.
-        match e.complete(&candidates(&[])) {
+        match e.complete(&everything()) {
             Completion::Ambiguous(options) => {
                 assert!(options.contains(&"print".to_string()));
                 assert!(options.contains(&"print-unique".to_string()));
@@ -2361,6 +2407,67 @@ mod tests {
 
     fn options(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_string()).collect()
+    }
+
+    /// Everything a line can be completed from, as one list.
+    fn everything() -> Vec<String> {
+        everything_with(&[])
+    }
+
+    fn everything_with(paths: &[String]) -> Vec<String> {
+        let mut all = starting_words();
+        all.extend(argument_words(paths));
+        all
+    }
+
+    #[test]
+    fn tab_on_an_empty_line_lists_the_commands_instead_of_guessing() {
+        let mut e = Editor::default();
+        match e.complete(&starting_words()) {
+            Completion::Listed(offered) => {
+                assert_eq!(
+                    offered[0], "upload",
+                    "the app's own commands come first: they are the ones worth learning"
+                );
+                assert!(offered.contains(&"balance".to_string()));
+                assert!(
+                    !offered.iter().any(|word| word.starts_with('-')),
+                    "a flag cannot start a line, so it is not offered as one"
+                );
+            }
+            other => panic!("expected a list, got {other:?}"),
+        }
+        assert_eq!(
+            e.line(),
+            "",
+            "an empty line stays empty: Tab must never type a guess into it"
+        );
+    }
+
+    #[test]
+    fn tab_after_a_command_lists_what_can_follow_it() {
+        let mut e = Editor::default();
+        e.insert("balance ");
+        assert!(!e.at_command_position());
+        let offered = argument_words(&[]);
+        match e.complete(&offered) {
+            Completion::Listed(listed) => {
+                assert!(listed.iter().any(|word| word.starts_with("--")), "the flags are there");
+                assert!(!listed.contains(&"balance".to_string()), "a command does not follow one");
+            }
+            other => panic!("expected a list, got {other:?}"),
+        }
+        assert_eq!(e.line(), "balance ", "the line is left alone");
+    }
+
+    #[test]
+    fn the_first_word_is_where_the_commands_go() {
+        let mut e = Editor::default();
+        assert!(e.at_command_position());
+        e.insert("bal");
+        assert!(e.at_command_position(), "still the first word");
+        e.insert(" ");
+        assert!(!e.at_command_position(), "past it now");
     }
 
     #[test]
@@ -2504,13 +2611,15 @@ mod tests {
 
     #[test]
     fn completion_offers_something_for_a_bare_tab_and_for_paths() {
+        // A bare Tab has nothing to complete from, so it lists what can be typed
+        // there rather than choosing one of them for you.
         let mut e = Editor::default();
-        assert!(matches!(e.complete(&candidates(&[])), Completion::Ambiguous(_)));
+        assert!(matches!(e.complete(&everything()), Completion::Listed(_)));
 
         let mut e = Editor::default();
         e.insert("books/2024");
         let paths = vec!["books/2024.journal".to_string()];
-        assert_eq!(e.complete(&candidates(&paths)), Completion::Completed);
+        assert_eq!(e.complete(&everything_with(&paths)), Completion::Completed);
         assert_eq!(e.line(), "books/2024.journal ");
     }
 
@@ -2526,7 +2635,7 @@ mod tests {
         e.right();
         e.right();
         assert_eq!(e.token(), "stat");
-        assert_eq!(e.complete(&candidates(&[])), Completion::Completed);
+        assert_eq!(e.complete(&everything()), Completion::Completed);
         assert_eq!(e.line(), "stats  assets");
         // The cursor sits just after the completed word, before the tail.
         assert_eq!(e.cursor(), 6);
