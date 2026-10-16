@@ -217,6 +217,9 @@ pub enum Command<'a> {
     /// Open a directory on disk through the File System Access API, keeping the
     /// paths and the handles so its files can be edited.
     Open,
+    /// Take back the folder an earlier `open` was granted, re-granting write
+    /// access after a reload dropped it.
+    Reopen,
     /// Show or change which uploaded file is the journal.
     Journal(Option<&'a str>),
     /// Wipe the screen.
@@ -270,6 +273,7 @@ pub fn classify(line: &str) -> Command<'_> {
     match head {
         "upload" => Command::Upload,
         "open" => Command::Open,
+        "reopen" => Command::Reopen,
         "journal" => Command::Journal((!rest.is_empty()).then_some(rest)),
         "clear" => Command::Clear,
         "?" => Command::Help,
@@ -812,6 +816,7 @@ const FUZZY_MINIMUM: usize = 2;
 pub const COMMANDS: &[&str] = &[
     "upload",
     "open",
+    "reopen",
     "journal",
     "clear",
     "?",
@@ -1998,6 +2003,20 @@ pub fn resumed(count: usize, main: &str) -> String {
     )
 }
 
+/// What the terminal prints when a folder is remembered but its write access has
+/// to be granted again.
+///
+/// A browser drops a directory handle's write permission when the page reloads and
+/// will only give it back on a gesture, so the app has to ask for one by name.
+pub fn folder_remembered() -> String {
+    format!(
+        "Your folder is remembered. Type {} to grant write access again and read it \
+         from disk, or {} to choose another.\r\n",
+        bold("reopen"),
+        bold("open")
+    )
+}
+
 /// What the terminal prints after files arrive, from wherever they came.
 ///
 /// `source` is the verb: files are uploaded, dropped or read from an account, and
@@ -2152,6 +2171,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("upload", "add journal files"),
             ("open", "open a folder on disk, editable"),
+            ("reopen", "take back the remembered folder, and write to it again"),
             ("demo", "load the sample journal"),
             ("journal [path]", "list the loaded files, or read a different one"),
             ("download <path>", "save a file into your browser's downloads"),
@@ -2711,6 +2731,7 @@ mod tests {
         assert_eq!(classify("upload"), Command::Upload);
         assert_eq!(classify("  upload  "), Command::Upload);
         assert_eq!(classify("open"), Command::Open);
+        assert_eq!(classify("reopen"), Command::Reopen);
         assert_eq!(classify("clear"), Command::Clear);
         assert_eq!(classify("?"), Command::Help);
         assert_eq!(classify("journal"), Command::Journal(None));
@@ -2900,6 +2921,16 @@ mod tests {
                 "an em dash reached the terminal: {visible:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_remembered_folder_says_how_to_take_it_back() {
+        // The hint is the only thing that tells anyone `reopen` exists, and it is
+        // read at the moment a folder has quietly stopped being writable.
+        let text = plain(&folder_remembered());
+        assert!(text.contains("remembered"), "{text}");
+        assert!(text.contains("reopen"), "{text}");
+        assert!(text.contains("open"), "{text}");
     }
 
     #[test]

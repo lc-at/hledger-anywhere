@@ -94,6 +94,7 @@ Everything that is not in this table is passed to hledger verbatim.
 |---|---|
 | `upload` | Choose files to add. **Replaces** what is loaded, so uploading the same set again is how you update it. Up to 5 MB per file, 50 MB in total. |
 | `open` | Choose a folder on disk, keeping the paths inside it, what a journal split into `2024.journal`, `2025.journal` and `prices/` needs. Through the File System Access API, so the files stay editable with `edit`. Falls back to a plain read-only folder picker where the API is unavailable. |
+| `reopen` | Take the folder back after a reload. A browser drops a remembered folder's write access when the page reloads and only gives it back on a gesture, so this asks for it and reads the folder from disk again. |
 | `demo` | Load a small built-in journal, so the app can be tried without uploading anything. |
 | `journal` | List the loaded files and mark the one being read. |
 | `journal <path>` | Read a different loaded file. |
@@ -345,6 +346,12 @@ is read-only.
 and keeps the browser's handle to it, so `edit` can write a journal back and a save
 changes the file on disk. Nothing else writes: the change is yours, made by the editor,
 not something a report did behind your back.
+
+The handle is remembered in the browser's cache, so a later visit can read the same
+folder without picking it again. Write access is not remembered: a browser drops it when
+the page reloads and will only give it back in response to something you did, so the
+terminal says the folder is remembered and `reopen` is what asks for it. Until then the
+folder reads normally and saves are refused, the same as any other read-only file.
 
 What that means:
 

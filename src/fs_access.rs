@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use js_sys::{Promise, Reflect};
+use js_sys::{JsString, Promise, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -133,6 +133,20 @@ pub async fn query_write(root: &FileSystemDirectoryHandle) -> bool {
         .and_then(|value| value.as_string())
         .as_deref()
         == Some("granted")
+}
+
+/// Ask the browser to grant `readwrite` on a directory that was remembered from an
+/// earlier visit.
+///
+/// **Deliberately not `async fn`**, for the same reason the picker is not: a
+/// permission request only succeeds while the user's gesture is still being
+/// handled, so the call has to be made from the command that keystroke produced.
+/// Returns the promise to await.
+pub fn request_write(root: &FileSystemDirectoryHandle) -> Promise<JsString> {
+    let descriptor = FileSystemHandlePermissionDescriptor::new();
+    descriptor.set_mode(FileSystemPermissionMode::Readwrite);
+    let handle: &FileSystemHandle = root.unchecked_ref();
+    handle.request_permission_with_descriptor(&descriptor)
 }
 
 /// The file's size and modification time on disk, for the conflict check.

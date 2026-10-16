@@ -54,6 +54,9 @@ const HANDLES_STORE: &str = "handles";
 /// The key the `handles` store's one record lives under.
 const ROOT_KEY: &str = "root";
 
+/// The field of that record holding the handle itself.
+const HANDLE_FIELD: &str = "handle";
+
 /// The metadata record this module writes.
 const SESSION_KEY: &str = "terminal_session";
 
@@ -221,14 +224,21 @@ impl Store {
     /// Remember the directory `open` was granted, so a returning visit can write
     /// without picking the folder again.
     pub async fn save_handle(&self, root: &FileSystemDirectoryHandle) -> Result<(), idb::Error> {
+        // The store has a key path, so the key belongs *in* the record. Passing it
+        // beside the value instead — `put(value, Some(key))` — makes the browser
+        // extract the key from the value with the key path and throw `DataError`
+        // when it does not match, which is how an earlier version of this saved
+        // nothing at all and left every reopened visit read-only.
+        //
+        // The handle is a structured clone, not JSON, so it travels in the record
+        // as it is; `save_session` writes its key the same way.
+        let value: JsValue = handle_record(root).into();
         let transaction = self
             .db
             .transaction(&[HANDLES_STORE], idb::TransactionMode::ReadWrite)?;
         {
             let store = transaction.object_store(HANDLES_STORE)?;
-            // A handle is a structured clone, not JSON: it is stored as-is.
-            let value = JsValue::from(root.clone());
-            let _ = store.put(&value, Some(&JsValue::from_str(ROOT_KEY)))?.await?;
+            let _ = store.put(&value, None)?.await?;
         }
         transaction.await?;
         Ok(())
@@ -244,7 +254,11 @@ impl Store {
             store.get(JsValue::from_str(ROOT_KEY))?.await?
         };
         transaction.await?;
-        Ok(record.and_then(|value| value.dyn_into().ok()))
+        Ok(record.and_then(|record| {
+            js_sys::Reflect::get(&record, &JsValue::from_str(HANDLE_FIELD))
+                .ok()
+                .and_then(|handle| handle.dyn_into().ok())
+        }))
     }
 }
 
@@ -259,6 +273,22 @@ fn to_json<T: Serialize>(value: &T) -> Result<String, idb::Error> {
 /// Parse a JSON string into the JS value IndexedDB stores.
 fn json_to_js(json: &str) -> Result<JsValue, idb::Error> {
     js_sys::JSON::parse(json).map_err(|error| idb::Error::UnexpectedJsType("a JSON string", error))
+}
+
+/// The `handles` store's one record: the store's key, and the handle beside it.
+fn handle_record(root: &FileSystemDirectoryHandle) -> js_sys::Object {
+    let record = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &record,
+        &JsValue::from_str(META_KEY_PATH),
+        &JsValue::from_str(ROOT_KEY),
+    );
+    let _ = js_sys::Reflect::set(
+        &record,
+        &JsValue::from_str(HANDLE_FIELD),
+        &JsValue::from(root.clone()),
+    );
+    record
 }
 
 /// Decode a stored JS record into `T`, or `None` if it is not the shape this

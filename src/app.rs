@@ -21,8 +21,8 @@ use std::rc::Rc;
 use js_sys::{Object, Promise, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::spawn_local;
-use web_sys::HtmlElement;
+use wasm_bindgen_futures::{spawn_local, JsFuture};
+use web_sys::{FileSystemDirectoryHandle, HtmlElement};
 
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
 use crate::fs_access::{self, Opened};
@@ -311,6 +311,9 @@ struct App {
     /// The opened directory, its handles and their stats, when the loaded files
     /// came from `open` and can be written back.
     writable: RefCell<Option<Opened>>,
+    /// A directory remembered from an earlier visit whose write access the browser
+    /// has not re-granted yet. `reopen` turns it back into a `writable`.
+    remembered: RefCell<Option<FileSystemDirectoryHandle>>,
     /// Account names for completion: fetched once per journal, on the first Tab,
     /// because on a large journal that fetch is a whole engine run.
     accounts: RefCell<Option<Vec<String>>>,
@@ -361,6 +364,7 @@ impl App {
             last_hit: RefCell::new(None),
             written: RefCell::new(Vec::new()),
             writable: RefCell::new(None),
+            remembered: RefCell::new(None),
             accounts: RefCell::new(None),
             accounts_loading: Cell::new(false),
             accounts_error: RefCell::new(None),
@@ -973,6 +977,7 @@ impl App {
             }
             Command::Upload => self.upload(upload::Mode::Files),
             Command::Open => self.open(),
+            Command::Reopen => self.reopen(),
             Command::Demo => self.load_demo(),
             Command::Alias(None) => {
                 let listing = terminal::alias_list(&self.aliases.borrow());
@@ -1199,6 +1204,53 @@ impl App {
         });
     }
 
+    /// Take back the folder an earlier `open` was granted.
+    ///
+    /// A reload leaves the stored handle in place but the browser drops its write
+    /// permission back to "ask", and asking needs a gesture — so this is the
+    /// gesture. The request goes out synchronously, from the command the keystroke
+    /// produced, for the same reason the folder picker does.
+    fn reopen(self: &Rc<App>) {
+        let Some(root) = self.remembered.borrow().clone() else {
+            self.announce(&format!(
+                "There is no remembered folder to reopen. {} chooses one, and remembers \
+                 it for next time.",
+                terminal::bold("open")
+            ));
+            return;
+        };
+        let granted = if fs_access::available() {
+            Some(fs_access::request_write(&root))
+        } else {
+            None
+        };
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            let Some(granted) = granted else {
+                app.announce("This browser cannot grant write access to a folder.");
+                return;
+            };
+            let allowed = JsFuture::from(granted)
+                .await
+                .ok()
+                .and_then(|answer| answer.as_string())
+                .as_deref()
+                == Some("granted");
+            if !allowed {
+                app.announce(&format!(
+                    "The browser did not grant write access, so the folder stays \
+                     read-only. {} asks again.",
+                    terminal::bold("reopen")
+                ));
+                return;
+            }
+            match fs_access::read_directory(root).await {
+                Ok(opened) => app.accept_opened(opened),
+                Err(error) => app.announce(&error.message()),
+            }
+        });
+    }
+
     fn accept_opened(self: &Rc<App>, opened: Opened) {
         let paths = opened
             .picked
@@ -1220,6 +1272,8 @@ impl App {
         *self.main.borrow_mut() = main;
         *self.accounts.borrow_mut() = None;
         *self.writable.borrow_mut() = Some(opened);
+        // It is granted and loaded now, so it is no longer only remembered.
+        *self.remembered.borrow_mut() = None;
 
         // Remember the grant, so a returning visit can write without re-picking.
         if let Some(store) = self.store.borrow().as_ref().cloned() {
@@ -2719,24 +2773,31 @@ async fn boot(app: Rc<App>) {
 
             // A folder opened on a previous visit: if the browser still grants
             // write access, read it fresh from disk so it is editable again.
-            if let Some(root) = handle
-                && fs_access::query_write(&root).await
-                && let Ok(opened) = fs_access::read_directory(root).await
-            {
-                let main = session
-                    .main_journal
-                    .filter(|path| opened.picked.files.iter().any(|file| &file.path == path))
-                    .or_else(|| journal::choose_main(&opened.picked.files));
-                *app.files.borrow_mut() = opened.picked.files.clone();
-                *app.main.borrow_mut() = main.clone();
-                *app.writable.borrow_mut() = Some(opened);
-                app.configure();
-                state = match main {
-                    Some(main) => terminal::resumed(app.files.borrow().len(), &main),
-                    None => {
-                        "Opened your folder, but none of it looks like a journal.".to_string()
-                    }
-                };
+            // Usually it does not — a reload drops the permission back to "ask",
+            // and only a gesture can restore it — so the handle is kept for
+            // `reopen` and the terminal says so.
+            if let Some(root) = handle {
+                if fs_access::query_write(&root).await
+                    && let Ok(opened) = fs_access::read_directory(root.clone()).await
+                {
+                    let main = session
+                        .main_journal
+                        .filter(|path| opened.picked.files.iter().any(|file| &file.path == path))
+                        .or_else(|| journal::choose_main(&opened.picked.files));
+                    *app.files.borrow_mut() = opened.picked.files.clone();
+                    *app.main.borrow_mut() = main.clone();
+                    *app.writable.borrow_mut() = Some(opened);
+                    app.configure();
+                    state = match main {
+                        Some(main) => terminal::resumed(app.files.borrow().len(), &main),
+                        None => {
+                            "Opened your folder, but none of it looks like a journal.".to_string()
+                        }
+                    };
+                } else {
+                    *app.remembered.borrow_mut() = Some(root);
+                    state.push_str(&terminal::folder_remembered());
+                }
             }
         }
         Err(_) => {
