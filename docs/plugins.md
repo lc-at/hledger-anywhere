@@ -100,11 +100,19 @@ promise, is reported as the plugin failing.
 | `host.colors()` | The colours of the theme in use: `background`, `foreground`, `cursor`, `accent`, `dim`. Read on each call, so a window a plugin opens matches the terminal it came from. |
 | `host.setting(key)` | A setting this plugin remembered, or `null`. |
 | `host.remember(key, value)` | Remembers it, in the app's settings. |
+| `host.files()` | The loaded files, as an array of `{path, writable, main}`. `writable` is true only for files that came from an `open`ed folder; `main` marks the journal hledger reads. |
+| `host.read(path)` | One loaded file's contents, or `null`. |
+| `host.save(path, contents)` | Writes a file back to the folder an `open` granted. Resolves with `{ok: true}` or `{error: "..."}` — it never rejects. Refuses if the file changed on disk since it was opened. |
 
 `host.hledger` accepts anything the command line accepts, and is bound by the same rules:
 `add` and `import` are refused, and `-o` may not write over a loaded file. A command that
 fails rejects rather than resolving with an empty string, so a plugin cannot mistake
 failure for no data.
+
+`host.read` and `host.save` are how a plugin edits a journal. They only touch files the
+visitor granted write access to with `open`: everything else is read-only, and a save to
+a read-only path reports an error rather than writing somewhere the app has no handle
+for.
 
 Two things worth knowing:
 

@@ -14,7 +14,7 @@ deliberately connect a remoteStorage account (see [remoteStorage](#remotestorage
   A terminal for hledger, running entirely in this tab.
   Drop journal files on this window, or type:
     upload       add journal files
-    upload_dir   add a folder, keeping its structure
+    open         open a folder on disk, editable
     demo         try the sample journal
     ?            every command and key
   No journal is loaded yet.
@@ -93,7 +93,7 @@ Everything that is not in this table is passed to hledger verbatim.
 | Command | What it does |
 |---|---|
 | `upload` | Choose files to add. **Replaces** what is loaded, so uploading the same set again is how you update it. Up to 5 MB per file, 50 MB in total. |
-| `upload_dir` | Choose a folder, keeping the paths inside it, what a journal split into `2024.journal`, `2025.journal` and `prices/` needs. |
+| `open` | Choose a folder on disk, keeping the paths inside it, what a journal split into `2024.journal`, `2025.journal` and `prices/` needs. Through the File System Access API, so the files stay editable with `edit`. Falls back to a plain read-only folder picker where the API is unavailable. |
 | `demo` | Load a small built-in journal, so the app can be tried without uploading anything. |
 | `journal` | List the loaded files and mark the one being read. |
 | `journal <path>` | Read a different loaded file. |
@@ -175,7 +175,7 @@ Four ways in, and all of them end with the same result: files mounted for the en
 one of them chosen as the journal to read and shown in the prompt.
 
 - **`upload`**, pick files.
-- **`upload_dir`**, pick a folder, keeping its structure.
+- **`open`**, pick a folder on disk, keeping its structure and staying editable.
 - **Drag and drop** files anywhere on the page; it outlines itself while a drag is
   over it. Dropped files land at the root, like `upload`.
 - **`demo`**, a small built-in journal, in two files so that `include` resolves.
@@ -271,9 +271,11 @@ The manifest is authoritative for the words, the help text and the completion, s
 installed repository costs one fetch and runs no code until one of its commands is used.
 Plugins get a small API and nothing more: `host.hledger(command)` to run hledger,
 `host.say(text)` to print, `host.window(title)` to open a window, `host.colors()` for the
-theme in use, and their own settings.
-The read-only rule applies to them exactly as it does to the command line, so a plugin
-cannot change a journal either.
+theme in use, their own settings, and — through `host.files()`, `host.read(path)` and
+`host.save(path, contents)` — read and write the files an `open` made editable. The bundled
+`edit` plugin uses those three to edit a journal in a window; anything else that calls
+`host.save` is bound by the same rule: only files from an `open`ed folder can be written,
+and a file that changed on disk since it was opened is refused rather than clobbered.
 
 A repository may be any URL this page can fetch, including on another host, and a plugin
 is code running in this page with the page's own reach: you name it, so you trust it. See
@@ -333,11 +335,16 @@ refused, and anything unusable is reported rather than silently applied. That is
 makes it safe to carry settings from an older or a newer instance, or from a file you
 edited by hand.
 
-## Read-only, for now
+## Read-only, except where you `open`
 
-This session cannot change a journal, and that is on purpose. The job here is to read
-and report, and a report is easier to trust when nothing it read has changed underneath
-it.
+Reports never change the journal, and that is on purpose: a report is easier to trust
+when nothing it read has changed underneath it. What `upload`, `remote` and `demo` load
+is read-only.
+
+`open` is the exception. It mounts a folder on disk through the File System Access API
+and keeps the browser's handle to it, so `edit` can write a journal back and a save
+changes the file on disk. Nothing else writes: the change is yours, made by the editor,
+not something a report did behind your back.
 
 What that means:
 
@@ -345,12 +352,15 @@ What that means:
   hledger commands that write to the journal it reads. `add` could not work here in any
   case: the engine is one run with no way to prompt for an entry.
 - **`-o` may not write over a loaded file.** A new name is how a report is saved; the
-  name of a loaded journal is refused, because that would be an edit to it.
+  name of a loaded journal is refused, because a report over it would be an edit made
+  by a report.
+- **A save refuses rather than clobbers.** If the file changed on disk since it was
+  opened — another editor wrote it — `edit` says so and asks you to `open` again.
 - **`>>`, `append` and `put` are gone.** Loading files, running reports, saving a
   report with `-o`, and `download` all still work.
 
-Nothing a run writes is kept, so no command can leave a loaded file different from how
-it arrived.
+Files an `open` mounted are written back to disk on save; files from anywhere else are
+read-only, and a save to one reports that it has nowhere to write.
 
 ## remoteStorage
 
@@ -513,9 +523,10 @@ reading the journals back into a fresh browser, against a real
 
 ## Known limitations
 
-- **Read-only.** Nothing changes a journal: `add` and `import` are refused, `-o` may
-  not write over a loaded file, and files a command writes last only for the visit.
-  Loading a journal and running reports on it is the whole of it for now.
+- **Editing is the editor's job, and only for `open`ed folders.** `add` and `import`
+  are still refused, `-o` may not write over a loaded file, and only files mounted by
+  `open` can be written back — through `edit`. Files a command writes otherwise last
+  only for the visit, for `download`.
 - **No interactive commands.** The engine is a single synchronous `_start()` call, so
   nothing can be prompted part-way through, which is the other reason `hledger add`
   cannot work.
@@ -543,7 +554,9 @@ before the engine could write at all, and the vendored shim even ships one
 worker costs about **23 ms**, and the size barely matters, 0.25 MB and 8 MB cost the
 same, because it is message overhead, not copying, while hledger's own runtime is
 seconds. IndexedDB holds what is loaded, the worker gets a copy per run, and none of
-that is worth replacing.
+that is worth replacing. That argument is about the *engine's* mount, not about editing:
+the editor writes straight to the user's disk through the File System Access handle, and
+no in-browser filesystem is in that path.
 
 ## Deploying
 

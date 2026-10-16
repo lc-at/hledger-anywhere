@@ -214,8 +214,9 @@ const FLAGS: [&str; 32] = [
 pub enum Command<'a> {
     /// Open the file picker and mount the files chosen.
     Upload,
-    /// Open a directory picker and mount the files inside it, keeping the paths.
-    UploadDir,
+    /// Open a directory on disk through the File System Access API, keeping the
+    /// paths and the handles so its files can be edited.
+    Open,
     /// Show or change which uploaded file is the journal.
     Journal(Option<&'a str>),
     /// Wipe the screen.
@@ -268,7 +269,7 @@ pub fn classify(line: &str) -> Command<'_> {
     };
     match head {
         "upload" => Command::Upload,
-        "upload_dir" => Command::UploadDir,
+        "open" => Command::Open,
         "journal" => Command::Journal((!rest.is_empty()).then_some(rest)),
         "clear" => Command::Clear,
         "?" => Command::Help,
@@ -810,7 +811,7 @@ const FUZZY_MINIMUM: usize = 2;
 /// document them. Tests check the last two against this.
 pub const COMMANDS: &[&str] = &[
     "upload",
-    "upload_dir",
+    "open",
     "journal",
     "clear",
     "?",
@@ -1260,28 +1261,47 @@ pub fn paste(data: &str) -> Option<Paste> {
 }
 
 
-/// Commands that change the journal hledger reads, refused while the app is
-/// read-only.
+/// Commands that change the journal hledger reads, refused before anything runs.
 ///
 /// hledger writes to a journal in exactly two places: `add`, which prompts for entries
-/// and cannot work here because the engine gets no input, and `import`, which appends
-/// the transactions found in a file. Refusing them with a reason beats letting them
-/// report success and then discarding what they wrote.
+/// and can never work here because the engine gets no input, and `import`, which
+/// appends the transactions found in a file. Refusing them with a reason beats letting
+/// them report success and then discarding what they wrote.
 const WRITERS: &[&str] = &["add", "import"];
 
 /// Why `command` cannot run, when it is one of hledger's writers.
-pub fn read_only_refusal(command: &str) -> Option<String> {
+///
+/// `writable` says whether the loaded files came from an `open`ed directory and can be
+/// written back. It changes the reason, not the refusal: `add` is refused regardless
+/// (no stdin), and `import` is refused regardless (not enabled).
+pub fn read_only_refusal(command: &str, writable: bool) -> Option<String> {
     let (head, _) = split_first_token(command);
     if !WRITERS.contains(&head.as_str()) {
         return None;
     }
-    Some(format!(
-        "{} writes to the journal, and this session is read-only. Reports, {} and {} all \
-         work; the journal itself is never changed.",
-        bold(&head),
-        bold("-o FILE"),
-        bold("download")
-    ))
+    if head == "add" {
+        return Some(format!(
+            "{} asks questions as it goes, and the engine gets no input to answer them. \
+             Add the entry in {} instead.",
+            bold("add"),
+            bold("edit")
+        ));
+    }
+    if writable {
+        Some(format!(
+            "{} is not enabled yet; {} the journal in a window instead.",
+            bold("import"),
+            bold("edit")
+        ))
+    } else {
+        Some(format!(
+            "{} writes to the journal, and this session is read-only. Reports, {} and {} all \
+             work; the journal itself is never changed.",
+            bold("import"),
+            bold("-o FILE"),
+            bold("download")
+        ))
+    }
 }
 
 /// The loaded file an `-o` in `argv` would write over, if any.
@@ -1947,7 +1967,7 @@ pub fn welcome(version: &str) -> String {
     text.push_str("  Drop journal files on this window, or type:\r\n");
     for (command, description) in [
         ("upload", "add journal files"),
-        ("upload_dir", "add a folder, keeping its structure"),
+        ("open", "open a folder on disk, editable"),
         ("demo", "try the sample journal"),
         ("?", "every command and key"),
     ] {
@@ -2131,7 +2151,7 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
         "Files",
         &[
             ("upload", "add journal files"),
-            ("upload_dir", "add a folder, keeping its structure"),
+            ("open", "open a folder on disk, editable"),
             ("demo", "load the sample journal"),
             ("journal [path]", "list the loaded files, or read a different one"),
             ("download <path>", "save a file into your browser's downloads"),
@@ -2690,7 +2710,7 @@ mod tests {
     fn only_four_words_are_the_apps() {
         assert_eq!(classify("upload"), Command::Upload);
         assert_eq!(classify("  upload  "), Command::Upload);
-        assert_eq!(classify("upload_dir"), Command::UploadDir);
+        assert_eq!(classify("open"), Command::Open);
         assert_eq!(classify("clear"), Command::Clear);
         assert_eq!(classify("?"), Command::Help);
         assert_eq!(classify("journal"), Command::Journal(None));
@@ -2750,16 +2770,28 @@ mod tests {
 
     #[test]
     fn the_writers_are_refused_with_a_reason() {
-        assert!(read_only_refusal("balance").is_none());
-        assert!(read_only_refusal("balance --depth 2").is_none());
+        assert!(read_only_refusal("balance", false).is_none());
+        assert!(read_only_refusal("balance --depth 2", false).is_none());
         // A word that merely starts the same is a different word.
-        assert!(read_only_refusal("importing").is_none());
-        assert!(read_only_refusal("adding value").is_none());
+        assert!(read_only_refusal("importing", false).is_none());
+        assert!(read_only_refusal("adding value", false).is_none());
 
-        for command in ["add", "import data/statement.csv", "   import"] {
-            let refusal = read_only_refusal(command).expect(command);
+        // `add` is refused regardless: the engine has no input.
+        let add = read_only_refusal("add", false).expect("a writer");
+        assert!(add.contains("no input"), "{add}");
+        assert!(add.contains("edit"), "{add}");
+        let add = read_only_refusal("add", true).expect("a writer");
+        assert!(add.contains("no input"), "{add}");
+
+        // `import` is refused read-only with the read-only reason, and writable
+        // with the not-enabled reason.
+        for command in ["import data/statement.csv", "   import"] {
+            let refusal = read_only_refusal(command, false).expect(command);
             assert!(refusal.contains("read-only"), "{refusal}");
             assert!(refusal.contains("journal"), "{refusal}");
+
+            let refusal = read_only_refusal(command, true).expect(command);
+            assert!(refusal.contains("not enabled"), "{refusal}");
         }
     }
 
@@ -2831,7 +2863,7 @@ mod tests {
             single_argument("two files").expect_err("two"),
             parse_switch("maybe").expect_err("a switch"),
             font_size("large").expect_err("a number"),
-            read_only_refusal("import data/statement.csv").expect("a writer"),
+            read_only_refusal("import data/statement.csv", false).expect("a writer"),
             plugin_list(&[], &[]),
             plugin_list(
                 &[("chart".to_string(), "open a balance chart".to_string())],
@@ -2876,7 +2908,7 @@ mod tests {
         let visible = plain(&cold);
         assert!(visible.contains("1.52.4"), "{visible}");
         assert!(visible.contains("upload"), "{visible}");
-        assert!(visible.contains("upload_dir"), "a folder upload must be discoverable");
+        assert!(visible.contains("open"), "a folder on disk must be discoverable");
         assert!(visible.contains("demo"), "the sample journal must be discoverable");
         // The state of the journal is not the greeting's to claim any more: it is
         // written once the cache has been read.

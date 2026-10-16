@@ -37,6 +37,17 @@ features = [
     "Storage",
     "Url",
     "HtmlAnchorElement",
+    "DirectoryPickerOptions",
+    "FileSystemDirectoryHandle",
+    "FileSystemFileHandle",
+    "FileSystemGetDirectoryOptions",
+    "FileSystemGetFileOptions",
+    "FileSystemHandle",
+    "FileSystemHandleKind",
+    "FileSystemHandlePermissionDescriptor",
+    "FileSystemPermissionMode",
+    "FileSystemWritableFileStream",
+    "WritableStream",
     "console",
 ]
 

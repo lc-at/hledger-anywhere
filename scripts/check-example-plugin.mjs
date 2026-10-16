@@ -349,6 +349,9 @@ for (const file of [
   '../assets/plugins/vendor/chart.umd.js',
   '../assets/plugins/vendor/hammer.min.js',
   '../assets/plugins/vendor/chartjs-plugin-zoom.umd.js',
+  '../assets/plugins/edit.js',
+  '../assets/plugins/edit-window.js',
+  '../assets/plugins/vendor/ace/ace.js',
 ]) {
   try {
     const source = await readFile(new URL(file, import.meta.url), 'utf8');

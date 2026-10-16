@@ -80,6 +80,19 @@ part of loading hledger-anywhere. They are vendored rather than fetched at runti
 has no network dependency and no JavaScript build step, which is how xterm.js and
 remoteStorage.js are handled too.
 
+## Ace, BSD-3-Clause
+
+Vendored in `assets/plugins/vendor/ace/`, because the bundled `edit` plugin loads it into
+the window it opens:
+
+| File | Upstream |
+|---|---|
+| `ace.js` | `ace-builds@1.45.0`, <https://github.com/ajaxorg/ace-builds> |
+
+It is loaded only in the editor window's own document, never in the app's page, so it is not
+part of loading hledger-anywhere. It is the `src-noconflict` single-file build; the window
+sets `useWorker: false` because a `blob:` document cannot resolve Ace's worker scripts.
+
 ## Rust crates
 
 The Rust dependency tree is not listed here; run `cargo license` or

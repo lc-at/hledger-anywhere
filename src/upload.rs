@@ -20,11 +20,37 @@ use crate::hledger::JournalFile;
 /// Refuse to read any single file larger than this. hledger journals are text; a
 /// file this big is either not a journal or not something to hand to an
 /// in-browser engine.
-const MAX_FILE_BYTES: f64 = 5.0 * 1024.0 * 1024.0;
+pub const MAX_FILE_BYTES: f64 = 5.0 * 1024.0 * 1024.0;
 
 /// Refuse to mount more than this in total, so a mis-click on a huge file fails
 /// with a message instead of wedging the tab.
-const MAX_TOTAL_BYTES: f64 = 50.0 * 1024.0 * 1024.0;
+pub const MAX_TOTAL_BYTES: f64 = 50.0 * 1024.0 * 1024.0;
+
+/// Why a file of this size cannot be mounted, if it cannot.
+///
+/// The File System Access walk and the picker share these rules, so a directory
+/// mounted either way obeys exactly the same limits.
+pub fn admit_size(size: f64) -> Option<String> {
+    if size <= 0.0 {
+        return Some("empty file".to_string());
+    }
+    if size > MAX_FILE_BYTES {
+        return Some(format!(
+            "{:.1} MB is over the per-file limit",
+            size / (1024.0 * 1024.0)
+        ));
+    }
+    None
+}
+
+/// Why the text of a file cannot be mounted, if it cannot.
+pub fn admit_text(contents: &Option<String>) -> Option<String> {
+    match contents {
+        None => Some("could not be read as text".to_string()),
+        Some(text) if text.contains('\0') => Some("looks like a binary file".to_string()),
+        Some(_) => None,
+    }
+}
 
 /// Keeps the picker input in the layout but off-screen.
 ///
@@ -50,7 +76,7 @@ impl Mode {
     pub fn name(self) -> &'static str {
         match self {
             Mode::Files => "upload",
-            Mode::Directory => "upload_dir",
+            Mode::Directory => "open",
         }
     }
 }
@@ -256,15 +282,8 @@ async fn read_files(files: &[File], mode: Mode) -> Result<Picked, PickError> {
         }
 
         let size = file.size();
-        if size <= 0.0 {
-            picked.skipped.push((path, "empty file".to_string()));
-            continue;
-        }
-        if size > MAX_FILE_BYTES {
-            picked.skipped.push((
-                path,
-                format!("{:.1} MB is over the per-file limit", size / (1024.0 * 1024.0)),
-            ));
+        if let Some(reason) = admit_size(size) {
+            picked.skipped.push((path, reason));
             continue;
         }
         total += size;
@@ -274,15 +293,14 @@ async fn read_files(files: &[File], mode: Mode) -> Result<Picked, PickError> {
             });
         }
 
-        match read_text(file).await {
-            Some(contents) if contents.contains('\0') => picked
-                .skipped
-                .push((path, "looks like a binary file".to_string())),
-            Some(contents) => picked.files.push(JournalFile::new(path, contents)),
-            None => picked
-                .skipped
-                .push((path, "could not be read as text".to_string())),
+        let contents = read_text(file).await;
+        if let Some(reason) = admit_text(&contents) {
+            picked.skipped.push((path, reason));
+            continue;
         }
+        picked
+            .files
+            .push(JournalFile::new(path, contents.expect("admitted")));
     }
 
     if picked.files.is_empty() {
@@ -326,7 +344,7 @@ fn relative_path(file: &File) -> String {
 
 
 /// Read a file as text, or `None` if the browser refuses.
-async fn read_text(file: &File) -> Option<String> {
+pub async fn read_text(file: &File) -> Option<String> {
     // `Blob::text()` is infallible in web-sys; only awaiting it can fail.
     let value = JsFuture::from(file.text()).await.ok()?;
     value.as_string()

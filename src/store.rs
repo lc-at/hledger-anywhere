@@ -16,19 +16,23 @@
 //!
 //! # Schema
 //!
-//! Database `hledger-anywhere`, version 1, with two object stores:
+//! Database `hledger-anywhere`, version 2, with three object stores:
 //!
 //! * `files`, keyed by `path`; one record per mounted file.
 //! * `meta`, keyed by `key`; one `terminal_session` record naming the journal.
+//! * `handles`, keyed by `key`; one `root` record holding the
+//!   [`FileSystemDirectoryHandle`] an `open` was granted, stored as a structured
+//!   clone rather than JSON (a handle is not JSON-serialisable).
 //!
 //! This is the same database and the same `files` shape the earlier panel-based
-//! app used, deliberately and without a version bump: a visitor who already has a
-//! snapshot gets it back rather than having to upload again. The old app's
-//! `last_session` metadata record is simply ignored.
+//! app used, deliberately and without a version bump until the handle store: a
+//! visitor who already has a snapshot gets it back rather than having to upload
+//! again. The old app's `last_session` metadata record is simply ignored.
 
 use idb::DatabaseEvent;
 use serde::{Deserialize, Serialize};
-use wasm_bindgen::JsValue;
+use wasm_bindgen::{JsCast, JsValue};
+use web_sys::FileSystemDirectoryHandle;
 
 use crate::hledger::JournalFile;
 
@@ -36,13 +40,19 @@ use crate::hledger::JournalFile;
 const DB_NAME: &str = "hledger-anywhere";
 
 /// Schema version. Bump only alongside a migration in `open`.
-const DB_VERSION: u32 = 1;
+const DB_VERSION: u32 = 2;
 
 /// Object store holding one record per mounted file, keyed by `path`.
 const FILES_STORE: &str = "files";
 
 /// Object store holding small metadata records, keyed by `key`.
 const META_STORE: &str = "meta";
+
+/// Object store holding the File System Access handle for `open`, keyed by `key`.
+const HANDLES_STORE: &str = "handles";
+
+/// The key the `handles` store's one record lives under.
+const ROOT_KEY: &str = "root";
 
 /// The metadata record this module writes.
 const SESSION_KEY: &str = "terminal_session";
@@ -108,7 +118,11 @@ impl Store {
                 return;
             };
             let existing = db.store_names();
-            for (name, key_path) in [(FILES_STORE, FILES_KEY_PATH), (META_STORE, META_KEY_PATH)] {
+            for (name, key_path) in [
+                (FILES_STORE, FILES_KEY_PATH),
+                (META_STORE, META_KEY_PATH),
+                (HANDLES_STORE, META_KEY_PATH),
+            ] {
                 if existing.iter().any(|store| store == name) {
                     continue;
                 }
@@ -203,6 +217,35 @@ impl Store {
         transaction.await?;
         Ok(record.as_ref().and_then(decode_json::<Session>).unwrap_or_default())
     }
+
+    /// Remember the directory `open` was granted, so a returning visit can write
+    /// without picking the folder again.
+    pub async fn save_handle(&self, root: &FileSystemDirectoryHandle) -> Result<(), idb::Error> {
+        let transaction = self
+            .db
+            .transaction(&[HANDLES_STORE], idb::TransactionMode::ReadWrite)?;
+        {
+            let store = transaction.object_store(HANDLES_STORE)?;
+            // A handle is a structured clone, not JSON: it is stored as-is.
+            let value = JsValue::from(root.clone());
+            let _ = store.put(&value, Some(&JsValue::from_str(ROOT_KEY)))?.await?;
+        }
+        transaction.await?;
+        Ok(())
+    }
+
+    /// The directory handle saved by the last `open`, if any.
+    pub async fn load_handle(&self) -> Result<Option<FileSystemDirectoryHandle>, idb::Error> {
+        let transaction = self
+            .db
+            .transaction(&[HANDLES_STORE], idb::TransactionMode::ReadOnly)?;
+        let record = {
+            let store = transaction.object_store(HANDLES_STORE)?;
+            store.get(JsValue::from_str(ROOT_KEY))?.await?
+        };
+        transaction.await?;
+        Ok(record.and_then(|value| value.dyn_into().ok()))
+    }
 }
 
 /// Serialise a value to JSON, reporting failure through the IDB error type so the
@@ -291,7 +334,9 @@ mod tests {
         assert_eq!(FILES_KEY_PATH, "path");
         assert_eq!(META_KEY_PATH, "key");
         assert_eq!(SESSION_KEY, "terminal_session");
+        assert_eq!(HANDLES_STORE, "handles");
+        assert_eq!(ROOT_KEY, "root");
         assert_eq!(DB_NAME, "hledger-anywhere");
-        assert_eq!(DB_VERSION, 1);
+        assert_eq!(DB_VERSION, 2);
     }
 }

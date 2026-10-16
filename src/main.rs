@@ -27,6 +27,8 @@
 #[cfg(target_arch = "wasm32")]
 mod app;
 #[cfg(target_arch = "wasm32")]
+mod fs_access;
+#[cfg(target_arch = "wasm32")]
 mod store;
 #[cfg(target_arch = "wasm32")]
 mod upload;

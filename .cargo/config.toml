@@ -1,0 +1,7 @@
+# Enable web-sys's unstable APIs, which the File System Access API lives behind.
+#
+# `showDirectoryPicker` and friends are `#[cfg(web_sys_unstable_apis)]` in web-sys,
+# so they exist only when this cfg is on. It is inert for the native build, which
+# does not compile web-sys at all.
+[build]
+rustflags = ["--cfg=web_sys_unstable_apis"]

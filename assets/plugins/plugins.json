@@ -47,6 +47,13 @@
         "--monthly"
       ],
       "module": "./chart.js"
+    },
+    {
+      "name": "edit",
+      "group": "Files",
+      "summary": "edit a loaded journal in a window",
+      "completes": [],
+      "module": "./edit.js"
     }
   ]
 }

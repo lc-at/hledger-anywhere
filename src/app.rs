@@ -25,6 +25,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlElement;
 
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
+use crate::fs_access::{self, Opened};
 use crate::journal;
 use crate::plugins::{self, Registry};
 use crate::settings::{Alias, Settings};
@@ -307,6 +308,9 @@ struct App {
     last_hit: RefCell<Option<(usize, usize)>>,
     /// Files commands have written this session, for `download`.
     written: RefCell<Vec<JournalFile>>,
+    /// The opened directory, its handles and their stats, when the loaded files
+    /// came from `open` and can be written back.
+    writable: RefCell<Option<Opened>>,
     /// Account names for completion: fetched once per journal, on the first Tab,
     /// because on a large journal that fetch is a whole engine run.
     accounts: RefCell<Option<Vec<String>>>,
@@ -356,6 +360,7 @@ impl App {
             last_search: RefCell::new(None),
             last_hit: RefCell::new(None),
             written: RefCell::new(Vec::new()),
+            writable: RefCell::new(None),
             accounts: RefCell::new(None),
             accounts_loading: Cell::new(false),
             accounts_error: RefCell::new(None),
@@ -967,7 +972,7 @@ impl App {
                 self.announce(&help);
             }
             Command::Upload => self.upload(upload::Mode::Files),
-            Command::UploadDir => self.upload(upload::Mode::Directory),
+            Command::Open => self.open(),
             Command::Demo => self.load_demo(),
             Command::Alias(None) => {
                 let listing = terminal::alias_list(&self.aliases.borrow());
@@ -1073,7 +1078,7 @@ impl App {
                 // hledger's own writers are refused before anything runs: this session
                 // is read-only, and a command that changed a journal would change what
                 // every report after it reads.
-                if let Some(refusal) = terminal::read_only_refusal(command) {
+                if let Some(refusal) = terminal::read_only_refusal(command, self.writable.borrow().is_some()) {
                     self.announce(&refusal);
                     return;
                 }
@@ -1127,6 +1132,9 @@ impl App {
         // one sentence.
         *self.files.borrow_mut() = picked.files;
         *self.main.borrow_mut() = journal::choose_main(&self.files.borrow());
+        // Whatever this load replaced was not from `open`: the handles, if any,
+        // no longer match the loaded files, so the session is read-only again.
+        *self.writable.borrow_mut() = None;
         // Different journal, different accounts.
         *self.accounts.borrow_mut() = None;
 
@@ -1160,6 +1168,78 @@ impl App {
         });
     }
 
+
+    fn open(self: &Rc<App>) {
+        if !fs_access::available() {
+            // The same folder dialog, but without the File System Access API the
+            // handles cannot be kept, so nothing can be written back.
+            self.announce(&format!(
+                "This browser cannot open a folder for editing, so {} loads it \
+                 read-only.",
+                terminal::bold("open")
+            ));
+            self.upload(upload::Mode::Directory);
+            return;
+        }
+        // Synchronously: see the module comment on upload, and fs_access's own.
+        let pending = match fs_access::open_directory() {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.announce(&error.message());
+                return;
+            }
+        };
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            match pending.await_selection().await {
+                Ok(opened) => app.accept_opened(opened),
+                Err(upload::PickError::Cancelled) => app.announce("open cancelled"),
+                Err(error) => app.announce(&error.message()),
+            }
+        });
+    }
+
+    fn accept_opened(self: &Rc<App>, opened: Opened) {
+        let paths = opened
+            .picked
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        let main = journal::choose_main(&opened.picked.files);
+        let text = terminal::files_arrived(
+            "Opened",
+            &paths,
+            &opened.picked.skipped,
+            main.as_deref(),
+        );
+        let writable = opened.writable;
+        let root = opened.root.clone();
+
+        *self.files.borrow_mut() = opened.picked.files.clone();
+        *self.main.borrow_mut() = main;
+        *self.accounts.borrow_mut() = None;
+        *self.writable.borrow_mut() = Some(opened);
+
+        // Remember the grant, so a returning visit can write without re-picking.
+        if let Some(store) = self.store.borrow().as_ref().cloned() {
+            spawn_local(async move {
+                let _ = store.save_handle(&root).await;
+            });
+        }
+
+        self.remember();
+        self.configure();
+        self.announce(&text);
+        if writable {
+            self.say(&format!(
+                "This folder is editable: {} a file in a window, and saving writes it back.",
+                terminal::bold("edit")
+            ));
+        } else {
+            self.say("Opened read-only: this browser will not let the app write back.");
+        }
+    }
 
     fn set_journal(self: &Rc<App>, path: &str) {
         let files = self.files.borrow();
@@ -1337,7 +1417,8 @@ impl App {
     /// Run a plugin command, in the page, with the app's own API.
     ///
     /// The plugin decides what happens. The app lends it a way to run hledger, a way to
-    /// print, and its own settings, and nothing else: no part of this API writes.
+    /// print, its own settings, and — through `files`/`read`/`save` — read and write the
+    /// files an `open` made editable.
     fn run_plugin(self: &Rc<App>, plugin: plugins::PluginInfo, line: &str) {
         let (_, arguments) = terminal::split_first_token(line);
         let name = plugin.name.clone();
@@ -1454,6 +1535,55 @@ impl App {
         let _ = Reflect::set(&host, &"remember".into(), remember.as_ref().unchecked_ref());
         remember.forget();
 
+        // files(): the loaded files and whether each can be written back.
+        let app = Rc::clone(self);
+        let files = Closure::<dyn FnMut() -> JsValue>::new(move || app.host_files());
+        let _ = Reflect::set(&host, &"files".into(), files.as_ref().unchecked_ref());
+        files.forget();
+
+        // read(path): one loaded file's contents, or null.
+        let app = Rc::clone(self);
+        let read = Closure::<dyn FnMut(String) -> JsValue>::new(move |path: String| {
+            app.host_read(&path)
+        });
+        let _ = Reflect::set(&host, &"read".into(), read.as_ref().unchecked_ref());
+        read.forget();
+
+        // save(path, contents): write one loaded file back to the folder it came
+        // from. Resolves with `{ok: true}` or `{error: "..."}` — never rejects, so
+        // a plugin reads a single shape.
+        let app = Rc::clone(self);
+        let save = Closure::<dyn FnMut(String, String) -> Promise>::new(
+            move |path: String, contents: String| {
+                let app = Rc::clone(&app);
+                Promise::new(&mut move |resolve, _reject| {
+                    let app = Rc::clone(&app);
+                    // Cloned for the task: the executor needs to own them, and this
+                    // closure may be called more than once.
+                    let path = path.clone();
+                    let contents = contents.clone();
+                    spawn_local(async move {
+                        let answer = Object::new();
+                        match app.host_save(&path, &contents).await {
+                            Ok(()) => {
+                                let _ = Reflect::set(&answer, &"ok".into(), &JsValue::TRUE);
+                            }
+                            Err(message) => {
+                                let _ = Reflect::set(
+                                    &answer,
+                                    &"error".into(),
+                                    &JsValue::from_str(&message),
+                                );
+                            }
+                        }
+                        let _ = resolve.call1(&JsValue::NULL, &answer);
+                    });
+                })
+            },
+        );
+        let _ = Reflect::set(&host, &"save".into(), save.as_ref().unchecked_ref());
+        save.forget();
+
         // window(title), and the plugin's own name, are added by the loader in
         // JavaScript: a pop-up has to be opened by the browser, before the plugin awaits.
         let host: JsValue = host.into();
@@ -1461,12 +1591,75 @@ impl App {
         host
     }
 
+    /// The loaded files as `host.files()` sees them: an array of `{path, writable,
+    /// main}`.
+    fn host_files(&self) -> JsValue {
+        let array = js_sys::Array::new();
+        let writable = self.writable.borrow();
+        let main = self.main.borrow();
+        for file in self.files.borrow().iter() {
+            let entry = Object::new();
+            let _ = Reflect::set(&entry, &"path".into(), &JsValue::from_str(&file.path));
+            let on_disk = writable
+                .as_ref()
+                .is_some_and(|opened| opened.files.contains_key(&file.path));
+            let _ = Reflect::set(&entry, &"writable".into(), &JsValue::from_bool(on_disk));
+            let _ = Reflect::set(
+                &entry,
+                &"main".into(),
+                &JsValue::from_bool(main.as_deref() == Some(file.path.as_str())),
+            );
+            array.push(&entry);
+        }
+        array.into()
+    }
+
+    /// One loaded file's contents, or `null` if no file has that path.
+    fn host_read(&self, path: &str) -> JsValue {
+        self.files
+            .borrow()
+            .iter()
+            .find(|file| file.path == path)
+            .map(|file| JsValue::from_str(&file.contents))
+            .unwrap_or(JsValue::NULL)
+    }
+
+    /// Write one loaded file back to the folder it came from.
+    async fn host_save(self: &Rc<App>, path: &str, contents: &str) -> Result<(), String> {
+        let known = {
+            let writable = self.writable.borrow();
+            let opened = writable
+                .as_ref()
+                .ok_or_else(|| "no folder is open for editing; run `open` first".to_string())?;
+            opened
+                .files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| format!("{path} is not from an open folder"))?
+        };
+
+        let updated = fs_access::write_file(path, &known, contents).await?;
+
+        if let Some(opened) = self.writable.borrow_mut().as_mut() {
+            opened.files.insert(path.to_string(), updated);
+        }
+        {
+            let mut files = self.files.borrow_mut();
+            files.retain(|file| file.path != path);
+            files.push(JournalFile::new(path, contents));
+            files.sort_by(|left, right| left.path.cmp(&right.path));
+        }
+        self.remember();
+        self.configure();
+        Ok(())
+    }
+
     /// Run an hledger command for a plugin, under the same rules as the command line.
     ///
     /// A plugin gets no more power than the person typing: it cannot change a journal,
     /// and it cannot write a report over a loaded file.
     async fn host_run(self: &Rc<App>, command: &str) -> Result<String, String> {
-        if let Some(refusal) = terminal::read_only_refusal(command) {
+        if let Some(refusal) = terminal::read_only_refusal(command, self.writable.borrow().is_some()) {
             return Err(refusal);
         }
         let argv = argv_for(command)?;
@@ -2502,13 +2695,15 @@ async fn boot(app: Rc<App>) {
         Ok(store) => {
             let files = store.load_files().await.unwrap_or_default();
             let session = store.load_session().await.unwrap_or_default();
-            *app.store.borrow_mut() = Some(Rc::new(store));
+            let handle = store.load_handle().await.unwrap_or_default();
+            let store = Rc::new(store);
+            *app.store.borrow_mut() = Some(Rc::clone(&store));
 
             if !files.is_empty() {
                 // Prefer what was being read last time, if it is still there;
                 // otherwise choose again, in case the upload changed.
-                let main = session
-                    .main_journal
+                let remembered = session.main_journal.clone();
+                let main = remembered
                     .filter(|path| files.iter().any(|file| &file.path == path))
                     .or_else(|| journal::choose_main(&files));
                 *app.main.borrow_mut() = main.clone();
@@ -2519,6 +2714,28 @@ async fn boot(app: Rc<App>) {
                     None => "Resumed your upload, but none of it looks like a journal \
                              (.journal, .hledger or .j)."
                         .to_string(),
+                };
+            }
+
+            // A folder opened on a previous visit: if the browser still grants
+            // write access, read it fresh from disk so it is editable again.
+            if let Some(root) = handle
+                && fs_access::query_write(&root).await
+                && let Ok(opened) = fs_access::read_directory(root).await
+            {
+                let main = session
+                    .main_journal
+                    .filter(|path| opened.picked.files.iter().any(|file| &file.path == path))
+                    .or_else(|| journal::choose_main(&opened.picked.files));
+                *app.files.borrow_mut() = opened.picked.files.clone();
+                *app.main.borrow_mut() = main.clone();
+                *app.writable.borrow_mut() = Some(opened);
+                app.configure();
+                state = match main {
+                    Some(main) => terminal::resumed(app.files.borrow().len(), &main),
+                    None => {
+                        "Opened your folder, but none of it looks like a journal.".to_string()
+                    }
                 };
             }
         }
