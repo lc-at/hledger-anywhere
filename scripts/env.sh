@@ -38,7 +38,8 @@ else
     done
 fi
 
-# Workspace-local tooling: trunk, and optionally the ghc-wasm toolchain.
+# Workspace-local tooling: trunk. The ghc-wasm toolchain is deliberately not put
+# on PATH here; see its `env` note at the bottom.
 PATH="$_env_root/.tools/bin:$PATH"
 export PATH
 
@@ -94,11 +95,14 @@ if [ "${NO_COLOR:-}" = "1" ]; then
 fi
 
 # The Haskell WASM toolchain installed by scripts/build-hledger-wasm.sh.
+#
+# Only the prefix is exported. Its `env` is deliberately NOT sourced here: it
+# prepends the wasi-sdk to PATH and exports CC/CXX/LD/AR pointing at wasm32-wasi
+# tools, which are cross-compilation settings. Sourcing it into an ordinary
+# `cargo`/`trunk` build hands rustc's linker a wasm sysroot and the build fails
+# with a linker error instead of compiling the host build script. The build
+# script sources it itself when it actually needs the cross toolchain.
 GHC_WASM_PREFIX="${GHC_WASM_PREFIX:-$_env_root/.tools/ghc-wasm}"
 export GHC_WASM_PREFIX
-if [ -f "$GHC_WASM_PREFIX/env" ]; then
-    # shellcheck disable=SC1091
-    . "$GHC_WASM_PREFIX/env"
-fi
 
 unset _env_root _env_dir

@@ -54,6 +54,16 @@ OUT="$OUT_DIR/hledger.wasm"
 say() { printf '%s\n' "$*"; }
 die() { printf '\n%s\n' "$*" >&2; exit 1; }
 
+# The ghc-wasm environment is applied here rather than in scripts/env.sh. It is a
+# wasm32-wasi cross-compilation environment (PATH, CC, CXX, LD, AR), and letting
+# it leak into an ordinary `cargo`/`trunk` build replaces the host linker with the
+# wasi-sdk one. Sourcing it here keeps `env.sh` safe for host builds while this
+# script still gets the cross toolchain on PATH.
+if [ -f "$GHC_WASM_PREFIX/env" ]; then
+    # shellcheck disable=SC1091
+    . "$GHC_WASM_PREFIX/env"
+fi
+
 # --- 1. toolchain ----------------------------------------------------------
 if ! command -v wasm32-wasi-cabal >/dev/null 2>&1; then
     say "==> wasm32-wasi-cabal not found; installing ghc-wasm-meta (FLAVOUR=$GHC_FLAVOUR)"
