@@ -10,8 +10,8 @@
 //!
 //! * [`terminal`], the line editor, the vocabulary, and the text printed around
 //!   output.
+//! * [`help`], the app's own help: a page per command, and the overview behind `?`.
 //! * [`journal`], which loaded file hledger should read.
-//! * [`chart`], drawing a report, used by the chart plugin.
 //! * [`plugins`], the plugin contract and the bundled plugins.
 //! * [`remote`], remoteStorage paths, listings and the library glue.
 //! * [`hledger_info`], which engine this is, and [`hledger`]'s request types.
@@ -35,6 +35,7 @@ mod upload;
 
 mod hledger;
 mod hledger_info;
+mod help;
 mod journal;
 mod plugins;
 mod remote;

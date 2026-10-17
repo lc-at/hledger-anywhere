@@ -46,6 +46,10 @@ const SHELL = [
   '/js/vendor/fs_mem.js',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
+  '/icons/favicon.svg',
+  '/icons/favicon-32.png',
+  '/icons/favicon-16.png',
+  '/icons/apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {

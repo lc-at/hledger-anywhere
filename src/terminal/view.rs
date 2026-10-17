@@ -17,6 +17,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
+use crate::theme::Theme;
+
 #[wasm_bindgen]
 extern "C" {
     /// The xterm.js `Terminal` class, published as a global.
@@ -142,27 +144,11 @@ impl Screen {
     ///
     /// xterm takes its colours as options and applies them live, so a theme change is a
     /// repaint rather than a reload, and the scrollback stays where it was.
-    pub fn set_theme(&self, theme: &crate::theme::Theme) {
-        let (background, foreground, cursor) = (
-            theme.background.css(),
-            theme.foreground.css(),
-            theme.cursor.css(),
-        );
-        let (selection, red, red_bright) =
-            (theme.selection(), theme.red().to_string(), theme.red_bright().to_string());
-        let (background, foreground, cursor) =
-            (background.as_str(), foreground.as_str(), cursor.as_str());
+    pub fn set_theme(&self, theme: &Theme) {
         let Ok(options) = Reflect::get(&self.terminal, &JsValue::from_str("options")) else {
             return;
         };
-        let theme = Object::new();
-        set(&theme, "background", JsValue::from_str(background));
-        set(&theme, "foreground", JsValue::from_str(foreground));
-        set(&theme, "cursor", JsValue::from_str(cursor));
-        set(&theme, "selectionBackground", JsValue::from_str(&selection));
-        set(&theme, "red", JsValue::from_str(&red));
-        set(&theme, "brightRed", JsValue::from_str(&red_bright));
-        let _ = Reflect::set(&options, &JsValue::from_str("theme"), &theme);
+        let _ = Reflect::set(&options, &JsValue::from_str("theme"), &xterm_theme(theme));
     }
 
     pub fn fit(&self) {
@@ -305,17 +291,30 @@ fn options(font: u32, screen_reader: bool) -> JsValue {
     set(&options, "convertEol", JsValue::FALSE);
     set(&options, "allowProposedApi", JsValue::TRUE);
 
-    let theme = Object::new();
-    set(&theme, "background", JsValue::from_str("#000000"));
-    set(&theme, "foreground", JsValue::from_str("#d8d8d8"));
-    set(&theme, "cursor", JsValue::from_str("#ff9f1c"));
-    set(&theme, "selectionBackground", JsValue::from_str("#3a3021"));
-    // The error colour the terminal prints stderr in, to match bright red.
-    set(&theme, "red", JsValue::from_str("#ff6b5e"));
-    set(&theme, "brightRed", JsValue::from_str("#ff8a80"));
-    set(&options, "theme", theme.into());
+    set(&options, "theme", xterm_theme(&Theme::default()).into());
 
     options.into()
+}
+
+/// A theme as xterm wants it.
+///
+/// One place maps the app's roles onto xterm's option names, so the colour the terminal
+/// starts in and the colour a `theme` command paints are never two different palettes.
+/// `cursorAccent` is the text under the block cursor: taking the background there keeps
+/// it readable wherever the cursor happens to sit, rather than leaving xterm's default,
+/// which is not the theme's black.
+fn xterm_theme(theme: &Theme) -> Object {
+    let object = Object::new();
+    set(&object, "background", JsValue::from_str(&theme.background.css()));
+    set(&object, "foreground", JsValue::from_str(&theme.foreground.css()));
+    set(&object, "cursor", JsValue::from_str(&theme.visible_cursor().css()));
+    set(&object, "cursorAccent", JsValue::from_str(&theme.background.css()));
+    set(&object, "selectionBackground", JsValue::from_str(&theme.selection()));
+    set(&object, "selectionForeground", JsValue::from_str(&theme.foreground.css()));
+    // What the terminal prints stderr in, and the app's own failures.
+    set(&object, "red", JsValue::from_str(theme.red()));
+    set(&object, "brightRed", JsValue::from_str(theme.red_bright()));
+    object
 }
 
 fn set(object: &Object, key: &str, value: JsValue) {

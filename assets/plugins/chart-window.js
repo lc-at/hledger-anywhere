@@ -77,14 +77,16 @@ function add(amounts) {
 
 /** The colours the series are drawn in, worked out from the theme's accent. */
 export function palette(colors, count) {
-  const [hue, saturation] = toHsl(colors.accent);
+  const [hue] = toHsl(colors.accent);
   const light = isLight(colors.background);
+  // One lightness that reads on this background, and a golden-angle spread so two,
+  // five or nine series are as far apart as the wheel allows. Inheriting the accent's
+  // saturation made every series as loud as the accent itself, which on a cream theme
+  // turned a spending chart into a wall of brown.
+  const lightness = light ? 40 : 66;
   return Array.from({ length: Math.max(count, 1) }, (_, index) => {
-    // Spread around the wheel, keeping the theme's own saturation and the lightness that reads
-    // on its background, so the series belong to the theme rather than to a palette invented
-    // here.
-    const shifted = (hue + index * (index % 2 ? 137 : 47)) % 360;
-    return `hsl(${shifted.toFixed(0)} ${Math.max(saturation, 35)}% ${light ? 38 : 62}%)`;
+    const shifted = (hue + index * 137.508) % 360;
+    return `hsl(${shifted.toFixed(0)} 55% ${lightness}%)`;
   });
 }
 

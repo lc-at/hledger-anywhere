@@ -115,6 +115,7 @@ Everything that is not in this table is passed to hledger verbatim.
 | `theme [name]` | List the colour themes, or select one. Plugin themes are listed too. |
 | `find <text>` | Search everything printed so far; `n` and `N` step through the matches. `/text` does the same. |
 | `?` | The app's own help, the engine's version and its checksum. |
+| `<command>?` | One command's own help: `open?`, `theme?`. The app answers for its own commands and the plugins', and hands anything else to hledger with `--help`, so `balance?` is hledger's own page. |
 
 ### Keys
 

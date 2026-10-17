@@ -9,7 +9,7 @@
         "foreground": "#ebdbb2",
         "cursor": "#fe8019",
         "accent": "#fabd2f",
-        "dim": "#928374"
+        "dim": "#a89984"
       }
     },
     {
@@ -19,7 +19,7 @@
         "foreground": "#c9d1d9",
         "cursor": "#7aa2f7",
         "accent": "#7aa2f7",
-        "dim": "#6b7280"
+        "dim": "#8b95a5"
       }
     },
     {
@@ -28,8 +28,8 @@
         "background": "#fbf1c7",
         "foreground": "#3c3836",
         "cursor": "#af3a03",
-        "accent": "#b57614",
-        "dim": "#7c6f64"
+        "accent": "#8f5a00",
+        "dim": "#6b5f55"
       }
     }
   ],
@@ -46,14 +46,18 @@
         "-M",
         "--monthly"
       ],
-      "module": "./chart.js"
+      "module": "./chart.js",
+      "usage": "chart [preset|account] [flags]",
+      "help": "Opens a chart in its own window, drawn from hledger's own numbers. Named questions answer for the usual cases: spending, income, cashflow, networth, balances, payees, top and shares. Anything else is read as an account, and a report name such as balance or register is passed through verbatim. The window has no controls: hover for values, click a legend entry to hide a series, scroll to zoom, drag to pan, double-click to reset, click a point to chart that account on its own, and press Escape to go back."
     },
     {
       "name": "edit",
       "group": "Files",
       "summary": "edit a loaded journal in a window",
       "completes": [],
-      "module": "./edit.js"
+      "module": "./edit.js",
+      "usage": "edit [path]",
+      "help": "Opens a file in an editor window, with Ctrl/Cmd-S writing it back to disk. With no argument it edits the journal hledger is reading. Only files from an open folder can be written: everything else opens read-only, and the save says so. If the file changed on disk since it was opened, the save is refused rather than overwriting the change."
     }
   ]
 }

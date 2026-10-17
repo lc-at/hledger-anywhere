@@ -89,6 +89,35 @@ impl Rgb {
             b: blend(self.b, other.b),
         }
     }
+
+    /// WCAG relative luminance, 0.0 for black and 1.0 for white.
+    fn luminance(&self) -> f64 {
+        let channel = |value: u8| {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(self.r) + 0.7152 * channel(self.g) + 0.0722 * channel(self.b)
+    }
+
+    /// The WCAG contrast ratio against another colour, from 1.0 to 21.0.
+    ///
+    /// A theme is judged by this rather than by feel: 4.5:1 is the AA ratio for body
+    /// text, and an aside or an accent below it is visible without being readable. The
+    /// tests hold every shipped theme to it, so a palette that looks fine on the
+    /// author's monitor cannot quietly ship as one that cannot be read on cream.
+    pub fn contrast(&self, other: Rgb) -> f64 {
+        let (mine, theirs) = (self.luminance(), other.luminance());
+        let (lighter, darker) = if mine > theirs {
+            (mine, theirs)
+        } else {
+            (theirs, mine)
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
 }
 
 /// A theme: what the terminal is painted in, and what the app writes its own text in.
@@ -163,6 +192,19 @@ impl Theme {
             "#cc241d"
         } else {
             "#ff8a80"
+        }
+    }
+
+    /// The cursor colour, or the foreground when a theme's own would vanish.
+    ///
+    /// A third-party theme can set its cursor to its own background by accident. A
+    /// cursor that cannot be seen is worse than one that is not the author's choice, and
+    /// this is the one place the app overrides a colour a theme *did* name.
+    pub fn visible_cursor(&self) -> Rgb {
+        if self.cursor.contrast(self.background) >= 3.0 {
+            self.cursor
+        } else {
+            self.foreground
         }
     }
 
@@ -339,5 +381,59 @@ mod tests {
         assert_eq!(theme.name, "default");
         assert_eq!(theme.background.css(), "#000000");
         assert_eq!(theme.accent.css(), "#ff9f1c");
+    }
+
+    /// The WCAG AA ratio for body text.
+    const AA: f64 = 4.5;
+
+    /// Every role that carries text, checked against the background.
+    fn legible(name: &str, theme: &Theme) {
+        for (role, colour) in [
+            ("foreground", theme.foreground),
+            ("dim", theme.dim),
+            ("accent", theme.accent),
+            ("cursor", theme.cursor),
+        ] {
+            let ratio = colour.contrast(theme.background);
+            assert!(ratio >= AA, "{name}: {role} is {ratio:.2}:1, below {AA}:1");
+        }
+    }
+
+    #[test]
+    fn the_built_in_theme_is_readable() {
+        legible("default", &Theme::built_in());
+    }
+
+    #[test]
+    fn every_bundled_theme_is_readable() {
+        // The manifest is the only place the shipped themes are written down, so it is
+        // read here rather than retyped into a second list that could drift from it.
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../assets/plugins/plugins.json"))
+                .expect("the bundled manifest is JSON");
+        let themes = manifest["themes"].as_array().expect("themes is a list");
+        for theme in themes {
+            let name = theme["name"].as_str().expect("a theme name");
+            let colors: BTreeMap<String, String> =
+                serde_json::from_value(theme["colors"].clone())
+                    .expect("colours of the form role -> #rrggbb");
+            let theme = Theme::from_plugin(name, &colors).expect("a usable theme");
+            legible(name, &theme);
+        }
+        assert!(!themes.is_empty(), "the manifest offers no themes to check");
+    }
+
+    #[test]
+    fn a_ratio_is_measured_the_way_the_guidelines_do() {
+        // The anchors of the scale: black on white is 21, and a colour on itself is 1.
+        let black = Rgb { r: 0, g: 0, b: 0 };
+        let white = Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        assert!((black.contrast(white) - 21.0).abs() < 0.01);
+        assert!((white.contrast(black) - 21.0).abs() < 0.01);
+        assert!((black.contrast(black) - 1.0).abs() < 0.001);
     }
 }

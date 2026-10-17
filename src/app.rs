@@ -962,19 +962,20 @@ impl App {
                 self.screen.clear();
                 self.prompt();
             }
-            Command::Help => {
+            Command::Help(None) => {
                 // Scoped: the help entries borrow the registry, and the text is what
                 // is kept, so the borrow ends before the line is printed.
-                let help = {
+                let text = {
                     let registry = self.registry.borrow();
                     format!(
                         "{}\n{}\n",
-                        terminal::help(&registry.help_entries()),
+                        crate::help::overview(&registry.help_entries(), self.columns()),
                         crate::hledger_info::describe()
                     )
                 };
-                self.announce(&help);
+                self.announce(&text);
             }
+            Command::Help(Some(word)) => self.show_help(word),
             Command::Upload => self.upload(upload::Mode::Files),
             Command::Open => self.open(),
             Command::Reopen => self.reopen(),
@@ -2159,24 +2160,44 @@ impl App {
         self.prompt();
     }
 
-    /// Paint everything in a theme: the terminal, the page behind it, and the app's own
-    /// accent and asides.
+    /// Paint everything in a theme: the terminal, the page behind it, the app's own
+    /// accent and asides, and the browser's own chrome.
     fn apply_theme(self: &Rc<App>, theme: &Theme) {
         self.screen.set_theme(theme);
         // The colour dims it; the faint attribute used to, and faint makes text lighter,
         // which is exactly wrong on a light theme.
         terminal::set_style(theme.accent.ansi(), theme.dim.ansi());
 
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        let background = theme.background.css();
+        let light = theme.background.is_light();
+
         // The page behind the terminal has to move with it, or a resize, or the moment
-        // before xterm paints, shows a stripe of the old colour.
-        let root = web_sys::window()
-            .and_then(|window| window.document())
-            .and_then(|document| document.document_element());
-        if let Some(element) = root.as_ref().and_then(|root| root.dyn_ref::<HtmlElement>()) {
+        // before xterm paints, shows a stripe of the old colour. `color-scheme` is what
+        // native scrollbars and form controls follow, so cream does not keep a dark
+        // frame around it.
+        if let Some(element) = document
+            .document_element()
+            .and_then(|root| root.dyn_into::<HtmlElement>().ok())
+        {
             let style = element.style();
-            let _ = style.set_property("--term-bg", &theme.background.css());
+            let _ = style.set_property("--term-bg", &background);
+            let _ = style.set_property("--term-fg", &theme.foreground.css());
             let _ = style.set_property("--term-accent", &theme.accent.css());
             let _ = style.set_property("--term-dim", &theme.dim.css());
+            let _ = style.set_property(
+                "--term-scrollbar",
+                &theme.background.mix(theme.dim, 30).css(),
+            );
+            let _ = style.set_property("color-scheme", if light { "light" } else { "dark" });
+        }
+
+        // What a mobile browser paints its address bar with, and what a PWA uses for the
+        // splash: left black, it frames a cream terminal in black.
+        if let Ok(Some(meta)) = document.query_selector("meta[name=\"theme-color\"]") {
+            let _ = meta.set_attribute("content", &background);
         }
     }
 
@@ -2633,6 +2654,45 @@ impl App {
     }
 
     /// `download <path>`: save a file a command wrote with `-o`.
+    /// `word?`: one command's help.
+    ///
+    /// The app answers for its own commands and for the plugins' words, since it is the
+    /// manifest that described them. Anything else is handed to hledger with `--help`,
+    /// which knows its own commands far better than a copy of its manual would; a word
+    /// neither knows is answered with the closest names rather than a bare refusal.
+    fn show_help(self: &Rc<App>, word: &str) {
+        if let Some(entry) = crate::help::find(word) {
+            return self.announce(&crate::help::page(entry, self.columns()));
+        }
+
+        let plugin = self.registry.borrow().find(word).cloned();
+        if let Some(plugin) = plugin {
+            let usage = if plugin.usage.trim().is_empty() {
+                plugin.name.clone()
+            } else {
+                plugin.usage.clone()
+            };
+            let detail = if plugin.help.trim().is_empty() {
+                plugin.summary.clone()
+            } else {
+                plugin.help.trim().to_string()
+            };
+            return self.announce(&crate::help::plugin_page(&usage, &detail, &[], self.columns()));
+        }
+
+        if terminal::HLEDGER_COMMANDS.contains(&word) {
+            return self.run_with(&format!("{word} --help"));
+        }
+
+        let closest = terminal::fuzzy_matches(word, &terminal::starting_words(), 4);
+        self.announce(&crate::help::unknown(word, &closest));
+    }
+
+    /// How many columns the terminal has, for wrapping help.
+    fn columns(&self) -> usize {
+        self.screen.size().0 as usize
+    }
+
     fn download(self: &Rc<App>, path: &str) {
         let found = self
             .written
@@ -2809,7 +2869,7 @@ async fn boot(app: Rc<App>) {
     }
 
     app.screen.write(&terminal::to_terminal_text(&terminal::welcome(
-        crate::hledger_info::version(),
+        &crate::hledger_info::describe(),
     )));
     app.say(&state);
 

@@ -48,6 +48,8 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
       "name": "chart",
       "group": "Reports",
       "summary": "open a balance line chart in a window",
+      "usage": "chart [preset|account] [flags]",
+      "help": "Opens a chart in its own window, drawn from hledger's own numbers.",
       "completes": ["balance", "expenses", "-M"],
       "module": "./chart.js",
       "themes": [
@@ -63,12 +65,19 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
 | `name` | The word that invokes it. One word, not one of the app's own commands, and not already taken. |
 | `group` | The help section it appears in. Defaults to `Plugins`. |
 | `summary` | One line for the help. Required: a command nobody can find is not a feature. |
+| `usage` | The word with its arguments, shown at the top of `chart?`. Defaults to the name. |
+| `help` | The paragraph `chart?` prints. Defaults to `summary`, so a repository written before per-command help still gets a page. |
 | `completes` | Extra words it adds to Tab completion, such as the arguments it expects. |
 | `module` | The module implementing it, relative to the manifest. Imported the first time one of its commands runs. |
 | `themes` | Colour themes it offers, by role: `background`, `foreground`, `cursor`, `accent`, `dim`. |
 
 The manifest is authoritative for everything the app knows before running anything. A
 repository that is installed but never used therefore costs one fetch and runs no code.
+
+That includes the help. `chart?` prints this plugin's `usage` and `help` from the manifest,
+without importing or running the module, so a plugin can document itself as well as the
+app documents its own commands. Put a question mark after any command: the app's own
+pages, the plugins' pages and hledger's own `--help` all answer the same way.
 
 A plugin that cannot be used is refused with a reason, and the rest of the manifest is
 still installed. A manifest that cannot be read at all is an error, because you named it.

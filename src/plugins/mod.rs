@@ -72,6 +72,13 @@ pub struct PluginInfo {
     /// Extra words it adds to completion, such as the arguments it expects.
     #[serde(default)]
     pub completes: Vec<String>,
+    /// The word with its arguments, as `chart?` shows it. Falls back to the name.
+    #[serde(default)]
+    pub usage: String,
+    /// The paragraph `chart?` prints. Falls back to the summary, so a repository that
+    /// predates per-command help still gets a page rather than nothing.
+    #[serde(default)]
+    pub help: String,
     /// Themes it contributes.
     #[serde(default)]
     pub themes: Vec<ThemeInfo>,
@@ -249,14 +256,14 @@ impl Registry {
         words
     }
 
-    /// A plugin's line in the help: group, form, and what it does.
+    /// A plugin's line in the help: the word, the group it asks for, and what it does.
     pub fn help_entries(&self) -> Vec<(&str, &str, &str)> {
         self.plugins
             .iter()
             .map(|plugin| {
                 (
-                    plugin.group_or_default(),
                     plugin.name.as_str(),
+                    plugin.group_or_default(),
                     plugin.summary.as_str(),
                 )
             })
@@ -356,7 +363,7 @@ mod tests {
         assert_eq!(registry.words(), vec!["chart", "balance", "expenses"]);
         assert_eq!(
             registry.help_entries(),
-            vec![("Reports", "chart", "open a balance chart in a window")]
+            vec![("chart", "Reports", "open a balance chart in a window")]
         );
         assert_eq!(
             registry

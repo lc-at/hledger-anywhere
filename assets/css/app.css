@@ -6,12 +6,15 @@
  */
 
 :root {
+  /* These are the built-in theme, and only the first paint: `apply_theme` rewrites
+   * all of them on the document element whenever the theme changes, and sets
+   * `color-scheme` with them, so native scrollbars and form controls follow too. */
   color-scheme: dark;
-  /* Black and amber, the colours the terminal is themed in; kept here too so the
-   * page background matches before xterm has painted. */
   --term-bg: #000000;
+  --term-fg: #d8d8d8;
   --term-accent: #ff9f1c;
   --term-dim: #8a8a8a;
+  --term-scrollbar: #2a2a2a;
 }
 
 html,
@@ -44,12 +47,16 @@ body.drop-target #terminal {
   background: var(--term-bg) !important;
 }
 
+.xterm .xterm-viewport {
+  scrollbar-color: var(--term-scrollbar) var(--term-bg);
+}
+
 .xterm .xterm-viewport::-webkit-scrollbar {
   width: 8px;
 }
 
 .xterm .xterm-viewport::-webkit-scrollbar-thumb {
-  background: #2a2a2a;
+  background: var(--term-scrollbar);
 }
 
 /* Selection and cursor come from the terminal's own theme (see

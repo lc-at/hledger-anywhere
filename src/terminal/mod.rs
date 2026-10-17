@@ -224,8 +224,8 @@ pub enum Command<'a> {
     Journal(Option<&'a str>),
     /// Wipe the screen.
     Clear,
-    /// The app's own help, not hledger's.
-    Help,
+    /// The app's own help: everything for no argument, one command's page for a word.
+    Help(Option<&'a str>),
     /// Load a small built-in journal, so the app can be tried without one.
     Demo,
     /// `/term`, find `term` in the scrollback, or the last term when blank.
@@ -270,13 +270,26 @@ pub fn classify(line: &str) -> Command<'_> {
         Some((head, rest)) => (head, rest.trim()),
         None => (trimmed, ""),
     };
+    // A question mark after a word asks for that word's help: `open?` explains the
+    // app's own command, `chart?` a plugin's, and `balance?` asks hledger itself with
+    // `--help`. On its own, `?` is the overview.
+    if head == "?" {
+        // `? open` is accepted as well as `open?`: one is the question first, the
+        // other the command first, and both read as "tell me about this".
+        return Command::Help(rest.split_whitespace().next());
+    }
+    if let Some(word) = head.strip_suffix('?')
+        && !word.is_empty()
+        && !word.contains('?')
+    {
+        return Command::Help(Some(word));
+    }
     match head {
         "upload" => Command::Upload,
         "open" => Command::Open,
         "reopen" => Command::Reopen,
         "journal" => Command::Journal((!rest.is_empty()).then_some(rest)),
         "clear" => Command::Clear,
-        "?" => Command::Help,
         "demo" => Command::Demo,
         "download" => Command::Download((!rest.is_empty()).then_some(rest)),
         "alias" => Command::Alias((!rest.is_empty()).then_some(rest)),
@@ -1958,28 +1971,29 @@ pub fn count(n: usize, singular: &str, plural: &str) -> String {
 /// It says three things and stops: what this is, that nothing leaves the tab, and
 /// the four things worth typing first. Someone arriving at an empty terminal has no
 /// idea what it takes, so this is worth more than a version string.
-pub fn welcome(version: &str) -> String {
+pub fn welcome(engine: &str) -> String {
     let mut text = String::new();
     text.push_str(&format!(
         "  {}  {}\r\n",
         bold("hledger-anywhere"),
-        dim(&format!("hledger {version} (wasm32-wasi)"))
+        dim(engine)
     ));
     text.push_str(&format!(
         "  {}\r\n\r\n",
         dim("A terminal for hledger, running entirely in this tab.")
     ));
     text.push_str("  Drop journal files on this window, or type:\r\n");
-    for (command, description) in [
-        ("upload", "add journal files"),
-        ("open", "open a folder on disk, editable"),
-        ("demo", "try the sample journal"),
-        ("?", "every command and key"),
-    ] {
+    // The starters come from the help table rather than a second copy of the list, so
+    // the banner cannot describe a command differently from the page that command
+    // opens. A word with no entry is skipped rather than showing a blank row.
+    for word in ["upload", "open", "demo", "?"] {
+        let Some(entry) = crate::help::find(word) else {
+            continue;
+        };
         text.push_str(&format!(
             "    {}  {}\r\n",
-            bold(&format!("{command:<11}")),
-            dim(description)
+            bold(&format!("{:<11}", entry.usage)),
+            dim(entry.summary)
         ));
     }
     text
@@ -2081,132 +2095,6 @@ pub fn file_list(files: &[String], main: Option<&str>) -> String {
     text
 }
 
-/// The app's own help, for `?`. Deliberately short: `hledger help` is one
-/// keystroke away and knows far more.
-pub fn help(plugins: &[(&str, &str, &str)]) -> String {
-    let mut text = String::new();
-    text.push_str(&format!("{}\r\n", bold("hledger-anywhere")));
-    text.push_str(&format!(
-        "{}\r\n\r\n",
-        dim(
-            "Everything you type goes to hledger unchanged, and -f is never needed: the \
-             loaded files are mounted, and the one being read is exported as $LEDGER_FILE."
-        )
-    ));
-
-    for (heading, rows) in groups_with(plugins) {
-        text.push_str(&format!("{}\r\n", bold(heading)));
-        for (form, description) in rows {
-            text.push_str(&format!(
-                "  {}  {}\r\n",
-                bold(&format!("{form:<18}")),
-                dim(&description)
-            ));
-        }
-        text.push_str("\r\n");
-    }
-
-    text.push_str(&format!("{}\r\n", bold("Keys")));
-    for line in [
-        "Enter runs a command. Tab completes commands, flags, accounts, aliases and paths,",
-        "ignoring case. A second Tab offers a menu: Tab and Shift+Tab step through it,",
-        "Escape undoes it. Tab on an empty line lists the commands you can run; when the",
-        "start of a word matches nothing, the closest names are listed instead. Either way",
-        "the line is left exactly as you typed it.",
-        "Up and Down recall history. Ctrl+C stops a running command, or clears the line.",
-        "Ctrl+A and Ctrl+E are the ends of the line, Ctrl+B and Ctrl+F move by character,",
-        "Alt+B and Alt+F by word. Ctrl+K, Ctrl+U and Ctrl+W cut to the end, the start and",
-        "by word; Ctrl+Y pastes the last cut. Ctrl+R searches the history as you type,",
-        "Ctrl+T swaps the two characters around the cursor, Ctrl+D deletes forward,",
-        "Ctrl+L clears the screen, and Ctrl+= and Ctrl+- change the font.",
-    ] {
-        text.push_str(&format!("  {}\r\n", dim(line)));
-    }
-    text.push_str(&format!(
-        "\r\n  {} {}\r\n",
-        dim("New here? Try"),
-        bold("demo")
-    ));
-    text
-}
-
-/// The help's sections: the core's own, with the plugins' rows merged into the
-/// matching section, and a section of their own for a group the core does not have.
-///
-/// A plugin is listed by the group it asks for, so `chart` reads as another way to
-/// get a report rather than as something bolted on.
-fn groups_with<'a>(
-    plugins: &'a [(&'a str, &'a str, &'a str)],
-) -> Vec<(&'a str, Vec<(String, String)>)> {
-    let mut sections: Vec<(&str, Vec<(String, String)>)> = GROUPS
-        .iter()
-        .map(|(heading, rows)| {
-            (
-                *heading,
-                rows.iter()
-                    .map(|(form, description)| ((*form).to_string(), (*description).to_string()))
-                    .collect(),
-            )
-        })
-        .collect();
-
-    for (group, form, summary) in plugins {
-        let section = match sections.iter_mut().find(|(heading, _)| heading == group) {
-            Some(section) => section,
-            None => {
-                sections.push((group, Vec::new()));
-                sections.last_mut().expect("just pushed")
-            }
-        };
-        section.1.push(((*form).to_string(), (*summary).to_string()));
-    }
-    sections
-}
-
-/// The `?` help, grouped by what the user is trying to do rather than by what the
-/// code does.
-const GROUPS: &[(&str, &[(&str, &str)])] = &[
-    (
-        "Files",
-        &[
-            ("upload", "add journal files"),
-            ("open", "open a folder on disk, editable"),
-            ("reopen", "take back the remembered folder, and write to it again"),
-            ("demo", "load the sample journal"),
-            ("journal [path]", "list the loaded files, or read a different one"),
-            ("download <path>", "save a file into your browser's downloads"),
-        ],
-    ),
-    (
-        "Reports",
-        &[
-            ("find <text>", "search everything printed so far; n and N step through it"),
-            ("/text", "the same search, for people who reach for / in a pager"),
-            ("alias name=cmd", "make a name run a command; alias lists them"),
-            ("unalias <name>", "remove one"),
-            ("plugins", "list the installed plugins, or add and remove repositories"),
-            ("settings", "show what is remembered, or export and import it as a file"),
-            ("theme [name]", "list the colour themes, or select one; plugin themes included"),
-            ("clear", "clear the screen"),
-        ],
-    ),
-    (
-        "A storage account",
-        &[
-            ("connect user@host", "connect a remoteStorage account"),
-            ("remote [dir]", "load the files under /hledger/ from that account"),
-            ("disconnect", "forget the account; the loaded files stay loaded"),
-        ],
-    ),
-    (
-        "This terminal",
-        &[
-            ("font [size]", "show or set the font size"),
-            ("screenreader on", "turn the accessibility tree on or off"),
-            ("?", "this help"),
-        ],
-    ),
-];
 
 #[cfg(test)]
 mod tests {
@@ -2733,7 +2621,13 @@ mod tests {
         assert_eq!(classify("open"), Command::Open);
         assert_eq!(classify("reopen"), Command::Reopen);
         assert_eq!(classify("clear"), Command::Clear);
-        assert_eq!(classify("?"), Command::Help);
+        assert_eq!(classify("?"), Command::Help(None));
+        // A question mark after a word asks for that word's help, and the word is the
+        // whole of what is between them: `open?` is not a command called `open?`.
+        assert_eq!(classify("open?"), Command::Help(Some("open")));
+        assert_eq!(classify("balance?"), Command::Help(Some("balance")));
+        // The question first reads the same way.
+        assert_eq!(classify("? open"), Command::Help(Some("open")));
         assert_eq!(classify("journal"), Command::Journal(None));
         assert_eq!(classify("journal books/2024.journal"), Command::Journal(Some("books/2024.journal")));
         assert_eq!(classify("balance --tree"), Command::Hledger("balance --tree"));
@@ -2853,7 +2747,7 @@ mod tests {
         // reads. Every message the terminal can produce is sampled here.
         let samples = [
             welcome("1.52.4"),
-            help(&[]),
+            crate::help::overview(&[], 100),
             prompt_for(None),
             prompt_for(Some("2024.journal")),
             isearch_prompt("bal", false),
@@ -2910,8 +2804,8 @@ mod tests {
                 other => panic!("{other:?}"),
             },
         ];
-        for text in samples.into_iter().chain(refusals) {
-            let visible = plain(&text);
+        let check = |text: &str| {
+            let visible = plain(text);
             assert!(
                 !visible.contains('`'),
                 "a backtick reached the terminal: {visible:?}"
@@ -2920,6 +2814,14 @@ mod tests {
                 !visible.contains('\u{2014}'),
                 "an em dash reached the terminal: {visible:?}"
             );
+        };
+        for text in samples.into_iter().chain(refusals) {
+            check(&text);
+        }
+        // Every command's own page, so the detail text is held to the same rule as the
+        // overview: no markdown that a terminal would print literally.
+        for entry in crate::help::ENTRIES {
+            check(&crate::help::page(entry, 100));
         }
     }
 
@@ -3596,9 +3498,9 @@ mod tests {
         // that is classified but not documented is a command nobody will find. The
         // plugins' words count: they are commands the user types.
         let plugins = crate::plugins::Registry::default();
-        let help = plain(&help(&plugins.help_entries()));
+        let text = plain(&crate::help::overview(&plugins.help_entries(), 100));
         for word in words() {
-            assert!(help.contains(word.as_str()), "help does not mention {word}");
+            assert!(text.contains(word.as_str()), "help does not mention {word}");
         }
     }
 

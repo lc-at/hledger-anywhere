@@ -342,6 +342,28 @@ const roles = new Set(colours.map(([role]) => role));
 check('and every role is one the app knows',
   [...roles].every((role) => ['background', 'foreground', 'cursor', 'accent', 'dim'].includes(role)),
   [...roles].join(', '));
+
+// WCAG AA, so a theme offered to other people is actually readable rather than merely
+// pretty on the author's monitor. The Rust side holds the built-in theme to this too.
+const luminance = (hex) => {
+  const digits = String(hex).replace('#', '');
+  const [r, g, b] = [0, 2, 4].map((at) => {
+    let value = parseInt(digits.slice(at, at + 2), 16) / 255;
+    value = value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    return value;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrast = (one, other) => {
+  const [a, b] = [luminance(one), luminance(other)];
+  const [hi, lo] = [Math.max(a, b), Math.min(a, b)];
+  return (hi + 0.05) / (lo + 0.05);
+};
+const unreadable = (manifest.themes || []).flatMap((theme) =>
+  ['foreground', 'dim', 'accent', 'cursor']
+    .filter((role) => theme.colors[role] && contrast(theme.colors[role], theme.colors.background) < 4.5)
+    .map((role) => `${theme.name}.${role}=${contrast(theme.colors[role], theme.colors.background).toFixed(2)}`));
+check('every theme role is readable (WCAG AA, 4.5:1)', unreadable.length === 0, unreadable.join(', '));
 let filesThere = true;
 for (const file of [
   '../assets/plugins/chart.js',
@@ -361,6 +383,12 @@ for (const file of [
   }
 }
 check('every plugin names a module that exists, library included', filesThere, '');
+
+const plugins = manifest.plugins || [];
+const documented = plugins.filter((plugin) => plugin.usage && plugin.help && plugin.help.length > 40);
+check('every bundled plugin documents itself for `<command>?`',
+  plugins.length > 0 && documented.length === plugins.length,
+  plugins.map((plugin) => `${plugin.name}:${plugin.usage ? 'usage' : 'no usage'}/${plugin.help ? 'help' : 'no help'}`).join(' '));
 
 // ------------------------------------------------------------------ the verdict
 
