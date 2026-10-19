@@ -424,6 +424,26 @@ mod tests {
     }
 
     #[test]
+    fn a_cursor_that_would_vanish_falls_back_to_the_foreground() {
+        // The cursor is the only role the app overrides when a theme names an unusable
+        // one: a caret you cannot see is worse than one that is not the author's colour.
+        let invisible = Theme::from_plugin(
+            "invisible-cursor",
+            &colors(&[
+                ("background", "#101010"),
+                ("foreground", "#eeeeee"),
+                ("cursor", "#111111"),
+            ]),
+        )
+        .expect("a usable theme");
+        assert_eq!(invisible.visible_cursor(), invisible.foreground);
+
+        // A cursor that reads is left exactly as the theme named it.
+        let visible = Theme::built_in();
+        assert_eq!(visible.visible_cursor(), visible.cursor);
+    }
+
+    #[test]
     fn a_ratio_is_measured_the_way_the_guidelines_do() {
         // The anchors of the scale: black on white is 21, and a colour on itself is 1.
         let black = Rgb { r: 0, g: 0, b: 0 };

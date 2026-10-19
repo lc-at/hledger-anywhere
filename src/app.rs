@@ -1560,7 +1560,10 @@ impl App {
             for (role, value) in [
                 ("background", theme.background.css()),
                 ("foreground", theme.foreground.css()),
-                ("cursor", theme.cursor.css()),
+                // The guarded cursor, not the raw one: a plugin draws its own caret (the
+                // editor window does), and it should get the same fallback the terminal
+                // gets when a theme's cursor would vanish into its background.
+                ("cursor", theme.visible_cursor().css()),
                 ("accent", theme.accent.css()),
                 ("dim", theme.dim.css()),
             ] {
