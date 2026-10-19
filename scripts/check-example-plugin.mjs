@@ -23,7 +23,18 @@
 
 import { readFile } from 'node:fs/promises';
 
-import Chart, { build, money, read } from '../assets/plugins/chart.js';
+import Chart, { build, money, parseReport, read } from '../assets/plugins/chart.js';
+import {
+  KINDS,
+  byDay,
+  headlineFor,
+  isD3Kind,
+  multiples,
+  readRegister,
+  readTree,
+  tableFor,
+  waterfall,
+} from '../assets/plugins/chart-d3.js';
 import {
   accountAt,
   configFor,
@@ -364,10 +375,117 @@ const unreadable = (manifest.themes || []).flatMap((theme) =>
     .filter((role) => theme.colors[role] && contrast(theme.colors[role], theme.colors.background) < 4.5)
     .map((role) => `${theme.name}.${role}=${contrast(theme.colors[role], theme.colors.background).toFixed(2)}`));
 check('every theme role is readable (WCAG AA, 4.5:1)', unreadable.length === 0, unreadable.join(', '));
+
+// ------------------------------------------------------------------ the D3 charts
+
+const REGISTER_CSV = [
+  '"txnidx","date","code","description","account","amount","total"',
+  '"1","2024-01-05","","Landlord","expenses:housing:rent","$600.00","$600.00"',
+  '"1","2024-01-05","","Landlord","assets:bank:checking","$-600.00","0"',
+  '"2","2024-01-09","","Grocery Store","expenses:food:groceries","$86.40","$86.40"',
+  '"2","2024-01-09","","Grocery Store","assets:bank:checking","$-86.40","0"',
+  '"3","2024-01-14","salary:january","Employer","income:salary","$-2200.00","$-2200.00"',
+  '"3","2024-01-14","salary:january","Employer","assets:bank:checking","$2200.00","0"',
+  '"4","2024-02-02","","Coffee","expenses:food:coffee","$12.50","$12.50"',
+  '"4","2024-02-02","","Coffee","assets:bank:checking","$-12.50","0"',
+].join('\n');
+
+const TREE_CSV = [
+  '"account","balance"',
+  '"expenses","$698.90"',
+  '"  food","$98.90"',
+  '"    coffee","$12.50"',
+  '"    groceries","$86.40"',
+  '"  housing:rent","$600.00"',
+].join('\n');
+
+const register = readRegister(REGISTER_CSV);
+check('the register parser finds its header and its rows', register && register.postings.length === 8);
+check('an amount written $-2200.00 is negative, not positive',
+  money('$-2200.00').value === -2200 && money('$1,234.56').value === 1234.56,
+  `${money('$-2200.00').value}`);
+
+const days = byDay(register);
+check('the calendar sums expenses per day, and only expenses',
+  days.days.length === 3 && days.days[0].date === '2024-01-05' && days.days[0].value === 600
+  && Math.abs(days.total - 698.90) < 0.005,
+  JSON.stringify(days.days));
+
+const falls = waterfall(register);
+check('the waterfall is income, expense categories and net',
+  falls.income === 2200 && Math.abs(falls.spent - 698.90) < 0.005
+  && Math.abs(falls.net - 1501.10) < 0.005,
+  JSON.stringify(falls));
+check('no asset transfer counts as income or expense',
+  falls.steps.length === 4 && !falls.steps.some((step) => /bank|checking/.test(step.label)),
+  JSON.stringify(falls.steps));
+
+const tree = readTree(TREE_CSV);
+check('the tree parser reads indentation as depth',
+  tree && tree.rows.length === 5 && tree.rows[1].depth === 1 && tree.rows[2].depth === 2
+  && Math.abs(tree.total - 698.90) < 0.005,
+  JSON.stringify(tree && tree.rows));
+check('a chain written in one row becomes a chain of nodes', tree.rows[4].label === 'housing:rent');
+
+const monthly = read(MONTHLY_CSV);
+const spark = multiples(monthly);
+check('the sparklines take the largest accounts and keep the periods',
+  spark.rows.length === Math.min(monthly.series.length, 8)
+  && spark.periods.length === monthly.periods.length);
+
+check('a kind picks its parser',
+  parseReport('treemap', TREE_CSV).rows.length === 5
+  && parseReport('calendar', REGISTER_CSV).days.length === 3
+  && parseReport('line', MONTHLY_CSV).periods.length === 3);
+
+check('the new presets ask for the report their shape needs',
+  build('treemap').command === 'balance --tree expenses -O csv'
+  && build('calendar -p 2024').command === 'register -p 2024 -O csv'
+  && build('waterfall').command === 'register -O csv'
+  && build('multiples').command === 'balance -M -O csv',
+  [build('treemap').command, build('calendar -p 2024').command, build('multiples').command].join(' | '));
+check('a named account still overrides a preset that takes one',
+  build('treemap assets').command === 'balance --tree assets -O csv'
+  && build('treemap assets').title === 'where the money went of assets',
+  build('treemap assets').title);
+check('exactly four kinds are D3',
+  KINDS.length === 4 && isD3Kind('treemap') && isD3Kind('multiples') && !isD3Kind('line'));
+
+const d3Page = page({
+  report: tree,
+  colors: COLORS,
+  title: 'where the money went',
+  command: 'balance --tree expenses -O csv',
+  token: 't',
+  kind: 'treemap',
+  module: 'about:blank',
+  scripts: ['https://example.invalid/d3.min.js'],
+});
+check('a D3 page draws into an svg and keeps the table',
+  d3Page.includes('<svg class="chart" id="chart"') && d3Page.includes('<table>')
+  && !d3Page.includes('<canvas'));
+check('a Chart.js page still draws into a canvas',
+  page({
+    report: monthly, colors: COLORS, title: 'spending', command: 'balance expenses -M -O csv',
+    token: 't', kind: null, module: 'about:blank', scripts: [],
+  }).includes('<canvas'));
+check('the treemap headline counts leaves, not parents',
+  headlineFor('treemap', tree) === '3 accounts, $698.90 at the leaves',
+  headlineFor('treemap', tree));
+check('the waterfall headline reads like a sentence',
+  headlineFor('waterfall', falls) === 'income $2,200.00, spent $698.90, net $1,501.10',
+  headlineFor('waterfall', falls));
+check('the treemap table carries every row',
+  ['food', 'coffee', 'housing'].every((name) => tableFor('treemap', tree).includes(name)));
+
 let filesThere = true;
 for (const file of [
   '../assets/plugins/chart.js',
   '../assets/plugins/chart-window.js',
+  '../assets/plugins/chart-data.js',
+  '../assets/plugins/chart-d3.js',
+  '../assets/plugins/vendor/d3/d3.min.js',
+  '../assets/plugins/vendor/d3/LICENSE',
   '../assets/plugins/vendor/chart.umd.js',
   '../assets/plugins/vendor/hammer.min.js',
   '../assets/plugins/vendor/chartjs-plugin-zoom.umd.js',

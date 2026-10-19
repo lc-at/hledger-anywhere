@@ -29,12 +29,25 @@
  *     chart expenses:food -p 2024   any account, any period
  *     chart balance assets -M   any hledger report, verbatim
  *
+ * And the four charts D3 draws, each asking for the report its shape needs:
+ *
+ *     chart treemap [account]   where the money went, as a treemap
+ *     chart calendar [-p 2024]  a year of daily spending
+ *     chart waterfall           income, each expense category, and net
+ *     chart multiples           a sparkline per account, month by month
+ *
  * The command is shown in the window, so what was asked for is never a mystery. Drawing lives
  * in ./chart-window.js, which the window imports too: the same code draws the first page and
  * every redraw after it.
  */
 
 import { page } from './chart-window.js';
+import { money, split, unitOf } from './chart-data.js';
+import { byDay, headlineFor, isD3Kind, multiples, readRegister, readTree, waterfall } from './chart-d3.js';
+
+// The check script imports the amount parser from here, because a plugin is where a parser
+// lives. It is defined once, in chart-data.js, and shared with the window and the D3 chart.
+export { money, split } from './chart-data.js';
 
 const FALLBACK_COLORS = {
   background: '#000000',
@@ -87,6 +100,24 @@ const PRESETS = [
     kind: 'shares',
     report: (account) => `balance ${account}`,
   },
+  // The charts D3 draws. Each asks hledger for the report its shape needs: a tree for the
+  // treemap, the register for the calendar and the waterfall, monthly balances for the
+  // sparklines.
+  {
+    names: ['treemap'],
+    title: 'where the money went',
+    kind: 'treemap',
+    account: 'expenses',
+    report: (account) => `balance --tree ${account}`,
+  },
+  { names: ['calendar'], title: 'daily spending', kind: 'calendar', report: () => 'register' },
+  { names: ['waterfall'], title: 'income to net', kind: 'waterfall', report: () => 'register' },
+  {
+    names: ['multiples', 'sparklines'],
+    title: 'accounts over time',
+    kind: 'multiples',
+    report: () => 'balance -M',
+  },
 ];
 
 export default {
@@ -107,7 +138,7 @@ export default {
     try {
       // -O csv is the only hledger output that keeps periods, accounts and amounts apart
       // without parsing a table whose columns move.
-      report = read(await host.hledger(query.command));
+      report = parseReport(query.kind, await host.hledger(query.command));
     } catch (error) {
       const why = error && error.message ? error.message : String(error);
       view.write(shell(colors, query.title, why));
@@ -131,7 +162,15 @@ export default {
       kind: query.kind,
       options: query.options,
       module: beside('chart-window.js'),
-      scripts: [beside('vendor/chart.umd.js'), beside('vendor/hammer.min.js'), beside('vendor/chartjs-plugin-zoom.umd.js')],
+      // A D3 chart needs one file and no plugins; a Chart.js chart needs the three it has
+      // always needed. The window only loads what it draws with.
+      scripts: isD3Kind(query.kind)
+        ? [beside('vendor/d3/d3.min.js')]
+        : [
+          beside('vendor/chart.umd.js'),
+          beside('vendor/hammer.min.js'),
+          beside('vendor/chartjs-plugin-zoom.umd.js'),
+        ],
     }));
     if (query.account) host.remember('account', query.account);
     host.say(`${host.name}: ${summary(query, report)}, in a new window.`);
@@ -147,13 +186,15 @@ export function build(args) {
   if (preset) {
     let account = preset.account;
     let flags = rest;
+    let asked = false;
     if (account && rest.length > 0 && !rest[0].startsWith('-')) {
       [account, ...flags] = rest;
+      asked = true;
     }
     const report = preset.report(account);
     return {
       command: csv(`${report} ${flags.join(' ')}`.trim()),
-      title: account && preset.account ? `${preset.title} of ${account}` : preset.title,
+      title: asked ? `${preset.title} of ${account}` : preset.title,
       account,
       kind: preset.kind || null,
       options: preset.options || {},
@@ -229,77 +270,27 @@ export function read(text) {
   };
 }
 
-/** One CSV line, honouring quoted cells. */
-export function split(line) {
-  const cells = [];
-  let cell = '';
-  let quoted = false;
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (quoted) {
-      if (character === '"' && line[index + 1] === '"') { cell += '"'; index += 1; }
-      else if (character === '"') quoted = false;
-      else cell += character;
-    } else if (character === '"') quoted = true;
-    else if (character === ',') { cells.push(cell); cell = ''; }
-    else cell += character;
-  }
-  cells.push(cell);
-  return cells;
-}
-
 /**
- * An amount, with the commodity hledger wrote around it kept.
+ * Parse the report a kind asked for, and reduce it to what the chart draws.
  *
- * hledger writes "$1,286.40", "-$12.00" or "1234.56 EUR" depending on the journal, and the
- * currency belongs on the chart. Both decimal styles are read, since `--decimal-mark` is a
- * thing a journal can set. `raw` is kept so a section row can be told from a row of zeroes.
+ * Chart.js kinds read hledger's balance CSV: one row per account, one column per period. A D3
+ * kind reads the shape it needs and then aggregates: the treemap draws the tree itself, the
+ * calendar draws days, the waterfall draws the walk from income to net, and the sparklines
+ * draw the largest accounts. Aggregating here means the window, the headline and the table all
+ * receive the same finished data.
  */
-export function money(text) {
-  const raw = String(text == null ? '' : text).trim();
-  const empty = { value: 0, prefix: '', suffix: '', raw: '' };
-  if (raw === '') return empty;
-
-  // The sign is read before the digits are looked for, because hledger puts the commodity
-  // between them: `-$12.00` is negative, and a digit match that never saw the minus read it
-  // as twelve. `$12.00-` and the accounting `(12.00)` are read too.
-  let body = raw;
-  let sign = 1;
-  if (/^\(.*\)$/.test(body)) {
-    sign = -1;
-    body = body.slice(1, -1).trim();
+export function parseReport(kind, text) {
+  if (kind === 'treemap') return readTree(text);
+  if (kind === 'calendar' || kind === 'waterfall') {
+    const register = readRegister(text);
+    if (!register) return null;
+    return kind === 'calendar' ? byDay(register) : waterfall(register);
   }
-  if (body.startsWith('-')) {
-    sign = -1;
-    body = body.slice(1).trim();
-  } else if (body.endsWith('-')) {
-    sign = -1;
-    body = body.slice(0, -1).trim();
+  if (kind === 'multiples') {
+    const report = read(text);
+    return report ? multiples(report) : null;
   }
-
-  const found = body.match(/[\d.,]+/);
-  if (!found) return { ...empty, raw };
-  let digits = found[0];
-  const comma = digits.lastIndexOf(',');
-  const dot = digits.lastIndexOf('.');
-  digits = comma > dot
-    ? digits.replace(/\./g, '').replace(',', '.')   // 1.234,56
-    : digits.replace(/,/g, '');                     // 1,234.56
-  const value = Number(digits);
-  if (!Number.isFinite(value)) return { ...empty, raw };
-
-  return {
-    value: sign * value,
-    prefix: body.slice(0, found.index).trim(),
-    suffix: body.slice(found.index + found[0].length).trim(),
-    raw,
-  };
-}
-
-/** The commodity to label an axis with: the first one hledger actually wrote. */
-function unitOf(amounts) {
-  const found = amounts.find((amount) => amount.prefix || amount.suffix);
-  return { prefix: found ? found.prefix : '', suffix: found ? found.suffix : '' };
+  return read(text);
 }
 
 /**
@@ -365,6 +356,9 @@ function escape(text) {
 
 /** One line for the terminal, so the window is not the only place the answer lives. */
 function summary(query, report) {
+  // The D3 charts already have a sentence for their data; using it keeps the terminal and the
+  // window saying the same thing.
+  if (isD3Kind(query.kind)) return headlineFor(query.kind, report);
   const total = (amounts) => amounts.reduce((sum, amount) => sum + amount.value, 0);
   const unit = report.unit;
   if (report.periods.length > 1) {

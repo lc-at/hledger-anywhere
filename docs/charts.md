@@ -1,8 +1,9 @@
 # Charts with D3
 
-**Status: proposed — not implemented.** This is the plan for replacing the charting
-library and adding report types the current one cannot draw. Nothing here is
-implemented yet; the bundled `chart` plugin still uses Chart.js.
+**Status: partly implemented.** D3 7.9.0 is vendored, and it draws four of the charts
+below: `chart treemap`, `chart calendar`, `chart waterfall` and `chart multiples`. The
+Chart.js charts still use Chart.js, so porting them (Phase 1) and export (Phase 3) remain.
+The rest of this document is the plan as written; the phases say what is done.
 
 ## Why
 
@@ -134,9 +135,8 @@ for the current charts.
 
 ## Phases
 
-**Phase 0 — spike (half a day).** Vendor d3 and draw one line chart from the existing `read()`
-output in a window. It answers the only question that could sink the plan: does d3 load and
-render from a `blob:` document as a classic script, and does it take the theme colours.
+**Phase 0 — spike (half a day). Done.** d3 is vendored, and the four D3 charts load it as a
+classic script in a `blob:` window and draw from the theme colours.
 
 **Phase 1 — scaffolding and parity (one to two days).** A small `chart-d3.js` with the shared
 pieces (svg sizing, axes, legend, tooltip, accessible table), and the three existing kinds
@@ -145,10 +145,12 @@ ported to it. If parity holds, remove Chart.js, `hammer.min.js` and
 while and decide again later. **Acceptance:** the existing chart presets look and behave the
 same, the plugin checks pass, three vendored files become one.
 
-**Phase 2 — the new charts (two to three days).** Treemap, calendar, waterfall, Sankey,
-multiples, stacked area, with their parsers and tests. **Acceptance:** each renders from the
-demo journal and from a real journal, is themed, has an accessible table, and the plugin
-check covers its pure parts.
+**Phase 2 — the new charts (two to three days). Done, except Sankey and stacked area.**
+The treemap, calendar, waterfall and multiples are drawn from the register and the tree CSV,
+each with an accessible table and a tooltip on every mark. **Sankey is not done:** it needs
+`d3-sankey`, a separate package that the UMD bundle does not include, and the data question in
+the open questions below is still open. Stacked area waits on Phase 1, since it is a Chart.js
+kind today.
 
 **Phase 3 — polish.** SVG/PNG export from the window, keyboard navigation, transitions,
 `docs/plugins.md` examples, and the README's chart section listing the new presets.

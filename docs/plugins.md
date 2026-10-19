@@ -10,7 +10,7 @@ why installing a repository is trusting it. Nothing about a plugin is sandboxed,
 app says so when you add one.
 
 One repository is bundled and installed at every start, so it needs no installing at all:
-[`assets/plugins`](../assets/plugins), whose `chart` plugin opens a balance line chart in
+[`assets/plugins`](../assets/plugins), whose `chart` plugin opens charts in
 its own window and which carries the colour themes. Read it as the worked example of
 everything below. Anything you add yourself works exactly the same way:
 

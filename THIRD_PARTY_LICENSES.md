@@ -71,6 +71,14 @@ They are loaded only in a chart window's own document, never in the app's page, 
 part of loading hledger-anywhere. They are vendored rather than fetched at runtime so the app
 has no network dependency and no JavaScript build step, which is how xterm.js is handled too.
 
+## D3, ISC
+
+Vendored in `assets/plugins/vendor/d3/`, loaded only in the chart windows that use it (the
+treemap, calendar, waterfall and sparkline charts).
+
+- Upstream: <https://github.com/d3/d3>
+- Pinned version: **7.9.0**, the UMD build (`dist/d3.min.js`)
+
 ## Ace, BSD-3-Clause
 
 Vendored in `assets/plugins/vendor/ace/`, because the bundled `edit` plugin loads it into

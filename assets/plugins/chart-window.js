@@ -1,5 +1,9 @@
 /**
- * The chart window: one chart, drawn by Chart.js, and nothing else on the page.
+ * The chart window: one chart, and nothing else on the page.
+ *
+ * Chart.js draws the line, bar and doughnut charts from a balance report. D3 draws the
+ * treemap, calendar, waterfall and sparklines, which Chart.js has no mark for; the window
+ * loads only the library the chart it is showing uses.
  *
  * There are no buttons, no fields and no disclosures. What is drawn comes from the command that
  * was run; everything you can do is done to the chart itself, which is what a chart is for:
@@ -24,18 +28,12 @@ const GRID_ALPHA = '3d';
 
 // --------------------------------------------------------------------------- numbers
 
-/** 1234567.891 -> "1,234,567.89", without asking the browser's locale. */
-export function group(number, decimals = 2) {
-  const fixed = Math.abs(number).toFixed(decimals);
-  const [whole, fraction] = fixed.split('.');
-  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? `.${fraction}` : '');
-}
-
-/** An amount as a person writes it: -$1,286.40. */
-export function format(amount, decimals = 2) {
-  const sign = amount.value < 0 ? '-' : '';
-  return `${sign}${amount.prefix}${group(amount.value, decimals)}${amount.suffix}`;
-}
+// The formatter, the palette and the light/dark test are defined once in chart-data.js, so
+// the plugin, this window and the D3 chart cannot drift apart. Re-exported here because this
+// is where the window's own helpers are read, by tests and by callers.
+import { format, isLight, palette } from './chart-data.js';
+import { headlineFor, isD3Kind, render as renderD3, tableFor } from './chart-d3.js';
+export { format, group, isLight, palette } from './chart-data.js';
 
 /** The series worth drawing, largest first, with the rest added up as "other". */
 export function ordered(report, limit = 7) {
@@ -73,51 +71,6 @@ function add(amounts) {
     prefix: (present.find((amount) => amount.prefix) || {}).prefix || '',
     suffix: (present.find((amount) => amount.suffix) || {}).suffix || '',
   };
-}
-
-/** The colours the series are drawn in, worked out from the theme's accent. */
-export function palette(colors, count) {
-  const [hue] = toHsl(colors.accent);
-  const light = isLight(colors.background);
-  // One lightness that reads on this background, and a golden-angle spread so two,
-  // five or nine series are as far apart as the wheel allows. Inheriting the accent's
-  // saturation made every series as loud as the accent itself, which on a cream theme
-  // turned a spending chart into a wall of brown.
-  const lightness = light ? 40 : 66;
-  return Array.from({ length: Math.max(count, 1) }, (_, index) => {
-    const shifted = (hue + index * 137.508) % 360;
-    return `hsl(${shifted.toFixed(0)} 55% ${lightness}%)`;
-  });
-}
-
-/** Whether a CSS colour is light, near enough, for choosing readable series colours. */
-export function isLight(css) {
-  const match = /^#?([0-9a-f]{6})$/i.exec(String(css).trim());
-  if (!match) return false;
-  const value = parseInt(match[1], 16);
-  const [r, g, b] = [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-  return (299 * r + 587 * g + 114 * b) / 1000 >= 128;
-}
-
-/** Hue, saturation and lightness of a hex colour. */
-function toHsl(css) {
-  const match = /^#?([0-9a-f]{6})$/i.exec(String(css).trim());
-  if (!match) return [210, 60];
-  const value = parseInt(match[1], 16);
-  const r = ((value >> 16) & 255) / 255;
-  const g = ((value >> 8) & 255) / 255;
-  const b = (value & 255) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const lightness = (max + min) / 2;
-  const delta = max - min;
-  if (delta === 0) return [0, 0, lightness * 100];
-  const saturation = delta / (1 - Math.abs(2 * lightness - 1));
-  let hue;
-  if (max === r) hue = 60 * (((g - b) / delta) % 6);
-  else if (max === g) hue = 60 * ((b - r) / delta + 2);
-  else hue = 60 * ((r - g) / delta + 4);
-  return [(hue + 360) % 360, saturation * 100, lightness * 100];
 }
 
 // --------------------------------------------------------------------------- the report
@@ -337,7 +290,11 @@ function escape(text) {
  * shows nothing if the script does not.
  */
 export function page({ report, colors, title, command, token, kind, options = {}, module, scripts = [] }) {
-  const type = typeFor(report, kind);
+  // A D3 chart carries a different report and gets an svg instead of a canvas. Everything
+  // else on the page — the heading, the table, the note — is the same.
+  const d3Kind = isD3Kind(kind);
+  const type = d3Kind ? null : typeFor(report, kind);
+  const sub = d3Kind ? headlineFor(kind, report) : headline(report, type);
   const data = JSON.stringify({ report, colors, token, kind, options, title, command })
     .replace(/</g, '\\u003c');
   const dark = !isLight(colors.background);
@@ -350,8 +307,9 @@ export function page({ report, colors, title, command, token, kind, options = {}
   main { max-width:960px; margin:0 auto; padding:24px 24px 40px; }
   h1 { font-size:18px; font-weight:600; margin:0 0 2px; }
   .sub { color:${colors.dim}; margin:0 0 16px; }
-  .frame { position:relative; height:${type === 'doughnut' ? '380px' : '400px'}; }
+  .frame { position:relative; height:${d3Kind ? '420px' : type === 'doughnut' ? '380px' : '400px'}; }
   canvas { cursor:pointer; }
+  svg.chart { display:block; width:100%; height:100%; }
   table { border-collapse:collapse; margin-top:22px; font-size:13px; width:100%; }
   th { font-weight:500; text-align:left; color:${colors.dim}; padding-bottom:4px; }
   th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
@@ -363,10 +321,12 @@ export function page({ report, colors, title, command, token, kind, options = {}
 <body>
 <main>
   <h1 id="heading">${escape(title)}</h1>
-  <p class="sub" id="sub">${escape(headline(report, type))}</p>
+  <p class="sub" id="sub">${escape(sub)}</p>
   <p class="warn" id="warn" hidden></p>
-  <div class="frame"><canvas id="chart" role="img" aria-label="${escape(title)}"></canvas></div>
-  <div id="table">${tableView(report)}</div>
+  <div class="frame">${d3Kind
+    ? `<svg class="chart" id="chart" role="img" aria-label="${escape(title)}"></svg>`
+    : `<canvas id="chart" role="img" aria-label="${escape(title)}"></canvas>`}</div>
+  <div id="table">${d3Kind ? tableFor(kind, report) : tableView(report)}</div>
   <p class="note">from hledger's own numbers: <code id="command">${escape(command)}</code></p>
 </main>
 <script type="application/json" id="chart-data">${data}</script>
@@ -410,6 +370,36 @@ export function mount(root = document) {
   const heading = root.getElementById('heading');
   const sub = root.getElementById('sub');
   const command = root.getElementById('command');
+
+  // The D3 charts draw themselves from the data in the page. They have no drill-down: the
+  // bridge that asks the plugin for another report belongs to the Chart.js charts.
+  if (isD3Kind(data.kind)) {
+    heading.textContent = data.title;
+    document.title = `hledger: ${data.title}`;
+    sub.textContent = headlineFor(data.kind, data.report);
+    command.textContent = data.command;
+    if (!window.d3) {
+      show(warn, 'The chart library did not load, so this is the numbers alone.');
+      return;
+    }
+    const svg = root.getElementById('chart');
+    const paint = () => {
+      try {
+        renderD3(data.kind, svg, data.report, data.colors);
+        show(warn, '');
+      } catch (error) {
+        show(warn, error && error.message ? error.message : String(error));
+      }
+    };
+    paint();
+    // A new size is a new layout, so the chart is redrawn rather than stretched.
+    let timer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(timer);
+      timer = setTimeout(paint, 120);
+    });
+    return;
+  }
 
   if (typeof window.Chart !== 'function') {
     show(warn, 'The chart library did not load, so this is the numbers alone.');

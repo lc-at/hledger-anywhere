@@ -48,7 +48,7 @@
       ],
       "module": "./chart.js",
       "usage": "chart [preset|account] [flags]",
-      "help": "Opens a chart in its own window, drawn from hledger's own numbers. Named questions answer for the usual cases: spending, income, cashflow, networth, balances, payees, top and shares. Anything else is read as an account, and a report name such as balance or register is passed through verbatim. The window has no controls: hover for values, click a legend entry to hide a series, scroll to zoom, drag to pan, double-click to reset, click a point to chart that account on its own, and press Escape to go back."
+      "help": "Opens a chart in its own window, drawn from hledger's own numbers. Named questions answer for the usual cases: spending, income, cashflow, networth, balances, payees, top and shares. Four are drawn with D3 instead: treemap for where the money went, calendar for a year of daily spending, waterfall for income down to net, and multiples for a sparkline per account. Anything else is read as an account, and a report name such as balance or register is passed through verbatim. The window has no controls: hover for values, click a legend entry to hide a series, scroll to zoom, drag to pan, double-click to reset, click a point to chart that account on its own, and press Escape to go back."
     },
     {
       "name": "edit",

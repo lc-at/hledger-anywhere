@@ -225,11 +225,17 @@ report you write out yourself:
 | `chart payees` | spending by payee, month by month |
 | `chart top` | where it all went, largest first |
 | `chart shares` | what share each account is of the total |
+| `chart treemap [account]` | where the money went, as a treemap of the account tree |
+| `chart calendar [-p 2024]` | a year of spending, one square per day |
+| `chart waterfall` | income, each expense category, and what is left |
+| `chart multiples` | one sparkline per account, month by month |
 | `chart expenses:food -p 2024` | any account, any period |
 | `chart balance assets -M` | any hledger report, verbatim |
 
-Nothing is guessed from the arguments except whether to ask for months, and that is not
-guessed when you named a period yourself.
+The last four are drawn with D3 rather than Chart.js: the treemap asks hledger for the account
+tree, and the calendar and waterfall ask for the register, because that is the shape the
+picture needs. Nothing is guessed from the arguments except whether to ask for months, and
+that is not guessed when you named a period yourself.
 
 The shape comes from the report: several periods is a line, one column is a ranking with the
 largest first, and `chart shares` is a doughnut.
