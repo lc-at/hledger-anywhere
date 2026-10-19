@@ -238,12 +238,6 @@ pub enum Command<'a> {
     Alias(Option<&'a str>),
     /// `unalias name` removes one.
     Unalias(Option<&'a str>),
-    /// `connect user@host` connects a remoteStorage account.
-    Connect(Option<&'a str>),
-    /// `disconnect` forgets it.
-    Disconnect,
-    /// `remote [dir]` loads files from the connected account.
-    Remote(Option<&'a str>),
     /// `font [size]` shows or sets the terminal font size.
     Font(Option<&'a str>),
     /// `screenreader [on|off]` shows or sets the accessibility tree.
@@ -293,9 +287,6 @@ pub fn classify(line: &str) -> Command<'_> {
         "demo" => Command::Demo,
         "download" => Command::Download((!rest.is_empty()).then_some(rest)),
         "alias" => Command::Alias((!rest.is_empty()).then_some(rest)),
-        "connect" => Command::Connect((!rest.is_empty()).then_some(rest)),
-        "disconnect" => Command::Disconnect,
-        "remote" => Command::Remote((!rest.is_empty()).then_some(rest)),
         "font" => Command::Font((!rest.is_empty()).then_some(rest)),
         "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
         "plugins" => Command::Plugins((!rest.is_empty()).then_some(rest)),
@@ -837,9 +828,6 @@ pub const COMMANDS: &[&str] = &[
     "download",
     "alias",
     "unalias",
-    "connect",
-    "remote",
-    "disconnect",
     "font",
     "screenreader",
     "plugins",
@@ -2033,8 +2021,8 @@ pub fn folder_remembered() -> String {
 
 /// What the terminal prints after files arrive, from wherever they came.
 ///
-/// `source` is the verb: files are uploaded, dropped or read from an account, and
-/// saying "Uploaded" after `remote` would be a lie about where they went.
+/// `source` is the verb: files are uploaded, dropped or read from a folder, and saying
+/// "Uploaded" after `open` would be a lie about where they went.
 pub fn files_arrived(
     source: &str,
     loaded: &[String],
@@ -3127,18 +3115,6 @@ mod tests {
 
         // Case-insensitive, like the other search.
         assert!(reverse_search(&history, "BALANCE", None).is_some());
-    }
-
-    #[test]
-    fn the_remote_commands_are_the_apps_and_nothing_else_is_shadowed() {
-        assert_eq!(classify("connect user@5apps.com"), Command::Connect(Some("user@5apps.com")));
-        assert_eq!(classify("connect"), Command::Connect(None));
-        assert_eq!(classify("disconnect"), Command::Disconnect);
-        assert_eq!(classify("remote"), Command::Remote(None));
-        assert_eq!(classify("remote books"), Command::Remote(Some("books")));
-        // hledger's own `close` and `roi` are untouched, and so is `remote`-ish text.
-        assert_eq!(classify("remote-control"), Command::Hledger("remote-control"));
-        assert_eq!(classify("close"), Command::Hledger("close"));
     }
 
     #[test]

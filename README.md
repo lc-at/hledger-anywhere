@@ -6,18 +6,18 @@ A terminal for [hledger](https://hledger.org), running entirely in your browser.
 
 The real hledger CLI, the pinned **1.52.4** build for `wasm32-wasi`, runs in a Web
 Worker, and everything you type goes to it unchanged. There is no server: the whole
-application is static files. Nothing you load leaves the browser, except when you
-deliberately connect a remoteStorage account (see [remoteStorage](#remotestorage)).
+application is static files. Nothing you load leaves the browser.
+
 
 ```
-  hledger-anywhere  hledger 1.52.4 (wasm32-wasi)
+  hledger-anywhere  hledger 1.52.4 · wasm sha256 acd7c4e955b1…
   A terminal for hledger, running entirely in this tab.
   Drop journal files on this window, or type:
     upload       add journal files
     open         open a folder on disk, editable
-    demo         try the sample journal
-    ?            every command and key
-  No journal is loaded yet.
+    demo         load the sample journal
+    ?            this help; put ? after a command for that one
+No journal is loaded yet.
 no journal » demo
 Loaded the sample journal (2 files), reading hledger.journal.
 hledger.journal » balance --tree
@@ -46,7 +46,6 @@ copied from a real session, not written by hand.
 - [Using it](#using-it), commands, keys, quoting, search
 - [Loading a journal](#loading-a-journal)
 - [Editing, and getting data out](#editing-and-getting-data-out)
-- [remoteStorage](#remotestorage)
 - [Offline and installable](#offline-and-installable)
 - [How it works](#how-it-works)
 - [Building and running](#building-and-running)
@@ -104,9 +103,6 @@ Everything that is not in this table is passed to hledger verbatim.
 | `unalias <name>` | Remove one. |
 | `/text` | Search what commands have printed. |
 | `n` / `N` | Repeat that search forwards / backwards. |
-| `connect user@host` | Connect a remoteStorage account. |
-| `remote [dir]` | Load every file under `/hledger/` (or a folder inside it) from that account. |
-| `disconnect` | Forget the account; the files already loaded stay loaded. |
 | `font [size]` | Show or set the font size, 8 to 32 px. |
 | `screenreader` | Turn xterm's accessibility tree `on` or `off`. |
 | `clear` | Clear the screen. |
@@ -197,8 +193,8 @@ keeps what a command wrote as part of the loaded files, so the next command can 
 it.
 
 **Getting a file out of the browser** is `download <path>`, which saves it through the
-browser's own download. Everything loaded is also in IndexedDB, and a journal synced
-through [remoteStorage](#remotestorage) is in your own account.
+browser's own download. Everything loaded is also in IndexedDB, so a reload does not
+need another upload.
 
 **What a command writes lasts for this visit.** The file is in the engine's filesystem
 and in the list `download` reads, and it is deliberately not stored: an exported report
@@ -340,8 +336,8 @@ edited by hand.
 ## Read-only, except where you `open`
 
 Reports never change the journal, and that is on purpose: a report is easier to trust
-when nothing it read has changed underneath it. What `upload`, `remote` and `demo` load
-is read-only.
+when nothing it read has changed underneath it. What `upload` and `demo` load is
+read-only.
 
 `open` is the exception. It mounts a folder on disk through the File System Access API
 and keeps the browser's handle to it, so `edit` can write a journal back and a save
@@ -369,30 +365,6 @@ What that means:
 
 Files an `open` mounted are written back to disk on save; files from anywhere else are
 read-only, and a save to one reports that it has nowhere to write.
-
-## remoteStorage
-
-[remoteStorage](https://remotestorage.io) is how the journal follows you between
-devices without this app running a server: the files live in an account you choose,
-and the browser talks to it directly.
-
-```
-no journal » connect you@host     leaves for the consent screen, and comes back
-Connected to your storage account. remote loads the journals in it.
-no journal » remote               walks /hledger/, mounts every file like an upload
-Read 4 files from /hledger/.
-```
-
-Paths are re-rooted at the category, so `/hledger/books/2024.journal` becomes
-`books/2024.journal` in the mount, the same shape an upload produces, which keeps an
-`include` between files in different folders working. Files have to live under the
-`hledger` category, because remoteStorage grants access one category at a time;
-changing which one is a one-line change in `src/remote/mod.rs`.
-
-The library is 146 KB and is loaded when you first use a remote command, or
-immediately on the page that comes *back* from `connect`, because the access token
-arrives in the URL fragment and has to be claimed before it is gone. A file in your
-account that cannot be read is skipped and named rather than stopping the sync.
 
 ## Offline and installable
 
@@ -425,14 +397,11 @@ assets/js/
                             it, fs_mem.js is the in-memory filesystem the engine
                             is given, fs_opfs.js is one we do not use
   vendor/xterm/             xterm.js (MIT), vendored
-  vendor/remotestorage/     remoteStorage.js (MIT), vendored, loaded on demand
 assets/wasm/                hledger.wasm, fetched at build time, verified against wasm.lock
 assets/icons/               drawn by scripts/make-icons.py
 src/terminal/mod.rs         the line editor, commands, quoting, search (pure)
 src/terminal/view.rs        xterm.js, wrapped (wasm)
 src/plugins/mod.rs          the plugin contract (pure)
-src/remote/mod.rs           remoteStorage paths and listings (pure)
-src/remote/client.rs        the remoteStorage library, glued in (wasm)
 src/hledger/                the engine's request/response types, and the JS bridge
 src/journal.rs              choosing which file is the journal (pure)
 src/upload.rs               the file picker (wasm)
@@ -444,9 +413,8 @@ scripts/                    build/fetch the engine, run it natively, draw the ic
 
 The crate is split along a wasm boundary, enforced by `cfg`: the pure modules compile
 for the host and are covered by `cargo test`, and no `web_sys` import can leak into
-them. That is why the line editor, the quoting rules, the search matcher, the
-read-only rules and the remoteStorage path handling are all testable without a
-browser.
+them. That is why the line editor, the quoting rules, the search matcher and the
+read-only rules are all testable without a browser.
 
 **Plugins are how commands beyond the core's own are added.** The core is a terminal,
 a set of loaded files, and a way to run hledger on them. A plugin declares a word, how
@@ -524,10 +492,7 @@ CI runs the tests, both lints, that engine smoke test, and then the build.
 Beyond the tests, the behaviour in this README was verified by driving the running
 app in a browser: a first run with the session cleared, completion read off the
 screen, an interrupted long command, offline mode with the network actually off, a real
-`ClipboardEvent` paste, and the whole remoteStorage round trip, connect, `put`, and
-reading the journals back into a fresh browser, against a real
-[armadietto](https://github.com/remotestorage/armadietto) server on `127.0.0.1`. The
-`put` half of that is gone with the other writers; the reading half still stands.
+`ClipboardEvent` paste, and the file picker, the editor window and the chart window.
 
 ## Known limitations
 

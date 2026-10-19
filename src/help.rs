@@ -192,38 +192,6 @@ pub const ENTRIES: &[Entry] = &[
         examples: &[("clear", "wipe the screen")],
     },
     Entry {
-        word: "connect",
-        usage: "connect user@host",
-        group: "A storage account",
-        summary: "connect a remoteStorage account",
-        detail: "Connects a remoteStorage account so the journals follow you between \
-                 devices without this app running a server. The browser talks to it \
-                 directly, and remote is what loads the files.",
-        examples: &[("connect you@5apps.com", "connect an account")],
-    },
-    Entry {
-        word: "remote",
-        usage: "remote [dir]",
-        group: "A storage account",
-        summary: "load the files under /hledger/ from that account",
-        detail: "Walks /hledger/ in the connected account and mounts every file, keeping \
-                 the paths below it. disconnect forgets the account but leaves the \
-                 loaded files alone.",
-        examples: &[
-            ("remote", "load everything under /hledger/"),
-            ("remote books/", "load one folder"),
-        ],
-    },
-    Entry {
-        word: "disconnect",
-        usage: "disconnect",
-        group: "A storage account",
-        summary: "forget the account; the loaded files stay loaded",
-        detail: "Forgets the remoteStorage account and its token. What is already \
-                 mounted stays mounted, and its files remain readable.",
-        examples: &[("disconnect", "forget the account")],
-    },
-    Entry {
         word: "font",
         usage: "font [size]",
         group: "This terminal",
@@ -530,7 +498,7 @@ mod tests {
     #[test]
     fn the_overview_lists_commands_and_plugins_by_group() {
         let text = plain(&overview(&[("chart", "Reports", "open a balance chart")], 100));
-        for heading in ["Files", "Reports", "A storage account", "This terminal", "Keys"] {
+        for heading in ["Files", "Reports", "This terminal", "Keys"] {
             assert!(text.contains(heading), "no {heading} section: {text}");
         }
         assert!(text.contains("chart"), "{text}");

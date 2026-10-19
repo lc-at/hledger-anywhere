@@ -30,7 +30,6 @@ use crate::journal;
 use crate::plugins::{self, Registry};
 use crate::settings::{Alias, Settings};
 use crate::theme::Theme;
-use crate::remote;
 use crate::store::{Session, Store};
 use crate::terminal::{self, Command, Completion, Editor};
 use crate::terminal::view::Screen;
@@ -49,14 +48,6 @@ const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
 
 /// `localStorage` key for the command aliases.
 const ALIAS_KEY: &str = "hledger-anywhere.terminal.aliases.v1";
-
-/// `localStorage` key marking that a `connect` is waiting to come back.
-///
-/// The library claims the access token from the URL fragment when it starts, and it
-/// only starts when a remote command runs, which is too late: the fragment is gone
-/// by then and the connection with it. This flag says "someone is expected back", so
-/// the next page load starts the library immediately.
-const REMOTE_PENDING_KEY: &str = "hledger-anywhere.remote.pending.v1";
 
 /// `localStorage` key for the screen reader preference.
 const SCREEN_READER_KEY: &str = "hledger-anywhere.terminal.screenreader.v1";
@@ -127,84 +118,12 @@ pub fn start() {
 
     register_service_worker();
 
-    app.remote_return();
     // Plugins are installed from the settings, so this is where they arrive.
     app.load_repositories();
 
     let booting = Rc::clone(&app);
     spawn_local(async move { boot(booting).await });
 }
-
-/// Walk a remoteStorage directory and read every file in it.
-///
-/// Breadth-first over the folders `getListing` reports, with a visited set: the
-/// library is not consulted about loops, and one bad listing should not become an
-/// infinite walk. The size cap is the same one an upload gets, because this is the
-/// same act by a different route.
-async fn read_remote(
-    directory: &str,
-) -> Result<(upload::Picked, Option<String>), remote::client::RemoteError> {
-    let account = remote::client::Account::open().await?;
-    let address = account.user_address();
-    let mut picked = upload::Picked::default();
-    let mut queue = vec![directory.to_string()];
-    let mut visited: Vec<String> = Vec::new();
-    let mut bytes = 0usize;
-    let mut skipped: Vec<String> = Vec::new();
-
-    while let Some(here) = queue.pop() {
-        if visited.contains(&here) {
-            continue;
-        }
-        visited.push(here.clone());
-
-        let entries = account.list(&here).await?;
-        // Only folders directly inside this one are worth listing next: a listing
-        // that reached further would otherwise be walked twice.
-        queue.extend(remote::subdirectories(&entries, &here));
-
-        for entry in entries.iter().filter(|entry| !entry.is_dir) {
-            let Some(path) = remote::mount_path(&entry.path) else {
-                continue;
-            };
-            if picked.files.iter().any(|file| file.path == path) {
-                continue;
-            }
-            // One file that cannot be read is not a reason to abandon the journal
-            // next to it: an account may hold anything, and the point of `remote`
-            // is the journals in it.
-            let contents = match account.read(&entry.path).await {
-                Ok(contents) => contents,
-                Err(error) => {
-                    skipped.push(format!("{} ({})", path, error.message()));
-                    continue;
-                }
-            };
-            bytes += contents.len();
-            if bytes > MAX_REMOTE_BYTES {
-                return Err(remote::client::RemoteError::Failed(format!(
-                    "that is more than {} MB of journal. {} loads a smaller part.",
-                    MAX_REMOTE_BYTES / (1024 * 1024),
-                    terminal::bold("remote <folder>")
-                )));
-            }
-            picked.files.push(JournalFile::new(path, contents));
-        }
-    }
-
-    picked.files.sort_by(|left, right| left.path.cmp(&right.path));
-    if !skipped.is_empty() {
-        picked.skipped.extend(
-            skipped
-                .into_iter()
-                .map(|entry| (entry, "could not be read".to_string())),
-        );
-    }
-    Ok((picked, address))
-}
-
-/// How much may be read from an account in one go, matching the upload limit.
-const MAX_REMOTE_BYTES: usize = 50 * 1024 * 1024;
 
 /// Hand a file to the browser as a download.
 ///
@@ -328,10 +247,7 @@ struct App {
     /// rather than the `/foo` you just typed or the count line that followed it.
     chatter: RefCell<Vec<String>>,
     /// The Ctrl+R search in progress, if any.
-    isearch: RefCell<Option<ISearch>>,
-    /// Whether the connection coming back has already been reported.
-    remote_reported: Cell<bool>,
-    /// The terminal font size, in pixels, kept between visits.
+    isearch: RefCell<Option<ISearch>>,    /// The terminal font size, in pixels, kept between visits.
     font: Cell<u32>,
     /// Whether the terminal's accessibility tree is on, kept between visits.
     screen_reader: Cell<bool>,
@@ -370,7 +286,6 @@ impl App {
             accounts_error: RefCell::new(None),
             chatter: RefCell::new(Vec::new()),
             isearch: RefCell::new(None),
-            remote_reported: Cell::new(false),
             font: Cell::new(load_font()),
             screen_reader: Cell::new(load_screen_reader()),
             aliases: RefCell::new(load_aliases()),
@@ -996,23 +911,6 @@ impl App {
                     terminal::bold("unalias <name>"),
                     terminal::bold("alias")
                 ));
-            }
-            Command::Connect(Some(address)) => {
-                if let Some(address) = self.single(address) {
-                    self.connect_remote(&address);
-                }
-            }
-            Command::Connect(None) => self.announce(&format!(
-                "Which account? Use {} for example {}.",
-                terminal::bold("connect user@host"),
-                terminal::bold("connect you@5apps.com")
-            )),
-            Command::Disconnect => self.disconnect_remote(),
-            Command::Remote(None) => self.load_remote(""),
-            Command::Remote(Some(path)) => {
-                if let Some(path) = self.single(path) {
-                    self.load_remote(&path);
-                }
             }
             Command::Font(None) => self.announce(&format!(
                 "The font is {}px, between {} and {}. {} changes it, and so do \
@@ -2389,134 +2287,6 @@ impl App {
         }
         save_aliases(&self.aliases.borrow());
         self.announce(&format!("Removed {}.", terminal::bold(name)));
-    }
-
-    /// `connect user@host`: start connecting a remoteStorage account.
-    ///
-    /// This ends in a redirect to the provider's consent screen and back, so the
-    /// message has to be printed before anything else happens, after the redirect
-    /// there is nobody left to print it.
-    fn connect_remote(self: &Rc<App>, address: &str) {
-        let app = Rc::clone(self);
-        let address = address.to_string();
-        // Marked before the redirect, so the page that comes back knows to expect
-        // a token in its fragment.
-        if let Some(storage) = storage() {
-            let _ = storage.set_item(REMOTE_PENDING_KEY, "on");
-        }
-        self.announce(&format!(
-            "Connecting {address}, your browser will leave this page for the \
-             provider's consent screen and come back."
-        ));
-        spawn_local(async move {
-            if let Err(error) = remote::client::load_library().await {
-                app.announce(&error.message());
-                return;
-            }
-            match remote::client::Account::connect(&address) {
-                Ok(()) => {}
-                Err(error) => app.announce(&error.message()),
-            }
-        });
-    }
-
-    /// Deal with a connection coming back from a provider.
-    ///
-    /// Called once at start-up, and does nothing at all unless a `connect` was
-    /// started in some previous page load. Starting the library is what claims the
-    /// token from the fragment, so this is the difference between connecting once
-    /// and never connecting at all.
-    fn remote_return(self: &Rc<App>) {
-        let pending = storage()
-            .and_then(|storage| storage.get_item(REMOTE_PENDING_KEY).ok().flatten())
-            .is_some();
-        if !pending {
-            return;
-        }
-        if let Some(storage) = storage() {
-            let _ = storage.remove_item(REMOTE_PENDING_KEY);
-        }
-
-        let app = Rc::clone(self);
-        spawn_local(async move {
-            if remote::client::load_library().await.is_err() {
-                return;
-            }
-            // The library may already know, and may say so a moment later; either
-            // way the message is printed once.
-            if remote::client::Account::wait_connected().await {
-                app.report_connection(None);
-            }
-            let announcing = Rc::clone(&app);
-            let _ = remote::client::Account::on_connected(move |address| {
-                announcing.report_connection(address);
-            });
-        });
-    }
-
-    /// Say that the account is connected, once.
-    fn report_connection(self: &Rc<App>, address: Option<String>) {
-        if self.remote_reported.replace(true) {
-            return;
-        }
-        match address {
-            Some(address) => self.announce(&format!(
-                "Connected to {address}. {} loads the journals in the account.",
-                terminal::bold("remote")
-            )),
-            None => self.announce(&format!(
-                "Connected to your storage account. {} loads the journals in it.",
-                terminal::bold("remote")
-            )),
-        }
-        self.prompt();
-    }
-
-    /// `disconnect`: forget the account. The local cache is left alone, so the
-    /// files already loaded keep working.
-    fn disconnect_remote(self: &Rc<App>) {
-        match remote::client::Account::disconnect() {
-            Ok(()) => self.announce(&format!(
-                "Disconnected. The files already loaded stay loaded; {} brings the \
-                 account back.",
-                terminal::bold("connect")
-            )),
-            Err(error) => self.announce(&error.message()),
-        }
-    }
-
-
-    /// `remote [dir]`: walk the account and mount what is there.
-    ///
-    /// The work is done in the terminal's own thread of control, so the terminal
-    /// says what it is doing: a journal is a directory tree, and this walks it one
-    /// listing at a time.
-    fn load_remote(self: &Rc<App>, argument: &str) {
-        let app = Rc::clone(self);
-        let directory = remote::directory_for(argument);
-        self.busy.set(true);
-        self.announce(&format!("Reading {directory} from your storage account…"));
-
-        spawn_local(async move {
-            let outcome = read_remote(&directory).await;
-            app.busy.set(false);
-            match outcome {
-                Ok((picked, _)) if picked.files.is_empty() => app.announce(&format!(
-                    "Nothing under {directory}. Files have to live in the {} category.",
-                    remote::CATEGORY
-                )),
-                Ok((picked, address)) => {
-                    let count = picked.files.len();
-                    app.accept_files(picked, "Read");
-                    let from = match address {
-                        Some(address) => format!("{directory} in {address}"),
-                        None => directory.clone(),
-                    };
-                    app.announce(&format!("Read {count} file(s) from {from}."));
-                }
-                Err(error) => app.announce(&error.message()),
-            }
-        });
     }
 
     /// Take files dropped anywhere on the page.

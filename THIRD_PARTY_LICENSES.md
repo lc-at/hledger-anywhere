@@ -56,14 +56,6 @@ They are loaded by plain `<script>`/`<link>` tags in `index.html` and reached
 through the globals they publish (`window.Terminal`, `window.FitAddon.FitAddon`),
 which is why no npm dependency and no bundler are involved.
 
-## remoteStorage.js, MIT
-
-Vendored in `assets/js/vendor/remotestorage/`, loaded on demand by
-`src/remote/client.rs` when a remote command is first used.
-
-- Upstream: <https://github.com/remotestorage/remotestorage.js>
-- Pinned version: **2.0.0-beta.10** (npm's `latest` and `stable` both point at it)
-
 ## Chart.js, chartjs-plugin-zoom, Hammer.js, MIT
 
 Vendored in `assets/plugins/vendor/`, because the bundled chart plugin loads them into the
@@ -77,8 +69,7 @@ window it opens:
 
 They are loaded only in a chart window's own document, never in the app's page, so they are not
 part of loading hledger-anywhere. They are vendored rather than fetched at runtime so the app
-has no network dependency and no JavaScript build step, which is how xterm.js and
-remoteStorage.js are handled too.
+has no network dependency and no JavaScript build step, which is how xterm.js is handled too.
 
 ## Ace, BSD-3-Clause
 

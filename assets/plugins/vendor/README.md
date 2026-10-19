@@ -1,8 +1,7 @@
 # Vendored plugin libraries
 
 These are the files the bundled plugins load into the windows they open. They are
-committed rather than fetched, so building the app stays offline, which is how xterm.js
-and remoteStorage.js are vendored too.
+committed rather than fetched, so building the app stays offline, which is how xterm.js is vendored too.
 
 | file | what it is | version | licence |
 | --- | --- | --- | --- |

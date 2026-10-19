@@ -13,13 +13,11 @@
 //! * [`help`], the app's own help: a page per command, and the overview behind `?`.
 //! * [`journal`], which loaded file hledger should read.
 //! * [`plugins`], the plugin contract and the bundled plugins.
-//! * [`remote`], remoteStorage paths, listings and the library glue.
 //! * [`hledger_info`], which engine this is, and [`hledger`]'s request types.
 //!
 //! **Browser modules**: [`app`], which wires everything together and decides what a
 //! keystroke means, [`terminal::view`] (xterm.js), [`upload`] (the file picker),
-//! [`store`] (the IndexedDB cache), [`remote::client`] (the remoteStorage library)
-//! and `hledger::bridge`.
+
 //!
 //! There is one thing in the app: a terminal. The engine is the real hledger CLI
 //! built for wasm32-wasi, pinned by `wasm.lock`.
@@ -38,7 +36,6 @@ mod hledger_info;
 mod help;
 mod journal;
 mod plugins;
-mod remote;
 mod settings;
 mod terminal;
 mod theme;
