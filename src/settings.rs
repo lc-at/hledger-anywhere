@@ -189,6 +189,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_empty_theme_is_the_default_one_and_a_repository_is_known_by_its_url() {
+        let mut settings = Settings {
+            theme: "   ".to_string(),
+            ..Settings::default()
+        };
+        settings.sanitise();
+        assert_eq!(settings.theme, DEFAULT_THEME);
+
+        settings.repositories.push("https://example.invalid/plugins.json".to_string());
+        // What was typed may carry spaces from a paste; the URL is the same repository.
+        assert!(settings.has_repository("  https://example.invalid/plugins.json "));
+        assert!(!settings.has_repository("https://example.invalid/other.json"));
+    }
+
+    #[test]
     fn a_record_survives_the_round_trip_through_a_file() {
         let mut settings = Settings {
             font: 18,

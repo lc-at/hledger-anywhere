@@ -989,7 +989,6 @@ impl App {
 
                 // A plugin gets first refusal on the word. The core does not know
                 // their names, which is what makes them plugins.
-                // A plugin owns this word, if one is installed for it.
                 let owner = self.registry.borrow().owner(command).cloned();
                 match owner {
                     Some(plugin) => self.run_plugin(plugin, command),
@@ -1688,10 +1687,20 @@ impl App {
     fn list_plugins(self: &Rc<App>) {
         let (installed, repositories) = {
             let registry = self.registry.borrow();
+            // A plugin that takes one of hledger's own words says so, along with how to
+            // reach hledger's: the user should not have to find out by surprise.
+            let shadowed = registry.shadowed();
             let installed: Vec<(String, String)> = registry
                 .listing()
                 .into_iter()
-                .map(|(name, summary, _)| (name.to_string(), summary.to_string()))
+                .map(|(name, summary, _)| {
+                    let summary = if shadowed.contains(&name) {
+                        terminal::shadowing_note(name, summary)
+                    } else {
+                        summary.to_string()
+                    };
+                    (name.to_string(), summary)
+                })
                 .collect();
             let repositories: Vec<(String, bool)> = registry
                 .repositories()
@@ -1988,10 +1997,8 @@ impl App {
         let declared = self
             .registry
             .borrow()
-            .themes()
-            .into_iter()
-            .find(|(_, theme)| theme.name == name)
-            .map(|(plugin, theme)| (plugin.to_string(), theme.colors.clone()))?;
+            .theme(name)
+            .map(|(from, theme)| (from.to_string(), theme.colors.clone()))?;
         match Theme::from_plugin(name, &declared.1) {
             Ok(theme) => Some((theme, format!("from {}", declared.0))),
             Err(error) => {
@@ -2426,7 +2433,6 @@ impl App {
         }
     }
 
-    /// `download <path>`: save a file a command wrote with `-o`.
     /// `word?`: one command's help.
     ///
     /// The app answers for its own commands and for the plugins' words, since it is the
@@ -2440,17 +2446,7 @@ impl App {
 
         let plugin = self.registry.borrow().find(word).cloned();
         if let Some(plugin) = plugin {
-            let usage = if plugin.usage.trim().is_empty() {
-                plugin.name.clone()
-            } else {
-                plugin.usage.clone()
-            };
-            let detail = if plugin.help.trim().is_empty() {
-                plugin.summary.clone()
-            } else {
-                plugin.help.trim().to_string()
-            };
-            return self.announce(&crate::help::plugin_page(&usage, &detail, &[], self.columns()));
+            return self.announce(&crate::help::plugin_page(&plugin, self.columns()));
         }
 
         if terminal::HLEDGER_COMMANDS.contains(&word) {

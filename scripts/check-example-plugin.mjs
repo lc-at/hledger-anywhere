@@ -23,7 +23,21 @@
 
 import { readFile } from 'node:fs/promises';
 
-import Chart, { build, money, parseReport, read } from '../assets/plugins/chart.js';
+import {
+  COLORS,
+  FLOWS_CSV,
+  MONTHLY_CSV,
+  NBSP,
+  RANKING_CSV,
+  REGISTER_CSV,
+  STATEMENT_CSV,
+  TREE_CSV,
+} from './chart-fixtures.mjs';
+
+import Chart, { build, closestQuestion, parseReport, questions, read } from '../assets/plugins/chart.js';
+import Edit from '../assets/plugins/edit.js';
+import { page as editPage } from '../assets/plugins/edit-window.js';
+import { FALLBACK_COLORS, beside, bridge, colorsOf, escape, isLight, mix, shell } from '../assets/plugins/window-kit.js';
 import {
   CUSTOM,
   byDay,
@@ -41,59 +55,20 @@ import {
 } from '../assets/plugins/chart-d3.js';
 import {
   accountAt,
-  format,
-  group,
   headline,
   keysLine,
   modelFor,
   page,
-  palette,
   pointText,
   shareText,
   tableView,
   typeFor,
   viewOf,
 } from '../assets/plugins/chart-window.js';
-import { percent } from '../assets/plugins/chart-data.js';
+import { format, group, money, palette, percent } from '../assets/plugins/chart-data.js';
 import { KEYS, fileName, header, keyFor } from '../assets/plugins/chart-ui.js';
 
-const MONTHLY_CSV = [
-  '"account","2024-01","2024-02","2024-03"',
-  '"expenses:food:coffee","0","$12.50","$0"',
-  '"expenses:housing:rent","$1200.00","$1237.50","$1286.40"',
-  '"expenses:reading:books","0","$0","$0"',
-  '"Total:","$1200.00","$1250.00","$1286.40"',
-  '',
-].join('\n');
-
-const RANKING_CSV = [
-  '"account","balance"',
-  '"expenses:housing:rent","$1,200.00"',
-  '"expenses:food:groceries","$86.40"',
-  '"expenses:reading:books","$34.99"',
-  '"Total:","$1,321.39"',
-  '',
-].join('\n');
-
 /** A statement: a title above the header, and section rows with no amounts. */
-const STATEMENT_CSV = [
-  '"Balance Sheet 2024-02-03",""',
-  '"Account","2024-02-03"',
-  '"Assets",""',
-  '"assets:bank:checking","$4,278.61"',
-  '"assets:cash","$107.50"',
-  '"Liabilities",""',
-  '"Total:","$4,386.11"',
-  '',
-].join('\n');
-
-const COLORS = {
-  background: '#fbf1c7',
-  foreground: '#3c3836',
-  cursor: '#af3a03',
-  accent: '#b57614',
-  dim: '#7c6f64',
-};
 
 const checks = [];
 const check = (what, ok, detail = '') => checks.push([what, ok, detail]);
@@ -363,6 +338,46 @@ function stub(overrides = {}) {
 }
 
 {
+  // The plugin's half of a drill-down: the bridge a window calls with an account, which asks
+  // hledger again and hands back a report the window can draw.
+  const { host, log } = stub();
+  await Chart.run('top', host);
+  const token = /"token":"([^"]+)"/.exec(log.pages[log.pages.length - 1])[1];
+  const bridge = globalThis.__chartBridges[token];
+  const answer = await bridge.requery('expenses:housing:rent');
+  check('a window\'s drill-down asks hledger for that account, month by month',
+    log.asked[log.asked.length - 1] === 'balance expenses:housing:rent -M -O csv', log.asked.join(' | '));
+  check('and gets back a report it can draw, titled after the account',
+    answer.title === 'expenses:housing:rent' && answer.report.periods.length === 3 && answer.command.endsWith('-O csv'),
+    JSON.stringify({ title: answer.title, command: answer.command }));
+  const sankey = await bridge.requery('sankey');
+  check('a drill-down into a question is parsed the way that question is', sankey.kind === 'sankey' && 'sinks' in sankey.report,
+    String(sankey.kind));
+  host.hledger = async () => '"account","2024-01"\n';
+  let refused = '';
+  try {
+    await bridge.requery('expenses:nothing');
+  } catch (error) {
+    refused = error.message;
+  }
+  check('and an account with nothing in it is an error the window can show', /nothing to chart for expenses:nothing/.test(refused), refused);
+}
+
+{
+  const { host, log } = stub({ hledger: async () => RANKING_CSV });
+  await Chart.run('top', host);
+  check('a ranking is summed up by its largest account',
+    log.said.some((line) => line.includes('3 accounts, $1,200.00 in expenses:housing:rent')), JSON.stringify(log.said));
+}
+
+{
+  const { host, log } = stub({ hledger: async () => { throw new Error('<bad> & worse'); } });
+  await Chart.run('spending', host);
+  check('a message is escaped before it is written into the window',
+    log.pages[log.pages.length - 1].includes('&lt;bad&gt; &amp; worse'), log.pages[log.pages.length - 1]);
+}
+
+{
   const { host, log } = stub({ hledger: async () => { throw new Error('no journal is loaded'); } });
   await Chart.run('spending', host);
   check('a failed run is on the page', log.pages[log.pages.length - 1].includes('no journal is loaded'), '');
@@ -382,9 +397,144 @@ function stub(overrides = {}) {
 }
 
 {
+  const { host, log } = stub();
+  await Chart.run('register -p 2024', host);
+  check('a report no chart can draw is refused, and says what to ask instead',
+    log.events.length === 0 && log.said.some((line) => /register is not a report a chart can draw; try chart calendar/.test(line)),
+    JSON.stringify(log))
+}
+
+{
+  const { host, log } = stub({ hledger: async () => '"account","balance"\n"Total:","0"\n' });
+  await Chart.run('spendng', host);
+  check('a near miss of a question is answered with the question it was probably meant to be',
+    log.said.some((line) => line.includes('Did you mean chart spending?')), JSON.stringify(log.said));
+}
+
+check('only a near miss is a near miss',
+  closestQuestion('incme') === 'income' && closestQuestion('sankee') === 'sankey'
+  && closestQuestion('expenses:fod') === null && closestQuestion('groceries') === null
+  && closestQuestion('top') === null && closestQuestion('') === null,
+  ['incme', 'sankee', 'expenses:fod', 'groceries'].map((word) => `${word}=${closestQuestion(word)}`).join(' '));
+check('balance statements are reports a chart can draw',
+  build('bs').command === 'bs -O csv' && build('cf -p 2024').command === 'cf -p 2024 -O csv' && !build('bs').refusal,
+  `${build('bs').command} ${build('cf -p 2024').command}`);
+
+{
   const { host, last } = stub({ colors: undefined });
   await Chart.run('spending', host);
   check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<svg class="chart"'), '');
+}
+
+// ------------------------------------------------------------------ the edit plugin
+
+/** A host with loaded files, recording what the edit plugin did with them. */
+function editHost({ files, contents = {}, save, window: open } = {}) {
+  const log = { said: [], pages: [], saved: [] };
+  const host = {
+    name: 'edit',
+    colors: () => COLORS,
+    say: (text) => log.said.push(text),
+    files: () => files,
+    read: (path) => (path in contents ? contents[path] : null),
+    save: save || (async (path, text) => { log.saved.push([path, text]); return { ok: true }; }),
+    window: open || ((title) => {
+      log.title = title;
+      return { write: (html) => log.pages.push(html), close() {} };
+    }),
+  };
+  return { host, log, last: () => log.pages[log.pages.length - 1] || '' };
+}
+
+const FILES = [
+  { path: 'prices.journal', writable: true, main: false },
+  { path: 'hledger.journal', writable: true, main: true },
+  { path: 'uploaded.journal', writable: false, main: false },
+];
+const CONTENTS = { 'hledger.journal': '2024-01-01 opening\n', 'uploaded.journal': '; </script> & more\n', 'prices.journal': 'P 2024-01-01 EUR $1.10\n' };
+
+{
+  const { host, log, last } = editHost({ files: FILES, contents: CONTENTS });
+  await Edit.run('', host);
+  check('edit alone opens the journal hledger is reading, not the first file',
+    log.title === 'hledger: hledger.journal' && last().includes('hledger.journal'), log.title);
+  check('and says so, in terminal text', log.said.some((line) => line === 'edit: hledger.journal in a new window.')
+    && !log.said.some((line) => /[`\u2014]/.test(line)), JSON.stringify(log.said));
+  check('the page loads Ace from beside the plugin, and the file travels in the page',
+    last().includes('vendor/ace/ace.js') && last().includes('2024-01-01 opening'), '');
+  check('a writable file says how to save it', last().includes('Ctrl+S or Cmd+S saves it to disk'), '');
+
+  const token = /"token":"([^"]+)"/.exec(last())[1];
+  await globalThis.__editBridges[token].save('changed\n');
+  check('the window saves through the plugin, to the file it opened',
+    JSON.stringify(log.saved) === JSON.stringify([['hledger.journal', 'changed\n']]), JSON.stringify(log.saved));
+}
+
+{
+  const { host, log, last } = editHost({ files: FILES, contents: CONTENTS });
+  await Edit.run('uploaded.journal', host);
+  check('a named file opens, and one from an upload is read-only, and says why',
+    log.said.some((line) => line === 'edit: uploaded.journal in a new window, read-only.')
+    && last().includes('read-only: this file came from an upload'), JSON.stringify(log.said));
+  check('its contents cannot close the script they travel in',
+    !last().includes('; </script>') && last().includes('\\u003c/script>'), '');
+}
+
+{
+  const refusing = editHost({ files: FILES, contents: CONTENTS, save: async () => ({ error: 'it changed on disk since it was opened' }) });
+  await Edit.run('', refusing.host);
+  const token = /"token":"([^"]+)"/.exec(refusing.last())[1];
+  let refused = '';
+  try {
+    await globalThis.__editBridges[token].save('x');
+  } catch (error) {
+    refused = error.message;
+  }
+  check('a save the app refuses is an error the window can show', refused === 'it changed on disk since it was opened', refused);
+}
+
+{
+  const { host, log } = editHost({ files: FILES, contents: CONTENTS });
+  await Edit.run('missing.journal', host);
+  check('a file that is not loaded is named, with the ones that are',
+    log.said[0] === 'edit: missing.journal is not loaded. Loaded: prices.journal, hledger.journal, uploaded.journal.' && log.pages.length === 0,
+    log.said[0]);
+  const empty = editHost({ files: [] });
+  await Edit.run('', empty.host);
+  check('with nothing loaded, it says what to do, in terminal text',
+    empty.log.said[0] === 'edit: nothing is loaded. Run open or upload first.', empty.log.said[0]);
+  const blocked = editHost({ files: FILES, contents: CONTENTS, window: () => null });
+  await Edit.run('', blocked.host);
+  check('a blocked window is reported', /blocked the window for hledger.journal/.test(blocked.log.said[0]), blocked.log.said[0]);
+  const unreadable = editHost({ files: FILES, contents: {} });
+  await Edit.run('', unreadable.host);
+  check('a file that cannot be read says so, in the window and the terminal',
+    unreadable.last().includes('could not be read') && /could not be read/.test(unreadable.log.said[0]), unreadable.log.said[0]);
+}
+
+{
+  const html = editPage({ path: 'a&b.journal', contents: 'x', writable: true, colors: COLORS, token: 't', module: 'm', scripts: [] });
+  check('the editor page escapes the file name and follows the theme',
+    html.includes('a&amp;b.journal') && html.includes('color-scheme: light') && html.includes(COLORS.background), '');
+}
+
+// ------------------------------------------------------------------ what every window shares
+
+check('escape makes text safe in HTML and in an attribute', escape('<a href="x">&</a>') === '&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;', escape('<a href="x">&</a>'));
+check('light and dark are told apart by the same measure as the app',
+  isLight('#fbf1c7') && !isLight('#000000') && !isLight('not a colour'), '');
+check('a colour mixed into another goes the right way and the right distance',
+  mix('#000000', '#ffffff', 50) === '#808080' && mix('#000000', '#ffffff', 0) === '#000000' && mix('#102030', '#102030', 30) === '#102030',
+  mix('#000000', '#ffffff', 50));
+check('a host without colors gets the built-in theme', colorsOf({}) === FALLBACK_COLORS && colorsOf({ colors: () => COLORS }) === COLORS, '');
+check('the waiting page is the theme, with its title escaped',
+  shell(COLORS, '<x>', 'Reading hledger…').includes('&lt;x&gt;') && shell(COLORS, 't', 'm').includes(COLORS.background), '');
+check('a file beside the plugins is an absolute URL', /^file:\/\/.*\/assets\/plugins\/vendor\/d3\/d3\.min\.js$/.test(beside('vendor/d3/d3.min.js')), beside('vendor/d3/d3.min.js'));
+{
+  const first = bridge('__checkBridges', 'check', { a: 1 });
+  const second = bridge('__checkBridges', 'check', { a: 2 });
+  check('every bridge gets a token of its own, and keeps its api under it',
+    first !== second && globalThis.__checkBridges[first].a === 1 && globalThis.__checkBridges[second].a === 2, `${first} ${second}`);
 }
 
 // ------------------------------------------------------------------ the repository itself
@@ -427,43 +577,6 @@ const unreadable = (manifest.themes || []).flatMap((theme) =>
 check('every theme role is readable (WCAG AA, 4.5:1)', unreadable.length === 0, unreadable.join(', '));
 
 // ------------------------------------------------------------------ the shaped charts
-
-const REGISTER_CSV = [
-  '"txnidx","date","code","description","account","amount","total"',
-  '"1","2024-01-05","","Landlord","expenses:housing:rent","$600.00","$600.00"',
-  '"1","2024-01-05","","Landlord","assets:bank:checking","$-600.00","0"',
-  '"2","2024-01-09","","Grocery Store","expenses:food:groceries","$86.40","$86.40"',
-  '"2","2024-01-09","","Grocery Store","assets:bank:checking","$-86.40","0"',
-  '"3","2024-01-14","salary:january","Employer","income:salary","$-2200.00","$-2200.00"',
-  '"3","2024-01-14","salary:january","Employer","assets:bank:checking","$2200.00","0"',
-  '"4","2024-02-02","","Coffee","expenses:food:coffee","$12.50","$12.50"',
-  '"4","2024-02-02","","Coffee","assets:bank:checking","$-12.50","0"',
-].join('\n');
-
-// The indentation is two no-break spaces a level, U+00A0, exactly as the engine writes it.
-// A terminal shows them as spaces, which is how an earlier fixture came to use spaces and pass
-// against a shape hledger never produces, while the real tree drew its parent beside its own
-// children. The amounts are smaller than the demo's, so the totals here are this fixture's own.
-const NBSP = '\u00a0';
-const TREE_CSV = [
-  '"account","balance"',
-  '"expenses","$698.90"',
-  `"${NBSP.repeat(2)}food","$98.90"`,
-  `"${NBSP.repeat(4)}coffee","$12.50"`,
-  `"${NBSP.repeat(4)}groceries","$86.40"`,
-  `"${NBSP.repeat(2)}housing:rent","$600.00"`,
-  '"Total:","$698.90"',
-].join('\n');
-
-// hledger balance income expenses --depth 2 -O csv, on the demo journal.
-const FLOWS_CSV = [
-  '"account","balance"',
-  '"expenses:food","$98.90"',
-  '"expenses:housing","$1200.00"',
-  '"expenses:reading","$34.99"',
-  '"income:salary","$-3200.00"',
-  '"Total:","$-1866.11"',
-].join('\n');
 
 const register = readRegister(REGISTER_CSV);
 check('the register parser finds its header and its rows', register && register.postings.length === 8);
@@ -609,6 +722,7 @@ for (const file of [
   '../assets/plugins/chart-data.js',
   '../assets/plugins/chart-d3.js',
   '../assets/plugins/chart-ui.js',
+  '../assets/plugins/window-kit.js',
   '../assets/plugins/vendor/d3/d3.min.js',
   '../assets/plugins/vendor/d3/LICENSE',
   '../assets/plugins/edit.js',
@@ -629,6 +743,26 @@ const documented = plugins.filter((plugin) => plugin.usage && plugin.help && plu
 check('every bundled plugin documents itself for `<command>?`',
   plugins.length > 0 && documented.length === plugins.length,
   plugins.map((plugin) => `${plugin.name}:${plugin.usage ? 'usage' : 'no usage'}/${plugin.help ? 'help' : 'no help'}`).join(' '));
+
+// The help page is written in the manifest and the questions in chart.js, so a question can be
+// added to one and forgotten in the other. This is what keeps `chart?` complete.
+{
+  const chartEntry = plugins.find((plugin) => plugin.name === 'chart');
+  const forms = (chartEntry.sections || []).flatMap((section) => section.rows.map(([form]) => form));
+  const listed = (name) => forms.some((form) => form === `chart ${name}` || form.startsWith(`chart ${name} `))
+    || (name === 'spending' && forms.includes('chart'));
+  const aliases = new Set(['savings', 'nw', 'everything', 'area', 'sparklines', 'flows']);
+  const missing = questions().filter((name) => !aliases.has(name) && !listed(name));
+  check('chart? lists every question the plugin answers to', missing.length === 0, missing.join(', '));
+  const rows = plugins.flatMap((plugin) => [...(plugin.sections || []).flatMap((section) => section.rows), ...(plugin.examples || [])]);
+  check('every row on a help page is a form and what it does',
+    rows.length > 0 && rows.every((row) => Array.isArray(row) && row.length === 2 && row.every((cell) => typeof cell === 'string' && cell.trim())),
+    JSON.stringify(rows.filter((row) => !(Array.isArray(row) && row.length === 2))));
+  check('and every example is a command the plugin builds without a refusal',
+    (chartEntry.examples || []).every(([command]) => !build(command.replace(/^chart\s*/, '')).refusal), '');
+  const text = JSON.stringify(plugins);
+  check('nothing printed in the terminal has a backtick or an em dash', !/[`\u2014]/.test(text), '');
+}
 
 // ------------------------------------------------------------------ the verdict
 

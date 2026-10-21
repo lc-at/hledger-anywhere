@@ -25,14 +25,10 @@
  *     unit: { prefix: '$', suffix: '' } }
  */
 
-import { format, isLight, ordered, palette, percent, periodTotal, seriesTotal } from './chart-data.js';
+import { format, ordered, palette, percent, periodTotal, seriesTotal } from './chart-data.js';
+import { escape, isLight } from './window-kit.js';
 import { headlineFor, heightFor, isCustom, render, tableFor } from './chart-d3.js';
 import { KEYS, keyFor, legend, save, tooltip } from './chart-ui.js';
-
-// The formatter, the palette and the series arithmetic are defined once in chart-data.js, so
-// the plugin, this window and the drawing cannot drift apart. Re-exported here because this is
-// where the window's own helpers are read, by tests and by callers.
-export { format, group, isLight, ordered, palette, periodTotal, seriesTotal } from './chart-data.js';
 
 // --------------------------------------------------------------------------- the report
 
@@ -177,12 +173,6 @@ export function viewOf(state) {
 }
 
 // --------------------------------------------------------------------------- the page
-
-function escape(text) {
-  return String(text).replace(/[&<>"]/g, (character) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
-  }[character]));
-}
 
 /** The keys, as the window's footer says them. */
 export function keysLine() {

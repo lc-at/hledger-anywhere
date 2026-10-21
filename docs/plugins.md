@@ -48,8 +48,12 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
       "name": "chart",
       "group": "Reports",
       "summary": "open a chart of hledger's numbers in a window",
-      "usage": "chart [preset|account] [flags]",
-      "help": "Opens a chart in its own window, drawn from hledger's own numbers.",
+      "usage": "chart [question] [account] [hledger flags]",
+      "help": "Opens a chart of hledger's own numbers in a window of its own.",
+      "sections": [
+        { "title": "Over time", "rows": [["chart income", "what came in, month by month"]] }
+      ],
+      "examples": [["chart sankey -p 2024", "where 2024's income went"]],
       "completes": ["balance", "expenses", "-M"],
       "module": "./chart.js",
       "themes": [
@@ -67,6 +71,8 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
 | `summary` | One line for the help. Required: a command nobody can find is not a feature. |
 | `usage` | The word with its arguments, shown at the top of `chart?`. Defaults to the name. |
 | `help` | The paragraph `chart?` prints. Defaults to `summary`, so a repository written before per-command help still gets a page. |
+| `sections` | Headings on the page, each over rows of a form and what it does: `{"title": "...", "rows": [["form", "what it does"]]}`. The questions a command answers, the keys of a window it opens. |
+| `examples` | Commands worth trying, as `[["command", "what it does"]]`, shown last under Examples, as the app's own pages show theirs. |
 | `completes` | Extra words it adds to Tab completion, such as the arguments it expects. |
 | `module` | The module implementing it, relative to the manifest. Imported the first time one of its commands runs. |
 | `themes` | Colour themes it offers, by role: `background`, `foreground`, `cursor`, `accent`, `dim`. |
@@ -74,9 +80,12 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
 The manifest is authoritative for everything the app knows before running anything. A
 repository that is installed but never used therefore costs one fetch and runs no code.
 
-That includes the help. `chart?` prints this plugin's `usage` and `help` from the manifest,
-without importing or running the module, so a plugin can document itself as well as the
-app documents its own commands. Put a question mark after any command: the app's own
+That includes the help. `chart?` prints this plugin's `usage`, `help`, `sections` and
+`examples` from the manifest, without importing or running the module, so a plugin can
+document itself as well as the app documents its own commands. The page is laid out the way
+the app's own are: one column of forms down the page, with long descriptions wrapped under
+their own column and a form too long for it given a line of its own. Write rows as text for
+the terminal: no backticks and no em dashes, which the bundled manifest is tested for. Put a question mark after any command: the app's own
 pages, the plugins' pages and hledger's own `--help` all answer the same way.
 
 A plugin that cannot be used is refused with a reason, and the rest of the manifest is

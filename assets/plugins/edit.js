@@ -17,13 +17,7 @@
  */
 
 import { page } from './edit-window.js';
-
-const FALLBACK_COLORS = {
-  background: '#000000',
-  foreground: '#d8d8d8',
-  accent: '#ff9f1c',
-  dim: '#8a8a8a',
-};
+import { beside, bridge, colorsOf, shell } from './window-kit.js';
 
 export default {
   async run(args, host) {
@@ -37,12 +31,12 @@ export default {
       const have = files.map((file) => file.path).join(', ');
       host.say(
         `${host.name}: ${asked ? `${asked} is not loaded` : 'nothing is loaded'}.` +
-          `${have ? ` Loaded: ${have}.` : ' Run `open` or `upload` first.'}`,
+          `${have ? ` Loaded: ${have}.` : ' Run open or upload first.'}`,
       );
       return;
     }
 
-    const colors = typeof host.colors === 'function' ? host.colors() : FALLBACK_COLORS;
+    const colors = colorsOf(host);
 
     // Opened first, filled when the contents are ready.
     const view = host.window(`hledger: ${chosen.path}`);
@@ -59,7 +53,14 @@ export default {
       return;
     }
 
-    const token = listen(host, chosen.path);
+    // The window writes back through the plugin, which is the side that can reach the disk.
+    const token = bridge('__editBridges', 'edit', {
+      async save(text) {
+        const answer = await host.save(chosen.path, text);
+        if (answer && answer.error) throw new Error(answer.error);
+        return true;
+      },
+    });
     view.write(
       page({
         path: chosen.path,
@@ -76,52 +77,3 @@ export default {
     );
   },
 };
-
-/**
- * Let this window write back through the plugin on this side of the window.
- *
- * The window is a page with no API of its own, so the bridge is a function on the
- * opener, kept by a token the page carries — the same shape the chart plugin uses.
- */
-function listen(host, path) {
-  const token = `edit-${(listen.count = (listen.count || 0) + 1)}-${Date.now().toString(36)}`;
-  const scope = typeof window === 'undefined' ? globalThis : window;
-  const bridges = (scope.__editBridges = scope.__editBridges || {});
-  bridges[token] = {
-    async save(contents) {
-      const answer = await host.save(path, contents);
-      if (answer && answer.error) {
-        throw new Error(answer.error);
-      }
-      return true;
-    },
-  };
-  return token;
-}
-
-/** A file beside this plugin, as an absolute URL. */
-function beside(name) {
-  return new URL(`./${name}`, import.meta.url).href;
-}
-
-/** The window before there is anything to show, and when something went wrong. */
-function shell(colors, title, message) {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>hledger: ${escape(title)}</title></head>
-<body style="margin:0;background:${colors.background};color:${colors.foreground};
-  font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif">
-<main style="max-width:960px;margin:0 auto;padding:24px">
-  <h1 style="font-size:18px;font-weight:600;margin:0 0 4px">${escape(title)}</h1>
-  <p style="color:${colors.dim};margin:0">${escape(message)}</p>
-</main>
-</body></html>`;
-}
-
-function escape(text) {
-  return String(text).replace(/[&<>"]/g, (character) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-  }[character]));
-}

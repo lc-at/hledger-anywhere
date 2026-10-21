@@ -36,6 +36,7 @@ chart-window.js   modelFor(report) -> model; viewOf(state); page(); mount()     
 chart-d3.js       parsers and aggregations for the shaped charts, the Sankey
                   layout, the words and tables (pure), and render(kind, svg, ...)
 chart-ui.js       tooltip, legend, keys, saving                                  DOM, keyFor pure
+window-kit.js     escaping, theme colours, the waiting page, bridges; shared with edit   pure
 vendor/d3/        d3.min.js, the UMD build, and its licence
 ```
 
@@ -136,13 +137,26 @@ what a screen reader reads.
 
 ## Testing
 
+Two checks, both run by CI.
+
 `node scripts/check-example-plugin.mjs` checks every pure part: the presets and the commands
 they build, the parsers on the engine's own CSV, the aggregations and their sums, the model
 behind each balance chart, the Sankey's flows and layout, axis labels, the keys, the saved
-picture's header, and the page markup. Drawing and interacting are verified in a browser,
-from the real app with the real engine: every chart in both themes, and hover, legend,
-keyboard stepping, Tab and Enter, click drill-down, Escape, wheel and keyboard zoom, and both
-exports.
+picture's header, the page markup, the bridge a drill-down calls, and that `chart?` lists
+every question `chart.js` answers to.
+
+`node scripts/check-plugin-windows.mjs` draws every chart in both themes in headless Chrome
+and uses it the way a person would, with real input events: hover, the legend, Tab and
+Enter, the arrow keys, wheel, drag, keyboard and double-click zoom, click drill-down and
+Escape, SVG and PNG export (the files are read back), and the failures: no library, a window
+whose app has gone, a refused drill-down. It measures how much of each plugin file the two
+checks execute together and fails below 90%; every file is between 95 and 99%.
+
+Writing it found two bugs a person would have hit: the highest and latest points of a line
+were half outside the area that listens for clicks, so the point most worth clicking did
+nothing; and a double-click to reset the zoom also drilled into an account, because its first
+click was a click. A click on a zoomable chart now waits a moment to see whether a second one
+follows.
 
 ## Not done
 

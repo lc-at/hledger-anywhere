@@ -12,6 +12,7 @@
 // the rendering functions look unused to `cargo test`'s build.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
+use crate::plugins::PluginInfo;
 use crate::terminal::{bold, dim};
 
 /// One command's help.
@@ -328,37 +329,94 @@ pub fn overview(plugins: &[(&str, &str, &str)], width: usize) -> String {
 
 /// One command's page, as printed by `open?`.
 pub fn page(entry: &Entry, width: usize) -> String {
-    page_parts(entry.usage, entry.detail, entry.examples, width)
+    let examples = Section {
+        title: "Examples",
+        rows: entry.examples.to_vec(),
+    };
+    page_parts(entry.usage, entry.detail, &[examples], width)
 }
 
-/// A plugin's page, from what its manifest declares.
-pub fn plugin_page(usage: &str, detail: &str, examples: &[(String, String)], width: usize) -> String {
-    let examples: Vec<(&str, &str)> = examples
+/// A heading on a page, over rows of a form and what it does.
+pub struct Section<'a> {
+    pub title: &'a str,
+    pub rows: Vec<(&'a str, &'a str)>,
+}
+
+/// A plugin's page, from what its manifest declares, as printed by `chart?`.
+///
+/// The same shape as the app's own pages: the usage, the paragraph, then the manifest's
+/// sections in its order, then its examples. A manifest written before per-command help
+/// has only a summary, and still gets a page made of that.
+pub fn plugin_page(plugin: &PluginInfo, width: usize) -> String {
+    let usage = if plugin.usage.trim().is_empty() {
+        plugin.name.as_str()
+    } else {
+        plugin.usage.trim()
+    };
+    let detail = if plugin.help.trim().is_empty() {
+        plugin.summary.as_str()
+    } else {
+        plugin.help.trim()
+    };
+    let mut sections: Vec<Section> = plugin
+        .sections
         .iter()
-        .map(|(command, description)| (command.as_str(), description.as_str()))
+        .map(|section| Section {
+            title: section.title.as_str(),
+            rows: rows(&section.rows),
+        })
         .collect();
-    page_parts(usage, detail, &examples, width)
+    sections.push(Section {
+        title: "Examples",
+        rows: rows(&plugin.examples),
+    });
+    page_parts(usage, detail, &sections, width)
 }
 
-fn page_parts(usage: &str, detail: &str, examples: &[(&str, &str)], width: usize) -> String {
+fn rows(rows: &[(String, String)]) -> Vec<(&str, &str)> {
+    rows.iter().map(|(form, what)| (form.as_str(), what.as_str())).collect()
+}
+
+/// The widest a page's left column grows before a long form gets a line of its own.
+const MOST_FORM: usize = 28;
+
+fn page_parts(usage: &str, detail: &str, sections: &[Section], width: usize) -> String {
     let mut text = String::new();
     text.push_str(&format!("{}\r\n\r\n", bold(usage)));
     for line in wrap(detail, width) {
         text.push_str(&format!("{}\r\n", line));
     }
-    if !examples.is_empty() {
-        text.push_str(&format!("\r\n{}\r\n", bold("Examples")));
-        let width = examples
-            .iter()
-            .map(|(command, _)| command.chars().count())
-            .max()
-            .unwrap_or(0);
-        for (command, description) in examples {
-            text.push_str(&format!(
-                "  {}  {}\r\n",
-                bold(&format!("{command:<width$}")),
-                dim(description)
-            ));
+
+    // One column for the whole page, so the sections line up with each other rather than
+    // each finding its own edge. A form too long for it sits on a line of its own, with
+    // its description under the column, instead of pushing every other row across.
+    let column = sections
+        .iter()
+        .flat_map(|section| section.rows.iter())
+        .map(|(form, _)| form.chars().count())
+        .filter(|&length| length <= MOST_FORM)
+        .max()
+        .unwrap_or(0);
+    let indent = 2 + column + 2;
+    let room = width.saturating_sub(indent).max(20);
+    for section in sections.iter().filter(|section| !section.rows.is_empty()) {
+        text.push_str(&format!("\r\n{}\r\n", bold(section.title)));
+        for (form, description) in &section.rows {
+            let lines = wrap(description, room);
+            let first = lines.first().map(String::as_str).unwrap_or("");
+            if form.chars().count() > column {
+                text.push_str(&format!("  {}\r\n", bold(form)));
+                text.push_str(&format!("{}{}\r\n", " ".repeat(indent), dim(first)));
+            } else {
+                text.push_str(&format!(
+                    "  {}  {}\r\n",
+                    bold(&format!("{form:<column$}")),
+                    dim(first)
+                ));
+            }
+            for line in lines.iter().skip(1) {
+                text.push_str(&format!("{}{}\r\n", " ".repeat(indent), dim(line)));
+            }
         }
     }
     text.push_str(&format!(
@@ -466,15 +524,59 @@ mod tests {
     #[test]
     fn a_plugin_page_comes_from_its_manifest() {
         // A plugin documents itself in the manifest, so the page needs no module run.
-        let text = plain(&plugin_page(
-            "chart [preset|account]",
-            "Opens a chart in its own window.",
-            &[("chart spending".to_string(), "the usual case".to_string())],
-            100,
-        ));
-        assert!(text.contains("chart [preset|account]"), "{text}");
+        let plugin = manifest_plugin(
+            r#"{"name": "chart", "summary": "open a chart",
+                "usage": "chart [question]", "help": "Opens a chart in its own window.",
+                "sections": [{"title": "Questions", "rows": [["chart income", "what came in"]]}],
+                "examples": [["chart spending", "the usual case"]]}"#,
+        );
+        let text = plain(&plugin_page(&plugin, 100));
+        assert!(text.starts_with("chart [question]"), "{text}");
         assert!(text.contains("own window"), "{text}");
+        // The manifest's sections come in its order, and the examples come last.
+        let questions = text.find("Questions").expect("the section");
+        let examples = text.find("Examples").expect("the examples");
+        assert!(questions < examples, "{text}");
+        assert!(text.contains("chart income"), "{text}");
         assert!(text.contains("chart spending"), "{text}");
+    }
+
+    #[test]
+    fn a_manifest_with_only_a_summary_still_gets_a_page() {
+        let plugin = manifest_plugin(r#"{"name": "forecast", "summary": "project balances"}"#);
+        let text = plain(&plugin_page(&plugin, 100));
+        assert!(text.starts_with("forecast"), "{text}");
+        assert!(text.contains("project balances"), "{text}");
+        assert!(!text.contains("Examples"), "an empty section is not printed: {text}");
+    }
+
+    #[test]
+    fn every_row_on_a_page_shares_one_column_and_wraps_under_it() {
+        let plugin = manifest_plugin(
+            r#"{"name": "chart", "summary": "s", "help": "h",
+                "sections": [
+                  {"title": "A", "rows": [["chart", "one"], ["chart waterfall", "two"]]},
+                  {"title": "B", "rows": [["Esc", "back to the chart you came from, which is the one that was open before this one"]]},
+                  {"title": "C", "rows": [["chart a form far too long to share a column", "on its own"]]}
+                ]}"#,
+        );
+        let text = plain(&plugin_page(&plugin, 60));
+        let at = |needle: &str| {
+            let line = text.lines().find(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {text}"));
+            line.find(needle).expect("found")
+        };
+        // Two sections, one column.
+        assert_eq!(at("one"), at("two"));
+        assert_eq!(at("two"), at("back to the chart"));
+        // A long description wraps under its own column rather than under the form.
+        assert!(text.lines().all(|line| line.chars().count() <= 60), "{text}");
+        assert_eq!(at("the one that was open"), at("back to the chart"), "{text}");
+        // A form too long for the column has a line of its own, and its words go under.
+        assert_eq!(at("on its own"), at("one"), "{text}");
+    }
+
+    fn manifest_plugin(json: &str) -> PluginInfo {
+        serde_json::from_str(json).expect("a plugin entry")
     }
 
     #[test]

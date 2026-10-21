@@ -36,10 +36,8 @@
 //! rules that keep the answers honest. Fetching, importing and running live in
 //! [`loader`], which is the wasm side of the same thing.
 
-// Themes are parsed and held from the moment a repository is installed, but selecting
-// one is the next piece of work, along with the shadowing note in the listing. The tests
-// exercise all of it in the meantime.
-#![allow(dead_code)]
+// Natively only the tests read most of this: the registry is driven by the wasm app.
+#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -79,6 +77,13 @@ pub struct PluginInfo {
     /// predates per-command help still gets a page rather than nothing.
     #[serde(default)]
     pub help: String,
+    /// Further sections of the page, each a heading over forms and what they do: the
+    /// presets a command offers, the keys of a window it opens.
+    #[serde(default)]
+    pub sections: Vec<HelpSection>,
+    /// Commands worth trying, shown last, under Examples, as the app's own pages do.
+    #[serde(default)]
+    pub examples: Vec<(String, String)>,
     /// Themes it contributes.
     #[serde(default)]
     pub themes: Vec<ThemeInfo>,
@@ -88,6 +93,14 @@ pub struct PluginInfo {
     /// The repository it came from, filled in when the manifest is installed.
     #[serde(default)]
     pub repository: String,
+}
+
+/// A heading on a plugin's help page, over rows of a form and what it does.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+pub struct HelpSection {
+    pub title: String,
+    #[serde(default)]
+    pub rows: Vec<(String, String)>,
 }
 
 impl PluginInfo {
@@ -288,12 +301,9 @@ impl Registry {
         themes
     }
 
-    /// The theme with this name, if a plugin offers one.
-    pub fn theme(&self, name: &str) -> Option<&ThemeInfo> {
-        self.themes()
-            .into_iter()
-            .find(|(_, theme)| theme.name == name)
-            .map(|(_, theme)| theme)
+    /// The theme with this name, and where it came from, if a plugin offers one.
+    pub fn theme(&self, name: &str) -> Option<(&str, &ThemeInfo)> {
+        self.themes().into_iter().find(|(_, theme)| theme.name == name)
     }
 
     /// Plugins whose word is also one of hledger's, worth saying out loud.
@@ -303,10 +313,6 @@ impl Registry {
             .filter(|plugin| terminal::HLEDGER_COMMANDS.contains(&plugin.name.as_str()))
             .map(|plugin| plugin.name.as_str())
             .collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.plugins.is_empty()
     }
 
     pub fn len(&self) -> usize {
@@ -348,6 +354,40 @@ mod tests {
     }
 
     #[test]
+    fn the_listing_names_each_plugin_its_summary_and_where_it_came_from() {
+        let registry = registry();
+        let listing = registry.listing();
+        assert_eq!(listing.len(), 1);
+        let (name, summary, repository) = listing[0];
+        assert_eq!(name, "chart");
+        assert!(!summary.is_empty());
+        assert_eq!(repository, "https://example.invalid/plugins.json");
+    }
+
+    #[test]
+    fn the_bundled_manifest_reads_and_every_page_in_it_is_terminal_text() {
+        // The manifest that ships is the one people meet first, so its help pages are held
+        // to the same rules as the app's own: no backticks, no em dashes, no line past the
+        // terminal, and a page for every plugin that is more than its summary.
+        let mut registry = Registry::default();
+        registry
+            .install(include_str!("../../assets/plugins/plugins.json"), "/plugins/plugins.json")
+            .expect("the bundled manifest");
+        assert!(registry.len() >= 2);
+        for (name, _, _) in registry.listing() {
+            let plugin = registry.find(name).expect("listed plugins are found");
+            assert!(!plugin.sections.is_empty(), "{name} has no sections on its page");
+            for width in [60, 100] {
+                let page = crate::terminal::plain(&crate::help::plugin_page(plugin, width));
+                assert!(!page.contains('`') && !page.contains('\u{2014}'), "{name}: {page}");
+                for line in page.lines() {
+                    assert!(line.chars().count() <= width, "{name} at {width}: {line:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_manifest_installs_the_plugins_it_lists() {
         let registry = registry();
         assert_eq!(registry.len(), 1);
@@ -384,7 +424,8 @@ mod tests {
         let registry = registry();
         assert_eq!(registry.themes().len(), 1);
         assert_eq!(registry.themes()[0].0, "chart");
-        let theme = registry.theme("midnight").expect("the theme");
+        let (from, theme) = registry.theme("midnight").expect("the theme");
+        assert_eq!(from, "chart");
         assert_eq!(theme.colors["background"], "#0b1021");
         assert!(registry.theme("no-such-theme").is_none());
     }
@@ -408,7 +449,7 @@ mod tests {
         assert_eq!(registry.themes().len(), 1);
         assert_eq!(registry.themes()[0].0, "hledger-anywhere plugins");
         assert_eq!(
-            registry.theme("gruvbox").expect("the theme").colors["background"],
+            registry.theme("gruvbox").expect("the theme").1.colors["background"],
             "#282828"
         );
         // And both kinds reach the same listing, the repository's first.
@@ -477,7 +518,7 @@ mod tests {
             .install("not json", "https://example.invalid/p.json")
             .expect_err("not a manifest");
         assert!(error.contains("not a plugin manifest"), "{error}");
-        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
 
         // A readable manifest with nothing in it is not worth installing either.
         let error = registry
@@ -541,6 +582,6 @@ mod tests {
             .expect("a readable manifest");
         assert!(installed.registered.is_empty(), "{:?}", installed.registered);
         assert_eq!(installed.refused.len(), 3);
-        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
     }
 }

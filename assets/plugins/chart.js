@@ -46,20 +46,9 @@
  */
 
 import { page } from './chart-window.js';
-import { money, split, unitOf } from './chart-data.js';
+import { format, money, periodTotal, split, unitOf } from './chart-data.js';
+import { beside, bridge, colorsOf, shell } from './window-kit.js';
 import { byDay, flows, headlineFor, isCustom, multiples, readRegister, readTree, waterfall } from './chart-d3.js';
-
-// The check script imports the amount parser from here, because a plugin is where a parser
-// lives. It is defined once, in chart-data.js, and shared with the window and the D3 chart.
-export { money, split } from './chart-data.js';
-
-const FALLBACK_COLORS = {
-  background: '#000000',
-  foreground: '#d8d8d8',
-  cursor: '#ff9f1c',
-  accent: '#ff9f1c',
-  dim: '#8a8a8a',
-};
 
 /** Flags that mean the caller has already chosen a period, so months are not added. */
 const PERIOD_FLAGS = [
@@ -67,11 +56,32 @@ const PERIOD_FLAGS = [
   '-Q', '--quarterly', '-Y', '--yearly', '-p', '--period',
 ];
 
-/** hledger's report commands, so `chart balance assets -M` is read as a report. */
+/**
+ * hledger's balance reports, so `chart balance assets -M` is read as a report.
+ *
+ * Only reports whose CSV is accounts by periods can be drawn. `cashflow` is missing on
+ * purpose: it is also a preset, and the preset wins; `cf` is hledger's report.
+ */
 const REPORTS = [
-  'balance', 'bal', 'bs', 'balancesheet', 'is', 'incomestatement', 'cashflow',
-  'register', 'reg', 'aregister', 'print', 'stats',
+  'balance', 'bal', 'bs', 'balancesheet', 'bse', 'balancesheetequity',
+  'is', 'incomestatement', 'cf',
 ];
+
+/**
+ * Reports that come back in a shape no chart reads, and what to ask for instead.
+ *
+ * These used to be passed through and then charted nothing, which said "no amounts" about a
+ * register that was full of them.
+ */
+const NOT_CHARTS = {
+  register: 'chart calendar or chart waterfall',
+  reg: 'chart calendar or chart waterfall',
+  aregister: 'chart <account>',
+  areg: 'chart <account>',
+  print: 'chart calendar',
+  stats: 'chart',
+  accounts: 'chart treemap',
+};
 
 /**
  * The named questions.
@@ -146,7 +156,13 @@ export default {
   async run(args, host) {
     const asked = String(args == null ? '' : args).trim();
     const query = build(asked);
-    const colors = typeof host.colors === 'function' ? host.colors() : FALLBACK_COLORS;
+    const colors = colorsOf(host);
+
+    // Said before any window opens: there is nothing to show in one.
+    if (query.refusal) {
+      host.say(`${host.name}: ${query.refusal}`);
+      return;
+    }
 
     // Opened first, filled when the numbers arrive.
     const view = host.window(`hledger: ${query.title}`);
@@ -169,12 +185,16 @@ export default {
     }
 
     if (!report) {
-      view.write(shell(colors, query.title, 'hledger returned nothing to chart.'));
-      host.say(`${host.name}: ${query.title} has no amounts to chart.`);
+      // A word that is close to a question was probably meant as one: `chart spendng` asks
+      // hledger about an account nobody has, and the answer should say what was likely meant.
+      const meant = query.account ? closestQuestion(query.account) : null;
+      const hint = meant ? ` Did you mean chart ${meant}?` : '';
+      view.write(shell(colors, query.title, `hledger returned nothing to chart.${hint}`));
+      host.say(`${host.name}: ${query.title} has no amounts to chart.${hint}`);
       return;
     }
 
-    const token = listen(host, query, colors);
+    const token = listen(host);
     view.write(page({
       report,
       colors,
@@ -197,6 +217,14 @@ export function build(args) {
   const words = String(args == null ? '' : args).trim().split(/\s+/).filter(Boolean);
   const [first, ...rest] = words;
   const preset = PRESETS.find((entry) => entry.names.includes(first));
+
+  if (NOT_CHARTS[first]) {
+    return {
+      refusal: `${first} is not a report a chart can draw; try ${NOT_CHARTS[first]}.`,
+      title: first,
+      options: {},
+    };
+  }
 
   if (preset) {
     let account = preset.account;
@@ -229,6 +257,42 @@ export function build(args) {
     account,
     options: {},
   };
+}
+
+/** Every word that names a question, as `chart?` lists them. */
+export function questions() {
+  return PRESETS.flatMap((preset) => preset.names);
+}
+
+/**
+ * The question a mistyped word was probably meant to be, or null.
+ *
+ * Only a single word without a colon is considered, since `expenses:fod` is an account
+ * question, and only a near miss: at most two letters off, and fewer for short words.
+ */
+export function closestQuestion(word) {
+  const text = String(word || '').toLowerCase();
+  if (!text || /[\s:]/.test(text)) return null;
+  let best = null;
+  for (const name of questions()) {
+    const distance = editDistance(text, name);
+    const allowed = name.length <= 4 ? 1 : 2;
+    if (distance > 0 && distance <= allowed && (!best || distance < best.distance)) best = { name, distance };
+  }
+  return best ? best.name : null;
+}
+
+function editDistance(left, right) {
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+    }
+    previous = current;
+  }
+  return previous[right.length];
 }
 
 /** Add the CSV output format, unless the caller asked for one of their own. */
@@ -319,13 +383,8 @@ export function parseReport(kind, text) {
  * therefore the plugin on this side of the window. The window is a page with no API of its
  * own, so the bridge is a function on the opener, kept by a token the page carries.
  */
-function listen(host, query, colors) {
-  const token = `chart-${(listen.count = (listen.count || 0) + 1)}-${Date.now().toString(36)}`;
-  // `window` in a browser, `globalThis` anywhere else: this runs in the app's page, and the
-  // check runs it in node to see what it would have written.
-  const scope = typeof window === 'undefined' ? globalThis : window;
-  const bridges = (scope.__chartBridges = scope.__chartBridges || {});
-  bridges[token] = {
+function listen(host) {
+  return bridge('__chartBridges', 'chart', {
     async requery(account) {
       const query = build(account);
       const report = parseReport(query.kind, await host.hledger(query.command));
@@ -340,67 +399,25 @@ function listen(host, query, colors) {
         title: query.title,
       };
     },
-  };
-  return token;
+  });
 }
 
-/**
- * A file beside this plugin, as an absolute URL.
- *
- * The window is a `blob:` document, so a relative path in it would resolve against nothing, and
- * a repository may live anywhere: everything the plugin needs travels with the plugin.
- */
-function beside(name) {
-  return new URL(`./${name}`, import.meta.url).href;
-}
-
-/** The window before there is anything to show, and when something went wrong. */
-function shell(colors, title, message) {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>hledger: ${escape(title)}</title></head>
-<body style="margin:0;background:${colors.background};color:${colors.foreground};
-  font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif">
-<main style="max-width:960px;margin:0 auto;padding:24px">
-  <h1 style="font-size:18px;font-weight:600;margin:0 0 4px">${escape(title)}</h1>
-  <p style="color:${colors.dim};margin:0">${escape(message)}</p>
-</main>
-</body></html>`;
-}
-
-function escape(text) {
-  return String(text).replace(/[&<>"]/g, (character) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
-  }[character]));
-}
 
 /** One line for the terminal, so the window is not the only place the answer lives. */
 function summary(query, report) {
   // The D3 charts already have a sentence for their data; using it keeps the terminal and the
   // window saying the same thing.
   if (isCustom(query.kind)) return headlineFor(query.kind, report);
-  const total = (amounts) => amounts.reduce((sum, amount) => sum + amount.value, 0);
   const unit = report.unit;
   if (report.periods.length > 1) {
-    const perPeriod = report.periods.map((_, index) => ({
-      value: total(report.series.map((series) => series.amounts[index])),
-      ...unit,
-    }));
-    const first = perPeriod[0].value;
-    const last = perPeriod[perPeriod.length - 1];
-    const change = last.value - first;
-    const sign = change >= 0 ? 'up' : 'down';
-    return `${report.periods.length} periods of ${query.title}, ${
-      formatAmount(last)}, ${sign} ${formatAmount({ value: Math.abs(change), ...unit })}`;
+    const first = periodTotal(report, 0).value;
+    const last = periodTotal(report, report.periods.length - 1).value;
+    const change = last - first;
+    return `${report.periods.length} periods of ${query.title}, ${format({ value: last, ...unit })}, ${
+      change >= 0 ? 'up' : 'down'} ${format({ value: Math.abs(change), ...unit })}`;
   }
   const biggest = report.series
     .map((series) => ({ label: series.label, amount: series.amounts[0] }))
     .sort((left, right) => Math.abs(right.amount.value) - Math.abs(left.amount.value))[0];
-  return `${report.series.length} accounts, ${formatAmount(biggest.amount)} in ${biggest.label}`;
-}
-
-function formatAmount(amount) {
-  const sign = amount.value < 0 ? '-' : '';
-  const fixed = Math.abs(amount.value).toFixed(2);
-  const [whole, fraction] = fixed.split('.');
-  return `${sign}${amount.prefix || ''}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}${amount.suffix || ''}`;
+  return `${report.series.length} accounts, ${format(biggest.amount)} in ${biggest.label}`;
 }

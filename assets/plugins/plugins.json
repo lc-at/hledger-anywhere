@@ -47,8 +47,144 @@
         "--monthly"
       ],
       "module": "./chart.js",
-      "usage": "chart [preset|account] [flags]",
-      "help": "Opens a chart in its own window, drawn from hledger's own numbers. Named questions answer for the usual cases: spending, income, cashflow, networth, balances, payees, top and shares. Others ask for the report their picture needs: stacked for spending by category over time, treemap for where the money went, sankey for income flowing into spending and savings, calendar for a year of daily spending, waterfall for income down to net, and multiples for a sparkline per account. Anything else is read as an account, and a report name such as balance or register is passed through verbatim. Hover or Tab to a mark for its numbers, click or Enter on it to chart that account alone, and Escape to go back. Click a legend entry to hide a series. Scroll or press + and - to zoom through time, drag to pan, double-click or 0 to reset, and the arrow keys step through periods. s saves the chart as SVG and p as PNG."
+      "usage": "chart [question] [account] [hledger flags]",
+      "help": "Opens a chart of hledger's own numbers in a window of its own. Name a question, any account, or a whole balance report; flags such as -p 2024 go to hledger as they are. The window shows the command it ran, and the numbers as a table under the chart.",
+      "sections": [
+        {
+          "title": "Over time",
+          "rows": [
+            [
+              "chart",
+              "spending by account, month by month; the same as chart spending"
+            ],
+            [
+              "chart income",
+              "what came in, month by month"
+            ],
+            [
+              "chart cashflow",
+              "income against expenses, month by month"
+            ],
+            [
+              "chart networth",
+              "assets and liabilities as one running total"
+            ],
+            [
+              "chart balances",
+              "every account, at the end of each month"
+            ],
+            [
+              "chart payees",
+              "spending by payee, month by month"
+            ],
+            [
+              "chart stacked [account]",
+              "categories stacked month by month"
+            ],
+            [
+              "chart multiples",
+              "a small line per account, largest first"
+            ],
+            [
+              "chart calendar",
+              "a square per day, darker for more spending"
+            ]
+          ]
+        },
+        {
+          "title": "Where it went",
+          "rows": [
+            [
+              "chart top [account]",
+              "accounts ranked, largest first"
+            ],
+            [
+              "chart shares [account]",
+              "each account's share, as a doughnut"
+            ],
+            [
+              "chart treemap [account]",
+              "the account tree, area by balance"
+            ],
+            [
+              "chart sankey",
+              "income flowing into spending and savings"
+            ],
+            [
+              "chart waterfall",
+              "income, a step down per category, then net"
+            ]
+          ]
+        },
+        {
+          "title": "Anything else",
+          "rows": [
+            [
+              "chart <account>",
+              "that account, month by month"
+            ],
+            [
+              "chart balance <args>",
+              "any balance report, as written; also bs, is and cf"
+            ]
+          ]
+        },
+        {
+          "title": "In the window",
+          "rows": [
+            [
+              "hover, Tab",
+              "a mark's numbers"
+            ],
+            [
+              "click, Enter",
+              "chart that account on its own"
+            ],
+            [
+              "Esc",
+              "back to the chart before"
+            ],
+            [
+              "legend entry",
+              "click to hide or show that series"
+            ],
+            [
+              "scroll, + -",
+              "zoom through time; drag to pan"
+            ],
+            [
+              "0, double-click",
+              "reset the zoom"
+            ],
+            [
+              "left, right",
+              "step through the periods"
+            ],
+            [
+              "s, p",
+              "save the chart as SVG, or as PNG"
+            ]
+          ]
+        }
+      ],
+      "examples": [
+        [
+          "chart income -Q",
+          "income, quarter by quarter"
+        ],
+        [
+          "chart sankey -p 2024",
+          "where 2024's income went"
+        ],
+        [
+          "chart expenses:food -W",
+          "food spending, week by week"
+        ],
+        [
+          "chart treemap expenses:food",
+          "inside one category"
+        ]
+      ]
     },
     {
       "name": "edit",
@@ -57,7 +193,28 @@
       "completes": [],
       "module": "./edit.js",
       "usage": "edit [path]",
-      "help": "Opens a file in an editor window, with Ctrl/Cmd-S writing it back to disk. With no argument it edits the journal hledger is reading. Only files from an open folder can be written: everything else opens read-only, and the save says so. If the file changed on disk since it was opened, the save is refused rather than overwriting the change."
+      "help": "Opens a file in an editor window, with Ctrl+S or Cmd+S writing it back to disk. With no argument it edits the journal hledger is reading. Only files from an open folder can be written: everything else opens read-only, and the save says so. If the file changed on disk since it was opened, the save is refused rather than overwriting the change.",
+      "sections": [
+        {
+          "title": "In the window",
+          "rows": [
+            [
+              "Ctrl+S, Cmd+S",
+              "save the file back to disk, if it came from an open folder"
+            ]
+          ]
+        }
+      ],
+      "examples": [
+        [
+          "edit",
+          "the journal hledger is reading"
+        ],
+        [
+          "edit 2024.journal",
+          "another file from the open folder"
+        ]
+      ]
     }
   ]
 }

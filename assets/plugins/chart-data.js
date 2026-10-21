@@ -7,6 +7,8 @@
  * file is deterministic and covered by `scripts/check-example-plugin.mjs`.
  */
 
+import { isLight } from './window-kit.js';
+
 // --------------------------------------------------------------------------- numbers
 
 /** 1234567.891 -> "1,234,567.89", without asking the browser's locale. */
@@ -167,17 +169,8 @@ export function palette(colors, count) {
   });
 }
 
-/** Whether a hex colour is light, by the same measure the app's Rust side uses. */
-export function isLight(css) {
-  const match = /^#?([0-9a-f]{6})$/i.exec(String(css).trim());
-  if (!match) return false;
-  const value = parseInt(match[1], 16);
-  const [r, g, b] = [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-  return (299 * r + 587 * g + 114 * b) / 1000 >= 128;
-}
-
 /** Hue, saturation and lightness of a hex colour. */
-export function toHsl(css) {
+function toHsl(css) {
   const match = /^#?([0-9a-f]{6})$/i.exec(String(css).trim());
   if (!match) return [210, 60];
   const value = parseInt(match[1], 16);
@@ -195,20 +188,4 @@ export function toHsl(css) {
   else if (max === g) hue = 60 * ((b - r) / delta + 2);
   else hue = 60 * ((r - g) / delta + 4);
   return [(hue + 360) % 360, saturation * 100, lightness * 100];
-}
-
-/** `other` mixed into `css`, `percent` of the way. */
-export function mix(css, other, percent) {
-  const read = (value) => {
-    const match = /^#?([0-9a-f]{6})$/i.exec(String(value).trim());
-    if (!match) return [0, 0, 0];
-    const number = parseInt(match[1], 16);
-    return [(number >> 16) & 255, (number >> 8) & 255, number & 255];
-  };
-  const mine = read(css);
-  const theirs = read(other);
-  return `#${mine
-    .map((channel, index) => Math.round((channel * (100 - percent) + theirs[index] * percent) / 100))
-    .map((channel) => channel.toString(16).padStart(2, '0'))
-    .join('')}`;
 }

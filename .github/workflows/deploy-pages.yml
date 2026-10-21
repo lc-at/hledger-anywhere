@@ -84,10 +84,21 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
 
-      # The example plugin is the worked example in docs/plugins.md, and nothing in the
-      # Rust tests can reach it.
+      # The browser check needs Node's built-in WebSocket, which is Node 22 and later.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The bundled plugins are the worked example in docs/plugins.md, and nothing in the
+      # Rust tests can reach them.
       - name: Check the example plugin
         run: node scripts/check-example-plugin.mjs
+
+      # Their windows, drawn and used in headless Chrome, which the runner image ships. This
+      # also measures how much of the plugins' code the two checks execute, and fails below 90%.
+      - name: Check the plugin windows in a browser
+        run: node scripts/check-plugin-windows.mjs
 
       - name: Engine smoke test
         # The shipped engine, driven the way the app drives it: no -f, with the

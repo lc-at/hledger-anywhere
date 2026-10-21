@@ -7,6 +7,8 @@
  * a bridge on its opener — the same shape the chart window uses.
  */
 
+import { FALLBACK_COLORS, escape, isLight, mix } from './window-kit.js';
+
 /** The whole document, with the file in a JSON block and the editor to be mounted. */
 export function page({ path, contents, writable, colors, token, module, scripts = [] }) {
   const data = JSON.stringify({ path, contents, writable, colors, token }).replace(/</g, '\\u003c');
@@ -30,7 +32,7 @@ export function page({ path, contents, writable, colors, token, module, scripts 
 <body>
 <header>
   <h1>${escape(path)}</h1>
-  <span class="hint">${writable ? 'Ctrl/Cmd-S saves back to disk' : 'read-only: this file came from an upload, not an opened folder'}</span>
+  <span class="hint">${writable ? 'Ctrl+S or Cmd+S saves it to disk' : 'read-only: this file came from an upload, not an opened folder'}</span>
 </header>
 <div id="editor"></div>
 <footer><span id="status"></span><span id="warn" hidden></span></footer>
@@ -86,13 +88,13 @@ export function mount(root = document) {
 
   async function save() {
     if (!data.writable) {
-      show(warn, 'This file has nowhere to write: open its folder with `open` first.');
+      show(warn, 'This file has nowhere to write. Open its folder with open in the terminal first.');
       return;
     }
     const bridges = window.opener && window.opener.__editBridges;
     const bridge = bridges && bridges[data.token];
     if (!bridge) {
-      show(warn, 'This window has lost touch with the app. Run `edit` again.');
+      show(warn, 'This window has lost touch with the app. Run edit again.');
       return;
     }
     try {
@@ -117,14 +119,6 @@ export function mount(root = document) {
     element.hidden = !message;
   }
 }
-
-const FALLBACK_COLORS = {
-  background: '#000000',
-  foreground: '#d8d8d8',
-  cursor: '#ff9f1c',
-  accent: '#ff9f1c',
-  dim: '#8a8a8a',
-};
 
 /** Ace themes are modules; each window defines one from the app's own palette. */
 let themes = 0;
@@ -155,38 +149,4 @@ function defineTheme(ace, colors) {
     require('ace/lib/dom').importCssString(cssText, className, false);
   });
   return name;
-}
-
-/** Whether a hex colour is light, by the same measure the app's Rust side uses. */
-function isLight(css) {
-  const match = /^#?([0-9a-f]{6})$/i.exec(String(css).trim());
-  if (!match) return false;
-  const value = parseInt(match[1], 16);
-  const [r, g, b] = [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-  return (299 * r + 587 * g + 114 * b) / 1000 >= 128;
-}
-
-/** `other` mixed into `css`, `percent` of the way; the selection uses this. */
-function mix(css, other, percent) {
-  const read = (value) => {
-    const match = /^#?([0-9a-f]{6})$/i.exec(String(value).trim());
-    if (!match) return [0, 0, 0];
-    const number = parseInt(match[1], 16);
-    return [(number >> 16) & 255, (number >> 8) & 255, number & 255];
-  };
-  const mine = read(css);
-  const theirs = read(other);
-  return `#${mine
-    .map((channel, index) => Math.round((channel * (100 - percent) + theirs[index] * percent) / 100))
-    .map((channel) => channel.toString(16).padStart(2, '0'))
-    .join('')}`;
-}
-
-function escape(text) {
-  return String(text).replace(/[&<>"]/g, (character) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-  }[character]));
 }

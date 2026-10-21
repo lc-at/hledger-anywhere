@@ -500,6 +500,15 @@ cargo test                                  # the pure modules
 cargo clippy --all-targets -- -D warnings
 cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
 
+# The bundled plugins: commands, parsers, models, pages, everything without a DOM.
+node scripts/check-example-plugin.mjs
+
+# Their windows in headless Chrome: every chart in both themes, hover, legend, keys, zoom,
+# drill-down, saving, the editor's save and its refusals. It also measures how much of the
+# plugins' code the two checks execute, and fails if any file is under 90%.
+# Chrome is found on PATH, or named with CHROME=/path/to/chrome. Needs Node 22.
+node scripts/check-plugin-windows.mjs
+
 # The shipped engine, natively, without a browser:
 node --experimental-wasi-unstable-preview1 scripts/hledger-wasm.mjs \
     path/to/hledger.journal balance --tree
@@ -510,7 +519,13 @@ HLEDGER_NO_FILE_ARG=1 node --experimental-wasi-unstable-preview1 \
     scripts/hledger-wasm.mjs path/to/hledger.journal balance
 ```
 
-CI runs the tests, both lints, that engine smoke test, and then the build.
+CI runs the tests, both lints, both plugin checks, that engine smoke test, and then the
+build.
+
+Coverage, measured: the natively compiled Rust is 97% of lines executed by `cargo test`
+(`cargo llvm-cov`), which is every pure module; the wasm-only glue in `src/app.rs` and its
+neighbours is exercised by the app itself, not by a test. The plugins are 95 to 99% executed
+per file, and the browser check enforces 90%.
 
 Beyond the tests, the behaviour in this README was verified by driving the running
 app in a browser: a first run with the session cleared, completion read off the

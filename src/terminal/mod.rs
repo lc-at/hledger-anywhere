@@ -1398,6 +1398,11 @@ pub fn theme_usage(name: &str, available: &[String]) -> String {
 }
 
 /// What `plugins` prints: what is installed, and the repositories it came from.
+/// A plugin's summary, for one that took a word hledger also answers to.
+pub fn shadowing_note(name: &str, summary: &str) -> String {
+    format!("{summary}; hledger {name} still runs hledger's own")
+}
+
 pub fn plugin_list(installed: &[(String, String)], repositories: &[(String, bool)]) -> String {
     let mut text = String::new();
     if installed.is_empty() {
@@ -2503,7 +2508,7 @@ mod tests {
 
     #[test]
     fn candidates_are_listed_in_columns_that_fit() {
-        let items = options(&["upload", "upload_dir", "journal", "demo"]);
+        let items = options(&["upload", "screenreader", "journal", "demo"]);
 
         let lines = format_columns(&items, 40);
         assert_eq!(lines.len(), 2, "{lines:?}");
@@ -2512,7 +2517,7 @@ mod tests {
         }
         // Column-major, as `ls` lays them out: the widest item pads its column.
         assert!(lines[0].starts_with("upload "), "{lines:?}");
-        assert!(lines[1].starts_with("upload_dir"), "{lines:?}");
+        assert!(lines[1].starts_with("screenreader"), "{lines:?}");
         for item in &items {
             assert!(lines.iter().any(|line| line.contains(item.as_str())), "{item}");
         }
@@ -2520,7 +2525,7 @@ mod tests {
         // Too narrow for two columns: one per line, and nothing is cut off.
         let narrow = format_columns(&items, 4);
         assert_eq!(narrow.len(), 4, "{narrow:?}");
-        assert!(narrow.contains(&"upload_dir".to_string()), "{narrow:?}");
+        assert!(narrow.contains(&"screenreader".to_string()), "{narrow:?}");
 
         assert!(format_columns(&[], 40).is_empty());
     }
@@ -2758,6 +2763,7 @@ mod tests {
             alias_list(&[("bal".to_string(), "balance".to_string())]),
             alias_note("bal", "balance"),
             quoted("my file.journal"),
+            shadowing_note("balance", "a different balance"),
         ];
         // The refusals matter as much as the greetings: they are read at the moment
         // someone is already confused about what they typed.

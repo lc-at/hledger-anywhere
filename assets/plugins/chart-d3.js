@@ -21,7 +21,8 @@
  * Enter to chart that account on its own.
  */
 
-import { format, group, mix, money, palette, percent, seriesTotal, split, unitOf } from './chart-data.js';
+import { format, group, money, palette, percent, seriesTotal, split, unitOf } from './chart-data.js';
+import { escape, mix } from './window-kit.js';
 
 /** The kinds that read a report of their own rather than a balance report. */
 export const CUSTOM = ['treemap', 'calendar', 'waterfall', 'multiples', 'sankey'];
@@ -467,6 +468,9 @@ function interactive(selection, { d3, svg, hooks, colors, tip, account, label })
   return selection;
 }
 
+/** How long a click on a zoomable chart waits to learn whether it was half of a double-click. */
+const DOUBLE_CLICK = 260;
+
 /** A label cut to fit, with an ellipsis, at the 11px the charts use. */
 function fit(text, pixels) {
   const room = Math.max(3, Math.floor(pixels / 6.4));
@@ -666,11 +670,19 @@ function drawSeries(svg, model, colors, hooks, state) {
     return values.reduce((best, entry) => (Math.abs(y(entry.top) - py) < Math.abs(y(best.top) - py) ? entry : best)).series;
   }
 
+  // How far time can be zoomed: down to two periods across the plot. A short report cannot be
+  // zoomed into at all, so the wheel and a double-click are left alone there.
+  const most = Math.max(1, (count - 1) / 2);
+
+  // The plot's own edges are where its highest and latest points sit, so the area that listens
+  // reaches a little past them: otherwise half of the top point's dot was outside it, and the
+  // point a person most wants to click did nothing.
+  const reach = 8;
   const overlay = root.append('rect')
     .attr('data-transient', '')
-    .attr('x', margin.left).attr('y', margin.top)
-    .attr('width', Math.max(0, width - margin.left - margin.right))
-    .attr('height', Math.max(0, height - margin.top - margin.bottom))
+    .attr('x', margin.left - reach).attr('y', Math.max(0, margin.top - reach))
+    .attr('width', Math.max(0, width - margin.left - margin.right + 2 * reach))
+    .attr('height', Math.max(0, height - margin.top - margin.bottom + 2 * reach))
     .attr('fill', 'transparent')
     .style('cursor', model.drillable ? 'pointer' : 'crosshair');
   const indexAt = (px) => Math.max(0, Math.min(count - 1, Math.round(x.invert(px))));
@@ -685,11 +697,19 @@ function drawSeries(svg, model, colors, hooks, state) {
       if (!model.drillable) return;
       const [px, py] = d3.pointer(event, svg);
       const series = nearest(indexAt(px), py);
-      if (series && !series.other) hooks.pick(series.label);
+      if (!series || series.other) return;
+      // A double-click resets the zoom, and its first click is a click too. Where there is a
+      // zoom to reset, a click waits a moment to see whether a second one follows, so a reset
+      // does not also open an account; where there is none, it answers at once.
+      if (most <= 1) {
+        hooks.pick(series.label);
+        return;
+      }
+      clearTimeout(state.pending);
+      state.pending = setTimeout(() => hooks.pick(series.label), DOUBLE_CLICK);
     });
 
-  // Zoom along time only. Two periods cannot be zoomed into, so the wheel is left alone there.
-  const most = Math.max(1, (count - 1) / 2);
+  // Zoom along time only.
   const zoom = d3.zoom()
     .scaleExtent([1, most])
     .extent([[margin.left, 0], [width - margin.right, height]])
@@ -701,7 +721,10 @@ function drawSeries(svg, model, colors, hooks, state) {
       place(event.transform.rescaleX(x0));
     });
   root.call(zoom).on('dblclick.zoom', null);
-  overlay.on('dblclick', () => root.transition().duration(220).call(zoom.transform, d3.zoomIdentity));
+  overlay.on('dblclick', () => {
+    clearTimeout(state.pending);
+    root.transition().duration(220).call(zoom.transform, d3.zoomIdentity);
+  });
   place(x0);
   if (state.transform && most > 1) root.call(zoom.transform, state.transform);
 
@@ -1199,10 +1222,4 @@ function drawSankey(svg, data, colors, hooks) {
     }
   }
   return {};
-}
-
-function escape(text) {
-  return String(text).replace(/[&<>"]/g, (character) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
-  }[character]));
 }
