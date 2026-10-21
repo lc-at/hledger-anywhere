@@ -34,9 +34,10 @@ import {
   TREE_CSV,
 } from './chart-fixtures.mjs';
 
-import Chart, { build, closestQuestion, parseReport, questions, read } from '../assets/plugins/chart.js';
+import Chart, { build, closestQuestion, parseReport, questions, read, related, understand } from '../assets/plugins/chart.js';
 import Edit from '../assets/plugins/edit.js';
 import { page as editPage } from '../assets/plugins/edit-window.js';
+import { alsoLine } from '../assets/plugins/chart-window.js';
 import { FALLBACK_COLORS, beside, bridge, colorsOf, escape, isLight, mix, shell } from '../assets/plugins/window-kit.js';
 import {
   CUSTOM,
@@ -97,6 +98,58 @@ check('a report command is passed through whole',
   build('balance assets -M').command === 'balance assets -M -O csv', build('balance assets -M').command);
 check('a format the caller chose is left alone',
   build('balance assets -O json').command === 'balance assets -O json', build('balance assets -O json').command);
+
+// ------------------------------------------------------------------ asking in words
+
+{
+  const asked = (args) => build(args).command;
+  check('a year is a period', asked('spending 2024') === 'balance expenses -M -p 2024 -O csv', asked('spending 2024'));
+  check('and so are a month, a quarter and a day',
+    asked('spending 2024-03').includes('-p 2024-03') && asked('sankey 2024q1').includes('-p 2024q1')
+    && asked('food 2024-03-15').includes('-p 2024-03-15'), '');
+  check('this and last are periods, quoted for hledger',
+    asked('income last year') === 'balance income -M -p "last year" -O csv' && asked('top this month').includes('-p "this month"'),
+    asked('income last year'));
+  check('since, until and a range are periods',
+    asked('top since 2024-06').includes('-p "from 2024-06"') && asked('top until 2024-06').includes('-p "to 2024-06"')
+    && asked('food 2023 to 2024').includes('-p "from 2023 to 2024"'), asked('food 2023 to 2024'));
+  check('an interval in words replaces the monthly default',
+    asked('spending weekly') === 'balance expenses -W -O csv' && asked('networth quarterly').includes('-H -Q')
+    && !asked('networth quarterly').includes('-M'), asked('networth quarterly'));
+  check('and so does one given as a flag', asked('spending -W') === 'balance expenses -W -O csv', asked('spending -W'));
+  check('a day or a week is split by the day, not by the month',
+    asked('spending today').includes('-D') && asked('food this week').includes('-D') && asked('spending this month').includes('-M'),
+    asked('food this week'));
+  check('the question can come after the account', asked('food treemap') === asked('treemap food') && asked('food treemap') === 'balance --tree food -O csv',
+    asked('food treemap'));
+  check('and a period is never mistaken for an account', asked('top 2024') === 'balance expenses -p 2024 -O csv', asked('top 2024'));
+  check('a flag keeps its value, which is not read again as a period',
+    asked('expenses:food -p 2024') === 'balance expenses:food -M -p 2024 -O csv' && understand(['-p', '2024']).period === null,
+    asked('expenses:food -p 2024'));
+  check('a report keeps its words and takes a period and an interval too',
+    asked('balance assets 2024 quarterly') === 'balance assets -Q -p 2024 -O csv', asked('balance assets 2024 quarterly'));
+  check('the title says what was asked', build('income last year weekly').title === 'income, last year, weekly'
+    && build('treemap food').title === 'food, as a treemap', build('income last year weekly').title);
+  check('an interval on a chart of one period is left out, and the note says so',
+    build('treemap weekly').command === 'balance --tree expenses -O csv' && /weekly was left out: treemap draws one period/.test(build('treemap weekly').note),
+    build('treemap weekly').note);
+  check('two periods are not one: the second is left as a word', understand(['2024', '2025']).rest.join() === '2025', '');
+}
+
+{
+  const links = related('top', 'expenses:food', ['top', 'expenses:food', '2024']);
+  check('a chart of an account suggests the other ways to ask about it, period and all',
+    links.map((link) => link.label).join(' | ') === 'chart expenses:food 2024 | chart shares expenses:food 2024 | chart treemap expenses:food 2024 | chart stacked expenses:food 2024',
+    links.map((link) => link.label).join(' | '));
+  check('a question without an account suggests its family',
+    related('income', null, ['income']).map((link) => link.args).join() === 'cashflow,sankey,waterfall',
+    related('income', null, ['income']).map((link) => link.args).join());
+  check('every suggestion is a chart the plugin builds',
+    ['spending', 'networth', 'sankey', 'calendar', 'food 2024', 'top food'].every((args) => (build(args).related || []).every((link) => !build(link.args).refusal)), '');
+  check('the links are escaped, and say their command',
+    alsoLine([{ label: 'chart <x>', args: 'a"b' }]) === 'Also: <a href="#" data-args="a&quot;b">chart &lt;x&gt;</a>' && alsoLine([]) === '',
+    alsoLine([{ label: 'chart <x>', args: 'a"b' }]));
+}
 
 // ------------------------------------------------------------------ reading hledger
 
@@ -253,6 +306,9 @@ check('and a key with a modifier is left to the browser',
     fileName('Where the money went', 'svg'));
 }
 
+check('a period with nothing in it is written in the report\'s commodity',
+  tableView(read('"account","2024-01","2024-02"\n"expenses:food","0","$12.50"\n')).includes('$0.00')
+  && !tableView(read('"account","2024-01","2024-02"\n"expenses:food","0","$12.50"\n')).includes('>0.00<'), '');
 check('the numbers are a table, with a row per period',
   (tableView(report).match(/<tr>/g) || []).length === 4, String((tableView(report).match(/<tr>/g) || []).length));
 check('thousands are grouped', group(1234567.891) === '1,234,567.89', group(1234567.891));
@@ -350,6 +406,13 @@ function stub(overrides = {}) {
   check('and gets back a report it can draw, titled after the account',
     answer.title === 'expenses:housing:rent' && answer.report.periods.length === 3 && answer.command.endsWith('-O csv'),
     JSON.stringify({ title: answer.title, command: answer.command }));
+  const followed = await bridge.requery('treemap expenses:food 2024');
+  check('a window can follow a related chart, which is any line chart takes',
+    log.asked[log.asked.length - 1] === 'balance --tree expenses:food -p 2024 -O csv' && followed.related.length > 0,
+    log.asked[log.asked.length - 1]);
+  let refusedLine = '';
+  try { await bridge.requery('register'); } catch (error) { refusedLine = error.message; }
+  check('and a line chart refuses is refused there too', /register is not a report a chart can draw/.test(refusedLine), refusedLine);
   const sankey = await bridge.requery('sankey');
   check('a drill-down into a question is parsed the way that question is', sankey.kind === 'sankey' && 'sinks' in sankey.report,
     String(sankey.kind));
@@ -394,6 +457,18 @@ function stub(overrides = {}) {
   const { host, log } = stub({ window: () => null });
   await Chart.run('spending', host);
   check('a blocked window is reported', log.said.some((line) => line.includes('blocked')), JSON.stringify(log.said));
+}
+
+{
+  const { host, log } = stub();
+  await Chart.run('', host);
+  check('the bare word points to the other questions', log.said.some((line) => line.endsWith('Tab after chart lists the other questions.')), JSON.stringify(log.said));
+  const again = stub();
+  await Chart.run('treemap weekly', again.host);
+  check('a chart asked for by name does not repeat that, and a left-out interval is said',
+    again.log.said.some((line) => /in a new window\. weekly was left out/.test(line)) && !again.log.said.some((line) => /Tab after chart/.test(line)),
+    JSON.stringify(again.log.said));
+  check('the page carries its related charts', again.log.pages[again.log.pages.length - 1].includes('Also: <a href="#" data-args='), '');
 }
 
 {

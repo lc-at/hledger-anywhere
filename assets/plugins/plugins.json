@@ -39,16 +39,33 @@
       "group": "Reports",
       "summary": "open a chart of hledger's numbers in a window",
       "completes": [
-        "balance",
-        "assets",
-        "expenses",
+        "spending",
         "income",
-        "-M",
-        "--monthly"
+        "cashflow",
+        "networth",
+        "balances",
+        "payees",
+        "stacked",
+        "multiples",
+        "calendar",
+        "top",
+        "shares",
+        "treemap",
+        "sankey",
+        "waterfall",
+        "weekly",
+        "monthly",
+        "quarterly",
+        "yearly",
+        "daily",
+        "this",
+        "last",
+        "since",
+        "expenses"
       ],
       "module": "./chart.js",
-      "usage": "chart [question] [account] [hledger flags]",
-      "help": "Opens a chart of hledger's own numbers in a window of its own. Name a question, any account, or a whole balance report; flags such as -p 2024 go to hledger as they are. The window shows the command it ran, and the numbers as a table under the chart.",
+      "usage": "chart [question] [account] [when] [how often]",
+      "help": "Opens a chart of hledger's own numbers in a window of its own. Name a question, an account, or both in either order, and say when and how often in words: chart food 2024 weekly. Anything that starts with a dash goes to hledger as it is. Under each chart are related charts to follow, and the numbers as a table.",
       "sections": [
         {
           "title": "Over time",
@@ -121,11 +138,36 @@
           "rows": [
             [
               "chart <account>",
-              "that account, month by month"
+              "that account, month by month; chart food matches expenses:food"
             ],
             [
               "chart balance <args>",
               "any balance report, as written; also bs, is and cf"
+            ]
+          ]
+        },
+        {
+          "title": "When, and how often",
+          "rows": [
+            [
+              "2024, 2024-03, 2024q1",
+              "a year, a month, a quarter"
+            ],
+            [
+              "this month, last year",
+              "also week and quarter; today, yesterday"
+            ],
+            [
+              "since 2024-06",
+              "from then on; until 2024-06 for up to then"
+            ],
+            [
+              "2023 to 2024",
+              "a range of dates"
+            ],
+            [
+              "weekly, monthly",
+              "also daily, quarterly, yearly; months are the default"
             ]
           ]
         },
@@ -139,6 +181,10 @@
             [
               "click, Enter",
               "chart that account on its own"
+            ],
+            [
+              "Also:",
+              "related charts under each one, a click away"
             ],
             [
               "Esc",
@@ -169,19 +215,19 @@
       ],
       "examples": [
         [
-          "chart income -Q",
-          "income, quarter by quarter"
-        ],
-        [
-          "chart sankey -p 2024",
+          "chart sankey 2024",
           "where 2024's income went"
         ],
         [
-          "chart expenses:food -W",
+          "chart food weekly",
           "food spending, week by week"
         ],
         [
-          "chart treemap expenses:food",
+          "chart income last year quarterly",
+          "last year's income, by quarter"
+        ],
+        [
+          "chart expenses:food treemap",
           "inside one category"
         ]
       ]

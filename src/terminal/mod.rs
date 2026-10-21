@@ -577,15 +577,17 @@ impl Editor {
         self.history.push(line.to_string());
     }
 
-    /// Whether the cursor is in the first word of the line.
+    /// The whole words before the token under the cursor: the command, then its arguments.
     ///
-    /// What can be typed at the start of a line is not what can be typed after it: one
-    /// takes commands, the other takes flags, accounts and paths. Tab shows different
-    /// lists in the two places, so it has to be able to tell them apart.
-    pub fn at_command_position(&self) -> bool {
-        !self.chars[..self.cursor]
-            .iter()
-            .any(|character| character.is_whitespace())
+    /// None means the cursor is in the first word, where commands go; one means it is the
+    /// first argument, which is where a plugin's own words are offered on their own.
+    pub fn words_before_token(&self) -> Vec<String> {
+        let head: String = self.chars[..self.cursor].iter().collect();
+        let done = match head.rfind(char::is_whitespace) {
+            Some(index) => &head[..index],
+            None => "",
+        };
+        done.split_whitespace().map(str::to_string).collect()
     }
 
     /// The token under the cursor, for completion.
@@ -844,6 +846,50 @@ pub fn starting_words() -> Vec<String> {
     let mut all: Vec<String> = COMMANDS.iter().map(|word| (*word).to_string()).collect();
     all.extend(HLEDGER_COMMANDS.iter().map(|word| (*word).to_string()));
     all
+}
+
+/// Where the words Tab offers come from, gathered by the caller, which is the only side that
+/// knows what has arrived: accounts load in the background, and plugins at runtime.
+#[derive(Default)]
+pub struct Sources {
+    /// Every plugin's word, which can start a line as the app's own commands can.
+    pub plugins: Vec<String>,
+    /// The plugin that owns this line, if one does, and the words it said it takes.
+    pub owner: Option<(String, Vec<String>)>,
+    /// The loaded file paths.
+    pub paths: Vec<String>,
+    pub accounts: Vec<String>,
+    pub aliases: Vec<String>,
+}
+
+/// What Tab can offer at the cursor, and the heading for the list it shows.
+///
+/// The start of a line takes a command: the app's, hledger's, or a plugin's. After a plugin's
+/// word, the words that plugin takes come first, and right after the word they are all that is
+/// offered: `chart <Tab>` lists the questions chart answers, not three hundred flags and
+/// accounts. Further along, and after any other command, it is flags, accounts and paths.
+/// A plugin's words are offered on its own lines only, not after every command.
+pub fn completion(before: &[String], token: &str, sources: &Sources) -> (Vec<String>, String) {
+    if before.is_empty() {
+        let mut words = starting_words();
+        words.extend(sources.plugins.iter().cloned());
+        return (words, "Commands you can run:".to_string());
+    }
+    let mut words = Vec::new();
+    let mut heading = "Flags, accounts and paths:".to_string();
+    if let Some((name, takes)) = &sources.owner {
+        words.extend(takes.iter().cloned());
+        if before.len() == 1 && token.is_empty() && !takes.is_empty() {
+            return (words, format!("What {name} takes ({name}? says what each one does):"));
+        }
+        heading = format!("What {name} takes, then accounts and flags:");
+    }
+    words.extend(argument_words(&sources.paths));
+    words.extend(sources.accounts.iter().cloned());
+    if sources.owner.is_none() {
+        words.extend(sources.aliases.iter().cloned());
+    }
+    (words, heading)
 }
 
 /// The words that can follow: report and query flags, then the loaded file paths.
@@ -2369,7 +2415,7 @@ mod tests {
     fn tab_after_a_command_lists_what_can_follow_it() {
         let mut e = Editor::default();
         e.insert("balance ");
-        assert!(!e.at_command_position());
+        assert_eq!(e.words_before_token(), ["balance"]);
         let offered = argument_words(&[]);
         match e.complete(&offered) {
             Completion::Listed(listed) => {
@@ -2384,11 +2430,11 @@ mod tests {
     #[test]
     fn the_first_word_is_where_the_commands_go() {
         let mut e = Editor::default();
-        assert!(e.at_command_position());
+        assert!(e.words_before_token().is_empty());
         e.insert("bal");
-        assert!(e.at_command_position(), "still the first word");
+        assert!(e.words_before_token().is_empty(), "still the first word");
         e.insert(" ");
-        assert!(!e.at_command_position(), "past it now");
+        assert_eq!(e.words_before_token(), ["bal"], "past it now");
     }
 
     #[test]
@@ -2504,6 +2550,53 @@ mod tests {
         assert!(e.menu_close());
         assert_eq!(e.line(), "balancesheet");
         assert!(!e.menu_close());
+    }
+
+    #[test]
+    fn a_plugin_word_starts_a_line_and_its_own_words_follow_it() {
+        let sources = Sources {
+            plugins: vec!["chart".to_string()],
+            owner: Some(("chart".to_string(), vec!["sankey".to_string(), "income".to_string()])),
+            accounts: vec!["expenses:food".to_string()],
+            aliases: vec!["bal".to_string()],
+            ..Sources::default()
+        };
+        // At the start of a line, the plugin is a command like any other.
+        let (words, heading) = completion(&[], "ch", &sources);
+        assert!(words.contains(&"chart".to_string()));
+        assert!(words.contains(&"balance".to_string()));
+        assert_eq!(heading, "Commands you can run:");
+
+        // Right after its word, only what it takes, and the list says how to read about them.
+        let (words, heading) = completion(&["chart".to_string()], "", &sources);
+        assert_eq!(words, ["sankey", "income"]);
+        assert!(heading.contains("chart?"), "{heading}");
+
+        // Typing narrows from everything that can go there, its words first.
+        let (words, _) = completion(&["chart".to_string()], "exp", &sources);
+        assert_eq!(&words[..2], ["sankey", "income"]);
+        assert!(words.contains(&"expenses:food".to_string()));
+        assert!(!words.contains(&"bal".to_string()), "an alias is not a chart argument");
+
+        // After any other command, a plugin's words are not offered at all.
+        let other = Sources { owner: None, ..sources };
+        let (words, heading) = completion(&["balance".to_string()], "", &other);
+        assert!(!words.contains(&"sankey".to_string()));
+        assert!(words.contains(&"bal".to_string()));
+        assert_eq!(heading, "Flags, accounts and paths:");
+    }
+
+    #[test]
+    fn the_words_before_the_cursor_are_the_command_and_its_arguments() {
+        let mut editor = Editor::default();
+        editor.insert("chart top exp");
+        assert_eq!(editor.words_before_token(), ["chart", "top"]);
+        assert_eq!(editor.token(), "exp");
+        let mut fresh = Editor::default();
+        fresh.insert("chart ");
+        assert_eq!(fresh.words_before_token(), ["chart"]);
+        assert_eq!(fresh.token(), "");
+        assert!(Editor::default().words_before_token().is_empty());
     }
 
     #[test]
@@ -3486,12 +3579,9 @@ mod tests {
         }
     }
 
-    /// Everything the user can type as a command: the core's words, and whatever the
-    /// installed plugins add. Nothing is installed in a test, so this is the core's.
+    /// Everything the user can type as one of the app's own commands.
     fn words() -> Vec<String> {
-        let mut words: Vec<String> = COMMANDS.iter().map(|word| (*word).to_string()).collect();
-        words.extend(crate::plugins::Registry::default().words());
-        words
+        COMMANDS.iter().map(|word| (*word).to_string()).collect()
     }
 
     #[test]

@@ -62,7 +62,10 @@ const CASES = {
     options: { total: true, label: 'net worth' },
   },
   stacked: { kind: 'stacked', csv: MONTHLY_CSV, title: 'spending by category', command: 'balance expenses -M --depth 2 -O csv' },
-  bar: { kind: null, csv: RANKING_CSV, title: 'top', command: 'balance expenses -O csv' },
+  bar: {
+    kind: null, csv: RANKING_CSV, title: 'top', command: 'balance expenses -O csv',
+    related: [{ label: 'chart shares expenses', args: 'shares expenses' }, { label: 'chart treemap expenses', args: 'treemap expenses' }],
+  },
   doughnut: { kind: 'shares', csv: RANKING_CSV, title: 'shares', command: 'balance expenses -O csv' },
   treemap: { kind: 'treemap', csv: TREE_CSV, title: 'where the money went', command: 'balance --tree expenses -O csv' },
   calendar: { kind: 'calendar', csv: REGISTER_CSV, title: 'daily spending', command: 'register -O csv' },
@@ -81,6 +84,7 @@ function windowFor(name, theme, { library = true } = {}) {
     token: 'check',
     kind: entry.kind,
     options: entry.options || {},
+    related: entry.related || [],
     module: '/plugins/chart-window.js',
     scripts: library ? ['/plugins/vendor/d3/d3.min.js'] : [],
   });
@@ -653,6 +657,27 @@ async function saving(tab, downloads) {
   })());
 }
 
+async function relatedCharts(tab) {
+  await tab.show('bar');
+  const links = await tab.eval("[...document.querySelectorAll('#also a')].map(a => a.textContent).join(' | ')");
+  check('a chart lists related charts under it, by the command each one is',
+    links === 'chart shares expenses | chart treemap expenses' && !(await tab.eval("document.getElementById('also').hidden")), links);
+  const link = await tab.centre('#also a', 'last');
+  await tab.click(link[0], link[1]);
+  await tab.until("document.getElementById('heading').textContent === 'treemap expenses'");
+  check('clicking one charts it, through the app', (await tab.heading()) === 'treemap expenses'
+    && (await tab.eval('window.__asked[window.__asked.length - 1]')) === 'treemap expenses', await tab.heading());
+  check('and a chart with nothing related has no line for it', await tab.eval("document.getElementById('also').hidden"));
+  await tab.key('Escape', { keyCode: 27 });
+  check('Escape comes back, with the links where they were', (await tab.heading()) === 'top'
+    && (await tab.eval("document.querySelectorAll('#also a').length")) === 2, await tab.heading());
+  // A link is reached by Tab and followed with Enter, like the rest of the window.
+  await tab.eval("document.querySelector('#also a').focus()");
+  await tab.key('Enter', { keyCode: 13, text: '\r' });
+  await tab.until("document.getElementById('heading').textContent === 'shares expenses'");
+  check('Enter on a focused link follows it', (await tab.heading()) === 'shares expenses', await tab.heading());
+}
+
 async function whenThingsGoWrong(tab) {
   await tab.show('line', 'light', '&library=no');
   check('without the library, the numbers stand alone and the window says so',
@@ -740,6 +765,7 @@ try {
   await zooming(tab);
   await byKeyboard(tab);
   await saving(tab, downloads);
+  await relatedCharts(tab);
   await whenThingsGoWrong(tab);
   await theEditor(tab);
   await coverage.collect(tab);

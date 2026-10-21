@@ -259,16 +259,6 @@ impl Registry {
             .collect()
     }
 
-    /// The words plugins add to completion.
-    pub fn words(&self) -> Vec<String> {
-        let mut words = Vec::new();
-        for plugin in &self.plugins {
-            words.push(plugin.name.clone());
-            words.extend(plugin.completes.iter().cloned());
-        }
-        words
-    }
-
     /// A plugin's line in the help: the word, the group it asks for, and what it does.
     pub fn help_entries(&self) -> Vec<(&str, &str, &str)> {
         self.plugins
@@ -400,7 +390,7 @@ mod tests {
 
         // The manifest is authoritative for everything the app needs before running
         // anything: completion, help, and who owns the word.
-        assert_eq!(registry.words(), vec!["chart", "balance", "expenses"]);
+        assert_eq!(chart.completes, vec!["balance", "expenses"]);
         assert_eq!(
             registry.help_entries(),
             vec![("chart", "Reports", "open a balance chart in a window")]

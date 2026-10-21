@@ -25,7 +25,13 @@ hledger for the report, the window draws it.
 | `chart <account>` | `balance <account> -M` | lines, for any account |
 | `chart <report …>` | the report, verbatim | whatever shape it comes back in |
 
-A period passes through to hledger: `chart sankey -p 2024`, `chart calendar -p 2024`.
+Periods and intervals are words, anywhere after `chart`, and the question can come before or
+after the account: `chart sankey 2024`, `chart food weekly`, `chart income last year
+quarterly`, `chart expenses:food treemap`. `understand()` in `chart.js` turns them into
+hledger's `-p` and `-W`; flags written out are passed through as they are. A chart that draws
+one period leaves an interval out and says so in the terminal. Each window ends with an "Also"
+line of related charts, each a link written as its own command, which `related()` chooses: the
+other ways to ask about the same account, or the questions in the same family.
 
 ## How it is built
 

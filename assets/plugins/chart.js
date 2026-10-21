@@ -50,12 +50,6 @@ import { format, money, periodTotal, split, unitOf } from './chart-data.js';
 import { beside, bridge, colorsOf, shell } from './window-kit.js';
 import { byDay, flows, headlineFor, isCustom, multiples, readRegister, readTree, waterfall } from './chart-d3.js';
 
-/** Flags that mean the caller has already chosen a period, so months are not added. */
-const PERIOD_FLAGS = [
-  '-D', '--daily', '-W', '--weekly', '-M', '--monthly',
-  '-Q', '--quarterly', '-Y', '--yearly', '-p', '--period',
-];
-
 /**
  * hledger's balance reports, so `chart balance assets -M` is read as a report.
  *
@@ -203,20 +197,119 @@ export default {
       token,
       kind: query.kind,
       options: query.options,
+      related: query.related || [],
       module: beside('chart-window.js'),
       // Every chart is drawn with D3, so the window loads one library and nothing else.
       scripts: [beside('vendor/d3/d3.min.js')],
     }));
     if (query.account) host.remember('account', query.account);
-    host.say(`${host.name}: ${summary(query, report)}, in a new window.`);
+    // The first chart most people ask for is the bare word, so that is where the rest of
+    // them are pointed out; once is enough after that, so the others do not repeat it.
+    const next = asked ? '' : ` Tab after ${host.name} lists the other questions.`;
+    const note = query.note ? ` ${query.note}` : '';
+    host.say(`${host.name}: ${summary(query, report)}, in a new window.${note}${next}`);
   },
 };
 
-/** What the caller asked for, as a command hledger can run. */
+/** The words that set the interval, and the flag each one means to hledger. */
+const INTERVALS = {
+  daily: '-D', weekly: '-W', monthly: '-M', quarterly: '-Q', yearly: '-Y', annually: '-Y',
+};
+const INTERVAL_FLAGS = ['-D', '--daily', '-W', '--weekly', '-M', '--monthly', '-Q', '--quarterly', '-Y', '--yearly'];
+
+/** hledger's flags that take the next word as their value, so that word is left with them. */
+const VALUED_FLAGS = [
+  '-p', '--period', '-b', '--begin', '-e', '--end', '--depth', '--pivot', '-O', '--output-format',
+  '-X', '--exchange', '--value', '-f', '--file', '--format', '--alias',
+];
+
+/** A word that is a date or a named stretch of one: 2024, 2024-03, 2024q1, 2024-03-15. */
+const DATE = /^\d{4}(?:-\d{1,2}(?:-\d{1,2})?|[qQ][1-4])?$/;
+const SPANS = ['day', 'week', 'month', 'quarter', 'year'];
+
+/**
+ * The words of a period and an interval, read out of the rest.
+ *
+ * People say when they mean in words, so that is what is read: `2024`, `2024q1`, `last year`,
+ * `this month`, `since 2024-06`, `2023 to 2024`, `today`; and `weekly`, `monthly` and the
+ * rest for how to split it. Each is turned into what hledger expects, `-p "last year"` and
+ * `-W`, and the words that were neither are handed back in order. A flag is passed through
+ * with its value untouched, so `-p 2024` is never read twice.
+ */
+export function understand(words) {
+  const rest = [];
+  const flags = [];
+  let period = null;
+  let interval = null;
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    const lower = word.toLowerCase();
+    const next = (words[index + 1] || '').toLowerCase();
+    if (word.startsWith('-')) {
+      flags.push(word);
+      if (VALUED_FLAGS.includes(word) && index + 1 < words.length) flags.push(words[(index += 1)]);
+      continue;
+    }
+    if (INTERVALS[lower]) {
+      interval = { word: lower, flag: INTERVALS[lower] };
+      continue;
+    }
+    if (period) {
+      rest.push(word);
+      continue;
+    }
+    if (['this', 'last', 'next'].includes(lower) && SPANS.includes(next)) {
+      period = `${lower} ${next}`;
+      index += 1;
+    } else if (lower === 'today' || lower === 'yesterday') {
+      period = lower;
+    } else if (['since', 'from'].includes(lower) && DATE.test(next)) {
+      period = `from ${words[index + 1]}`;
+      index += 1;
+    } else if (lower === 'until' && DATE.test(next)) {
+      period = `to ${words[index + 1]}`;
+      index += 1;
+    } else if (DATE.test(word) && ['to', 'until'].includes(next) && DATE.test(words[index + 2] || '')) {
+      period = `from ${word} to ${words[index + 2]}`;
+      index += 2;
+    } else if (DATE.test(word)) {
+      period = word;
+    } else {
+      rest.push(word);
+    }
+  }
+  return { rest, flags, period, interval };
+}
+
+/**
+ * The split a period wants when none was asked for: a day or a week by the day, anything
+ * longer by the month. A week split into months is one column that starts on the wrong day.
+ */
+function defaultSplit(period) {
+  return period && /^(today|yesterday|(this|last|next) week|\d{4}-\d{1,2}-\d{1,2})$/.test(period) ? '-D' : '-M';
+}
+
+/** "spending" with what was asked of it: "spending, 2024, weekly". */
+function titled(base, period, interval) {
+  return [base, period, interval && interval.word].filter(Boolean).join(', ');
+}
+
+/** Put a period on a command, quoted when it has a space in it. */
+function periodFlag(period) {
+  return period ? (/\s/.test(period) ? `-p "${period}"` : `-p ${period}`) : '';
+}
+
+/**
+ * What the caller asked for, as a command hledger can run.
+ *
+ * The question can come first or after the account (`chart treemap food`, `chart food
+ * treemap`), periods and intervals are words anywhere, and flags still pass through to
+ * hledger. An interval replaces a question's monthly default; on a chart that draws one
+ * period it would draw something else entirely, so it is left out and `note` says so.
+ */
 export function build(args) {
   const words = String(args == null ? '' : args).trim().split(/\s+/).filter(Boolean);
-  const [first, ...rest] = words;
-  const preset = PRESETS.find((entry) => entry.names.includes(first));
+  const first = words[0];
 
   if (NOT_CHARTS[first]) {
     return {
@@ -226,37 +319,78 @@ export function build(args) {
     };
   }
 
+  const { rest, flags, period, interval } = understand(words);
+  const flagged = flags.some((flag) => INTERVAL_FLAGS.includes(flag));
+  const tail = (command) => csv([command, periodFlag(period), ...flags].filter(Boolean).join(' '));
+
+  if (REPORTS.includes(rest[0])) {
+    const command = [...rest, interval && interval.flag].filter(Boolean).join(' ');
+    return { command: tail(command), title: titled(rest.join(' '), period, interval), options: {}, related: [] };
+  }
+
+  const at = rest.findIndex((word) => PRESETS.some((entry) => entry.names.includes(word)));
+  const preset = at >= 0 ? PRESETS.find((entry) => entry.names.includes(rest[at])) : null;
   if (preset) {
-    let account = preset.account;
-    let flags = rest;
-    let asked = false;
-    if (account && rest.length > 0 && !rest[0].startsWith('-')) {
-      [account, ...flags] = rest;
-      asked = true;
+    const others = rest.filter((_, index) => index !== at);
+    const asked = Boolean(preset.account && others.length > 0);
+    const account = asked ? others.join(' ') : preset.account;
+    let report = preset.report(account);
+    let note = '';
+    const monthly = / -M\b/.test(report);
+    if (monthly && (interval || flagged)) {
+      report = report.replace(/ -M\b/, interval ? ` ${interval.flag}` : '');
+    } else if (monthly && defaultSplit(period) !== '-M') {
+      report = report.replace(/ -M\b/, ` ${defaultSplit(period)}`);
+    } else if (!monthly && interval) {
+      note = `${interval.word} was left out: ${preset.names[0]} draws one period, not a series.`;
     }
-    const report = preset.report(account);
+    const base = asked ? (preset.named ? preset.named(account) : `${preset.title} of ${account}`) : preset.title;
     return {
-      command: csv(`${report} ${flags.join(' ')}`.trim()),
-      title: asked ? (preset.named ? preset.named(account) : `${preset.title} of ${account}`) : preset.title,
-      account,
+      command: tail(report),
+      title: titled(base, period, monthly ? interval : null),
+      account: preset.account ? account : undefined,
       kind: preset.kind || null,
       options: preset.options || {},
+      note,
+      related: related(preset.names[0], preset.account ? account : null, words),
     };
   }
 
-  if (REPORTS.includes(first)) {
-    return { command: csv(words.join(' ')), title: words.join(' '), options: {} };
-  }
-
-  // Anything else is an account: for example `chart expenses:food`.
-  const named = words.join(' ');
+  // Anything else is an account: for example `chart expenses:food`. Months, unless an
+  // interval was asked for in words or as a flag.
+  const named = rest.join(' ');
   const account = named || 'expenses';
+  const split = interval ? interval.flag : flagged ? '' : defaultSplit(period);
   return {
-    command: csv(`balance ${account}${monthly(named) ? ' -M' : ''}`),
-    title: account,
+    command: tail([`balance ${account}`, split].filter(Boolean).join(' ')),
+    title: titled(account, period, interval),
     account,
     options: {},
+    related: related(null, account, words),
   };
+}
+
+/**
+ * Charts worth trying next, from this one: the same account asked other ways, or the questions
+ * that answer the same kind of thing. Each is the command a person would type, period and all,
+ * so following one also shows how to ask for it.
+ */
+export function related(question, account, words) {
+  const kept = understand(words);
+  const when = [kept.period].filter(Boolean).join(' ');
+  const make = (args) => ({ label: `chart ${args}${when ? ` ${when}` : ''}`, args: `${args}${when ? ` ${when}` : ''}` });
+  if (account) {
+    const ways = [[null, account], ['top', `top ${account}`], ['shares', `shares ${account}`],
+      ['treemap', `treemap ${account}`], ['stacked', `stacked ${account}`]];
+    return ways.filter(([name]) => name !== question).map(([, args]) => make(args));
+  }
+  const families = [
+    ['income', 'cashflow', 'sankey', 'waterfall'],
+    ['networth', 'balances', 'multiples'],
+    ['calendar', 'spending', 'treemap'],
+  ];
+  const family = families.find((names) => names.includes(question)) || [];
+  return family.filter((name) => name !== question).map((name) => make(name));
 }
 
 /** Every word that names a question, as `chart?` lists them. */
@@ -300,12 +434,6 @@ function csv(report) {
   const words = report.split(/\s+/).filter(Boolean);
   const chosen = words.some((word) => word === '-O' || word === '--output-format');
   return chosen ? words.join(' ') : `${words.join(' ')} -O csv`;
-}
-
-/** Whether to ask hledger for months: yes unless the caller named a period themselves. */
-function monthly(args) {
-  const words = args.split(/\s+/).filter(Boolean);
-  return !words.some((word) => PERIOD_FLAGS.includes(word));
 }
 
 /**
@@ -386,7 +514,10 @@ export function parseReport(kind, text) {
 function listen(host) {
   return bridge('__chartBridges', 'chart', {
     async requery(account) {
+      // A window asks for an account, or for one of the charts it suggests, which is any
+      // line `chart` itself would take.
       const query = build(account);
+      if (query.refusal) throw new Error(query.refusal);
       const report = parseReport(query.kind, await host.hledger(query.command));
       if (!report) {
         throw new Error(`hledger had nothing to chart for ${query.title}`);
@@ -397,6 +528,7 @@ function listen(host) {
         options: query.options || {},
         kind: query.kind || null,
         title: query.title,
+        related: query.related || [],
       };
     },
   });

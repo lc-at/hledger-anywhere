@@ -770,34 +770,31 @@ impl App {
             self.say(&terminal::dim(&why));
         }
 
-        // Where the cursor is decides what can be there: the start of a line takes
-        // commands, and anything after it takes flags, accounts, aliases and paths. Tab
-        // on an empty line lists the commands rather than completing one of them.
-        let first = self.editor.borrow().at_command_position();
-        let mut candidates = if first {
-            terminal::starting_words()
-        } else {
-            terminal::argument_words(&self.paths())
+        // Where the cursor is decides what can be there; terminal::completion says what,
+        // from what has arrived so far.
+        let (before, token) = {
+            let editor = self.editor.borrow();
+            (editor.words_before_token(), editor.token())
         };
-        if !first {
-            if let Some(accounts) = self.accounts.borrow().as_ref() {
-                candidates.extend(accounts.iter().cloned());
+        let sources = {
+            let registry = self.registry.borrow();
+            terminal::Sources {
+                plugins: registry.listing().iter().map(|(name, _, _)| name.to_string()).collect(),
+                owner: before
+                    .first()
+                    .and_then(|word| registry.find(word))
+                    .map(|plugin| (plugin.name.clone(), plugin.completes.clone())),
+                paths: self.paths(),
+                accounts: self.accounts.borrow().clone().unwrap_or_default(),
+                aliases: self.aliases.borrow().iter().map(|(name, _)| name.clone()).collect(),
             }
-            candidates.extend(self.aliases.borrow().iter().map(|(name, _)| name.clone()));
-            candidates.extend(self.registry.borrow().words());
-        }
+        };
+        let (candidates, heading) = terminal::completion(&before, &token, &sources);
 
         match self.editor.borrow_mut().complete(&candidates) {
             // The menu case: the line already shows the choice, so no heading.
             Completion::Ambiguous(options) => self.show_options(&options, ""),
-            Completion::Listed(options) => self.show_options(
-                &options,
-                if first {
-                    "Commands you can run:"
-                } else {
-                    "Flags, accounts and paths:"
-                },
-            ),
+            Completion::Listed(options) => self.show_options(&options, &heading),
             Completion::Fuzzy(options) => {
                 self.show_options(&options, "Nothing starts with that. Closest names:")
             }

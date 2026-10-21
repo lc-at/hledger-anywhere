@@ -48,12 +48,12 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
       "name": "chart",
       "group": "Reports",
       "summary": "open a chart of hledger's numbers in a window",
-      "usage": "chart [question] [account] [hledger flags]",
+      "usage": "chart [question] [account] [when] [how often]",
       "help": "Opens a chart of hledger's own numbers in a window of its own.",
       "sections": [
         { "title": "Over time", "rows": [["chart income", "what came in, month by month"]] }
       ],
-      "examples": [["chart sankey -p 2024", "where 2024's income went"]],
+      "examples": [["chart sankey 2024", "where 2024's income went"]],
       "completes": ["balance", "expenses", "-M"],
       "module": "./chart.js",
       "themes": [

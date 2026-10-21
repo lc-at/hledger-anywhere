@@ -7,7 +7,8 @@
  * Sankey) bring their own data from chart-d3.js.
  *
  * There are no buttons, no fields and no disclosures. What is drawn comes from the command that
- * was run; everything you can do is done to the chart itself, which is what a chart is for:
+ * was run, and under it a line of related charts, each a link that says its own command;
+ * everything else you can do is done to the chart itself, which is what a chart is for:
  * hover or Tab to a mark for its numbers, click a legend entry to hide a series, scroll to zoom
  * and drag to pan through time, double-click to reset, click or Enter on a mark to chart that
  * account on its own, and Escape to go back. The keys are listed under the chart.
@@ -187,9 +188,22 @@ export function keysLine() {
  * of shapes says little to a screen reader, and a window that shows nothing until a script runs
  * shows nothing if the script does not.
  */
-export function page({ report, colors, title, command, token, kind, options = {}, module, scripts = [] }) {
+/**
+ * The charts worth trying next, as links that say the command each one is.
+ *
+ * A link rather than a button: following one is a drill-down like clicking a mark, so Escape
+ * comes back, and reading one shows how to ask for that chart in the terminal next time.
+ */
+export function alsoLine(related = []) {
+  if (!related.length) return '';
+  return `Also: ${related
+    .map((entry) => `<a href="#" data-args="${escape(entry.args)}">${escape(entry.label)}</a>`)
+    .join(' · ')}`;
+}
+
+export function page({ report, colors, title, command, token, kind, options = {}, related = [], module, scripts = [] }) {
   const view = viewOf({ report, colors, title, kind, options });
-  const data = JSON.stringify({ report, colors, token, kind, options, title, command })
+  const data = JSON.stringify({ report, colors, token, kind, options, title, command, related })
     .replace(/</g, '\\u003c');
   const dark = !isLight(colors.background);
   return `<!doctype html>
@@ -213,6 +227,10 @@ export function page({ report, colors, title, command, token, kind, options = {}
   th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
   td { padding:1px 0; }
   .note, .keys { color:${colors.dim}; margin:18px 0 0; font-size:12px; }
+  .also { color:${colors.dim}; margin:8px 0 10px; font-size:12px; }
+  .also a { color:${colors.foreground}; text-decoration:underline; text-decoration-color:${colors.dim};
+    text-underline-offset:2px; }
+  .also a:focus-visible { outline:2px solid ${colors.foreground}; outline-offset:2px; border-radius:2px; }
   .keys { margin-top:4px; }
   .warn { color:${colors.foreground}; margin:0 0 12px; font-size:13px; }
   code { color:${colors.foreground}; }
@@ -224,6 +242,7 @@ export function page({ report, colors, title, command, token, kind, options = {}
   <p class="warn" id="warn" hidden></p>
   <div id="legend" hidden></div>
   <div class="frame"><svg class="chart" id="chart" role="img" aria-label="${escape(title)}"></svg></div>
+  <p class="also" id="also"${related.length ? '' : ' hidden'}>${alsoLine(related)}</p>
   <div id="table">${view.table}</div>
   <p class="note">from hledger's own numbers: <code id="command">${escape(command)}</code></p>
   <p class="keys">${escape(keysLine())}</p>
@@ -237,15 +256,19 @@ ${scripts.map((src) => `<script src="${escape(src)}"></script>`).join('\n')}
 /** The data as a table, which is also the accessible rendering of the chart. */
 export function tableView(report) {
   const many = report.periods.length > 1;
+  // hledger writes an empty cell as a bare 0, so a period with nothing in it has no commodity
+  // of its own; it takes the report's, so the column reads $0.00 rather than 0.00 among dollars.
+  const unit = report.unit || { prefix: '', suffix: '' };
+  const money = (amount) => format(amount.prefix || amount.suffix ? amount : { ...amount, ...unit });
   const head = many
     ? '<tr><th>Period</th><th class="n">Total</th></tr>'
     : '<tr><th>Account</th><th class="n">Balance</th></tr>';
   const rows = many
     ? report.periods
-      .map((period, index) => `<tr><td>${escape(period)}</td><td class="n">${escape(format(periodTotal(report, index)))}</td></tr>`)
+      .map((period, index) => `<tr><td>${escape(period)}</td><td class="n">${escape(money(periodTotal(report, index)))}</td></tr>`)
       .join('')
     : report.series
-      .map((series) => `<tr><td>${escape(series.label)}</td><td class="n">${escape(format(seriesTotal(series)))}</td></tr>`)
+      .map((series) => `<tr><td>${escape(series.label)}</td><td class="n">${escape(money(seriesTotal(series)))}</td></tr>`)
       .join('');
   return `<table><thead>${head}</thead><tbody>${rows}</tbody></table>`;
 }
@@ -272,6 +295,7 @@ export function mount(root = document) {
   const sub = root.getElementById('sub');
   const command = root.getElementById('command');
   const legendBox = root.getElementById('legend');
+  const also = root.getElementById('also');
 
   if (!window.d3) {
     show(warn, 'The chart library did not load, so this is the numbers alone.');
@@ -296,11 +320,19 @@ export function mount(root = document) {
       busy = false;
       if (!answer) return;
       stack.push({ state: { ...state }, view });
-      Object.assign(state, answer, { options: answer.options || {} });
+      Object.assign(state, answer, { options: answer.options || {}, related: answer.related || [] });
       view = { hidden: new Set() };
       draw();
     },
   };
+
+  // One listener for the links, since they are rewritten on every redraw.
+  also.addEventListener('click', (event) => {
+    const link = event.target.closest('a[data-args]');
+    if (!link) return;
+    event.preventDefault();
+    hooks.pick(link.dataset.args);
+  });
 
   function paint() {
     const shown = viewOf(state);
@@ -332,6 +364,8 @@ export function mount(root = document) {
     sub.textContent = shown.sub;
     command.textContent = state.command;
     table.innerHTML = shown.table;
+    also.innerHTML = alsoLine(state.related || []);
+    also.hidden = !(state.related || []).length;
     holder.style.height = `${shown.height}px`;
     svg.setAttribute('aria-label', state.title);
     drawLegend(shown.items);

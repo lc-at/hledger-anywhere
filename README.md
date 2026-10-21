@@ -227,25 +227,43 @@ report you write out yourself:
 | `chart shares` | what share each account is of the total |
 | `chart stacked [account]` | spending by category, stacked month by month |
 | `chart treemap [account]` | where the money went, as a treemap of the account tree |
-| `chart sankey [-p 2024]` | income flowing into each kind of spending, and what was saved |
-| `chart calendar [-p 2024]` | a year of spending, one square per day |
+| `chart sankey` | income flowing into each kind of spending, and what was saved |
+| `chart calendar` | a year of spending, one square per day |
 | `chart waterfall` | income, each expense category, and what is left |
 | `chart multiples` | one sparkline per account, month by month |
-| `chart expenses:food -p 2024` | any account, any period |
-| `chart balance assets -M` | any hledger report, verbatim |
+| `chart food` | any account, month by month; `food` matches `expenses:food` |
+| `chart balance assets -Q` | any balance report, as written |
+
+**Say when and how often in words.** A year, month or quarter (`2024`, `2024-03`, `2024q1`),
+`this month`, `last year`, `since 2024-06`, `until 2024-06`, `2023 to 2024`, `today`; and
+`daily`, `weekly`, `monthly`, `quarterly` or `yearly`. They go anywhere after `chart`, and so
+does the question, so these all mean what they say:
+
+```
+chart sankey 2024                  where 2024's income went
+chart food weekly                  food, week by week
+chart income last year quarterly   last year's income, by quarter
+chart expenses:food treemap        inside one category
+```
+
+They become hledger's own `-p "last year"` and `-W`, which you can still write yourself, and
+the window shows the command it ran. Months are the default; a day or a week is split by the
+day. A chart that draws one period, such as the treemap, leaves an interval out and says so.
+Tab after `chart` lists the questions, and `chart?` says what each one does.
 
 The shaped charts ask hledger for the report their picture needs: the treemap the account
 tree, the Sankey income and expense categories (`balance income expenses --depth 2`, so a
 transfer between two of your own accounts can never be drawn as income), and the calendar and
-waterfall the register. Nothing is guessed from the arguments except whether to ask for months,
-and that is not guessed when you named a period yourself.
+waterfall the register.
 
 Otherwise the shape comes from the report: several periods is a line, one column is a ranking
 with the largest first, and `chart shares` is a doughnut.
 
 **The chart is the chart.** The window has no buttons, no fields, and nothing hidden behind a
-disclosure. What is drawn comes from the command, and everything else is done to the chart
-itself, which is what a chart is for: hover a mark for its numbers, click a legend entry to
+disclosure. What is drawn comes from the command; under it, an "Also" line links related
+charts, each written as the command it is (`chart treemap expenses:food 2024`), so following
+one shows how to ask for it next time. Everything else is done to the chart itself, which is
+what a chart is for: hover a mark for its numbers, click a legend entry to
 take a series out and put it back, scroll to zoom through time, drag to pan, double-click to
 reset, and click a mark to chart that account on its own. Escape goes back to the chart you
 came from.
