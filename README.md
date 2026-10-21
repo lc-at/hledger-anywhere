@@ -225,30 +225,46 @@ report you write out yourself:
 | `chart payees` | spending by payee, month by month |
 | `chart top` | where it all went, largest first |
 | `chart shares` | what share each account is of the total |
+| `chart stacked [account]` | spending by category, stacked month by month |
 | `chart treemap [account]` | where the money went, as a treemap of the account tree |
+| `chart sankey [-p 2024]` | income flowing into each kind of spending, and what was saved |
 | `chart calendar [-p 2024]` | a year of spending, one square per day |
 | `chart waterfall` | income, each expense category, and what is left |
 | `chart multiples` | one sparkline per account, month by month |
 | `chart expenses:food -p 2024` | any account, any period |
 | `chart balance assets -M` | any hledger report, verbatim |
 
-The last four are drawn with D3 rather than Chart.js: the treemap asks hledger for the account
-tree, and the calendar and waterfall ask for the register, because that is the shape the
-picture needs. Nothing is guessed from the arguments except whether to ask for months, and
-that is not guessed when you named a period yourself.
+The shaped charts ask hledger for the report their picture needs: the treemap the account
+tree, the Sankey income and expense categories (`balance income expenses --depth 2`, so a
+transfer between two of your own accounts can never be drawn as income), and the calendar and
+waterfall the register. Nothing is guessed from the arguments except whether to ask for months,
+and that is not guessed when you named a period yourself.
 
-The shape comes from the report: several periods is a line, one column is a ranking with the
-largest first, and `chart shares` is a doughnut.
+Otherwise the shape comes from the report: several periods is a line, one column is a ranking
+with the largest first, and `chart shares` is a doughnut.
 
 **The chart is the chart.** The window has no buttons, no fields, and nothing hidden behind a
 disclosure. What is drawn comes from the command, and everything else is done to the chart
-itself, which is what a chart is for: hover a point or a bar for its value, click a legend
-entry to take a series out and put it back, scroll to zoom, drag to pan, double-click to reset,
-and click a point to chart that account on its own. Escape goes back to the chart you came
-from. The numbers are always there as a table underneath, which is also what a screen reader
-reads instead of a canvas, and the command that produced them is at the bottom.
+itself, which is what a chart is for: hover a mark for its numbers, click a legend entry to
+take a series out and put it back, scroll to zoom through time, drag to pan, double-click to
+reset, and click a mark to chart that account on its own. Escape goes back to the chart you
+came from.
 
-It is drawn by [Chart.js](https://www.chartjs.org), vendored beside the plugin so the window
+Everything the pointer does, the keyboard does too, and the keys are written under the chart:
+
+| key | does |
+| --- | --- |
+| Tab, then Enter | reach a mark and see its numbers, then chart that account |
+| ← → | step a crosshair through the periods |
+| + − 0 | zoom in, out, and reset |
+| Esc | go back |
+| s, p | save the chart as SVG, or as a PNG at twice the size |
+
+A saved chart carries its title, subtitle and legend, so it still says what it is once it has
+left the window. The numbers are always there as a table underneath, which is also what a
+screen reader reads, and the command that produced them is at the bottom.
+
+Every chart is drawn with [D3](https://d3js.org), vendored beside the plugin so the window
 needs nothing from the network, and coloured from the theme in use, so a chart opened from
 gruvbox light is cream rather than a dark window beside a light terminal. Nothing about it is in the
 app's core: remove it with `plugins remove /plugins/plugins.json` and it is back on the next
@@ -256,8 +272,9 @@ visit, because bundled is where it came from, not what it is.
 
 ```
 hledger.journal » plugins
-1 plugin, installed
-  chart           open a balance line chart in a window
+2 plugins, installed
+  chart           open a chart of hledger's numbers in a window
+  edit            edit a loaded journal in a window
 Repositories
   /plugins/plugins.json  bundled
 
@@ -428,10 +445,10 @@ it reads in the help, what it adds to completion, and what to do with the text t
 after it; it never touches the app, which is what keeps it testable. It can also say
 how to present the output it caused, or return nothing and get the ordinary terminal.
 
-Nothing is bundled today. The first plugin was `chart`, which drew a report in the
-terminal, and the tool it drew has been removed: a picture belongs in the plugin that
-wants one, not in the core that runs reports. The contract is being reworked so a
-plugin can be installed at runtime, from a repository, without rebuilding the app.
+Two plugins ship in the bundled repository, `chart` and `edit`, and both are installed at
+runtime the same way a third-party one is: from a manifest, as JavaScript modules, with no
+rebuild of the app. A picture or an editor belongs in the plugin that wants one, not in the
+core that runs reports.
 
 Three decisions worth knowing:
 

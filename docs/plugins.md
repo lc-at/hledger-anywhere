@@ -10,8 +10,8 @@ why installing a repository is trusting it. Nothing about a plugin is sandboxed,
 app says so when you add one.
 
 One repository is bundled and installed at every start, so it needs no installing at all:
-[`assets/plugins`](../assets/plugins), whose `chart` plugin opens charts in
-its own window and which carries the colour themes. Read it as the worked example of
+[`assets/plugins`](../assets/plugins), whose `chart` plugin opens each chart in a window of
+its own, whose `edit` plugin opens an editor, and which carries the colour themes. Read it as the worked example of
 everything below. Anything you add yourself works exactly the same way:
 
 ```
@@ -47,7 +47,7 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
     {
       "name": "chart",
       "group": "Reports",
-      "summary": "open a balance line chart in a window",
+      "summary": "open a chart of hledger's numbers in a window",
       "usage": "chart [preset|account] [flags]",
       "help": "Opens a chart in its own window, drawn from hledger's own numbers.",
       "completes": ["balance", "expenses", "-M"],
@@ -150,13 +150,16 @@ worth copying:
   shows nothing until a module loads shows nothing if the module does not.
 - **A window can ask for more.** The plugin leaves a function on the opener
   (`window.__chartBridges[token]`) that runs another hledger command and returns the parsed
-  result, and the page carries its token. That is how clicking a series charts it on its own,
-  and how the query bar changes the question, without the window needing an API of its own.
-- **Vendor what the window needs.** The chart window loads Chart.js, its zoom plugin and
-  Hammer from `vendor/` beside the plugin, by absolute URL built from `import.meta.url`. A
-  window is a `blob:` document, so a relative path in it resolves against nothing, and a
-  repository may live anywhere: everything the window needs travels with the plugin that opens
-  it.
+  result, and the page carries its token. That is how clicking a mark charts its account on
+  its own, without the window needing an API of its own.
+- **Vendor what the window needs.** The chart window loads D3 from `vendor/d3/` beside the
+  plugin, by absolute URL built from `import.meta.url`. A window is a `blob:` document, so a
+  relative path in it resolves against nothing, and a repository may live anywhere: everything
+  the window needs travels with the plugin that opens it.
+- **Give the keyboard what the pointer has.** Every mark in a chart window that stands for an
+  account or a day can be reached with Tab and opened with Enter, and the keys are written
+  under the chart. A window with no
+  controls still has to be usable without a mouse.
 
 ## Colour themes
 

@@ -29,21 +29,25 @@
  *     chart expenses:food -p 2024   any account, any period
  *     chart balance assets -M   any hledger report, verbatim
  *
- * And the four charts D3 draws, each asking for the report its shape needs:
+ * And the charts that ask for the report their shape needs:
  *
+ *     chart stacked [account]   spending by category, stacked month by month
  *     chart treemap [account]   where the money went, as a treemap
+ *     chart sankey              income flowing into each kind of spending, and what was saved
  *     chart calendar [-p 2024]  a year of daily spending
  *     chart waterfall           income, each expense category, and net
  *     chart multiples           a sparkline per account, month by month
  *
- * The command is shown in the window, so what was asked for is never a mystery. Drawing lives
- * in ./chart-window.js, which the window imports too: the same code draws the first page and
- * every redraw after it.
+ * The command is shown in the window, so what was asked for is never a mystery. Every chart is
+ * drawn with D3, the one library the window loads. The page and the model live in
+ * ./chart-window.js, the drawing in ./chart-d3.js, and the tooltip, legend, keys and saving in
+ * ./chart-ui.js; the window imports them too, so the same code draws the first page and every
+ * redraw after it.
  */
 
 import { page } from './chart-window.js';
 import { money, split, unitOf } from './chart-data.js';
-import { byDay, headlineFor, isD3Kind, multiples, readRegister, readTree, waterfall } from './chart-d3.js';
+import { byDay, flows, headlineFor, isCustom, multiples, readRegister, readTree, waterfall } from './chart-d3.js';
 
 // The check script imports the amount parser from here, because a plugin is where a parser
 // lives. It is defined once, in chart-data.js, and shared with the window and the D3 chart.
@@ -73,7 +77,8 @@ const REPORTS = [
  * The named questions.
  *
  * `account` means the preset takes one: everything else the caller typed is passed through to
- * hledger, which is how `chart spending -p 2024` asks for a year of months.
+ * hledger, which is how `chart spending -p 2024` asks for a year of months. `named` is the title
+ * when the caller named an account, for a preset whose title does not take "of <account>".
  */
 const PRESETS = [
   { names: ['spending'], title: 'spending', report: () => 'balance expenses -M' },
@@ -100,15 +105,32 @@ const PRESETS = [
     kind: 'shares',
     report: (account) => `balance ${account}`,
   },
-  // The charts D3 draws. Each asks hledger for the report its shape needs: a tree for the
-  // treemap, the register for the calendar and the waterfall, monthly balances for the
-  // sparklines.
+  // A stacked area wants categories, not leaves: one level below the account asked for, so
+  // `chart stacked` stacks food, housing and reading rather than coffee and groceries.
+  {
+    names: ['stacked', 'area'],
+    title: 'spending by category',
+    named: (account) => `${account} by category`,
+    account: 'expenses',
+    kind: 'stacked',
+    report: (account) => `balance ${account} -M --depth ${account.split(':').length + 1}`,
+  },
+  // The shaped charts. Each asks hledger for the report its picture needs: a tree for the
+  // treemap, income and expense categories for the Sankey, the register for the calendar and
+  // the waterfall, monthly balances for the sparklines.
   {
     names: ['treemap'],
     title: 'where the money went',
+    named: (account) => `${account}, as a treemap`,
     kind: 'treemap',
     account: 'expenses',
     report: (account) => `balance --tree ${account}`,
+  },
+  {
+    names: ['sankey', 'flows'],
+    title: 'where income went',
+    kind: 'sankey',
+    report: () => 'balance income expenses --depth 2',
   },
   { names: ['calendar'], title: 'daily spending', kind: 'calendar', report: () => 'register' },
   { names: ['waterfall'], title: 'income to net', kind: 'waterfall', report: () => 'register' },
@@ -162,15 +184,8 @@ export default {
       kind: query.kind,
       options: query.options,
       module: beside('chart-window.js'),
-      // A D3 chart needs one file and no plugins; a Chart.js chart needs the three it has
-      // always needed. The window only loads what it draws with.
-      scripts: isD3Kind(query.kind)
-        ? [beside('vendor/d3/d3.min.js')]
-        : [
-          beside('vendor/chart.umd.js'),
-          beside('vendor/hammer.min.js'),
-          beside('vendor/chartjs-plugin-zoom.umd.js'),
-        ],
+      // Every chart is drawn with D3, so the window loads one library and nothing else.
+      scripts: [beside('vendor/d3/d3.min.js')],
     }));
     if (query.account) host.remember('account', query.account);
     host.say(`${host.name}: ${summary(query, report)}, in a new window.`);
@@ -194,7 +209,7 @@ export function build(args) {
     const report = preset.report(account);
     return {
       command: csv(`${report} ${flags.join(' ')}`.trim()),
-      title: asked ? `${preset.title} of ${account}` : preset.title,
+      title: asked ? (preset.named ? preset.named(account) : `${preset.title} of ${account}`) : preset.title,
       account,
       kind: preset.kind || null,
       options: preset.options || {},
@@ -273,11 +288,11 @@ export function read(text) {
 /**
  * Parse the report a kind asked for, and reduce it to what the chart draws.
  *
- * Chart.js kinds read hledger's balance CSV: one row per account, one column per period. A D3
- * kind reads the shape it needs and then aggregates: the treemap draws the tree itself, the
- * calendar draws days, the waterfall draws the walk from income to net, and the sparklines
- * draw the largest accounts. Aggregating here means the window, the headline and the table all
- * receive the same finished data.
+ * The balance charts read hledger's balance CSV: one row per account, one column per period. A
+ * shaped chart reads the report it needs and then aggregates: the treemap draws the tree
+ * itself, the calendar draws days, the waterfall draws the walk from income to net, the
+ * sparklines draw the largest accounts, and the Sankey draws income into spending. Aggregating
+ * here means the window, the headline and the table all receive the same finished data.
  */
 export function parseReport(kind, text) {
   if (kind === 'treemap') return readTree(text);
@@ -289,6 +304,10 @@ export function parseReport(kind, text) {
   if (kind === 'multiples') {
     const report = read(text);
     return report ? multiples(report) : null;
+  }
+  if (kind === 'sankey') {
+    const report = read(text);
+    return report ? flows(report) : null;
   }
   return read(text);
 }
@@ -309,7 +328,7 @@ function listen(host, query, colors) {
   bridges[token] = {
     async requery(account) {
       const query = build(account);
-      const report = read(await host.hledger(query.command));
+      const report = parseReport(query.kind, await host.hledger(query.command));
       if (!report) {
         throw new Error(`hledger had nothing to chart for ${query.title}`);
       }
@@ -358,7 +377,7 @@ function escape(text) {
 function summary(query, report) {
   // The D3 charts already have a sentence for their data; using it keeps the terminal and the
   // window saying the same thing.
-  if (isD3Kind(query.kind)) return headlineFor(query.kind, report);
+  if (isCustom(query.kind)) return headlineFor(query.kind, report);
   const total = (amounts) => amounts.reduce((sum, amount) => sum + amount.value, 0);
   const unit = report.unit;
   if (report.periods.length > 1) {

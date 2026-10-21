@@ -1,172 +1,152 @@
-# Charts with D3
+# Charts
 
-**Status: partly implemented.** D3 7.9.0 is vendored, and it draws four of the charts
-below: `chart treemap`, `chart calendar`, `chart waterfall` and `chart multiples`. The
-Chart.js charts still use Chart.js, so porting them (Phase 1) and export (Phase 3) remain.
-The rest of this document is the plan as written; the phases say what is done.
-
-## Why
-
-The chart plugin draws a line chart, a bar ranking and a doughnut, all through Chart.js. That
-was the right first step: it shipped a real chart quickly and the plugin API proved itself.
-What it cannot do is the shapes an accounting tool actually wants — a treemap of where the
-money went, a calendar of daily spending, a waterfall from income to net, a flow from income
-to expense, a row of sparklines. Chart.js draws a fixed set of marks; D3 draws whatever the
-data means.
-
-D3 also removes two dependencies rather than adding pressure to keep them: `hammer.min.js`
-and `chartjs-plugin-zoom.umd.js` exist only because Chart.js needs them for pan and zoom,
-while D3 has `d3-zoom` built in. Three vendored files become one.
-
-## The library
-
-| | |
-|---|---|
-| package | `d3` **7.9.0** (ISC) |
-| file | `dist/d3.min.js`, the UMD build — about 280 KB |
-| vendored to | `assets/plugins/vendor/d3/d3.min.js` |
-| loaded | as a classic `<script>` in the chart window, exactly as Chart.js is now |
-
-The UMD build is the one to take: a chart window is a `blob:` document that loads classic
-scripts by absolute URL, which is why the current chart library is vendored the same way
-(`assets/plugins/vendor/README.md`). The licence row and `THIRD_PARTY_LICENSES.md` entry
-follow the existing pattern.
-
-## What hledger gives us
-
-Verified against the pinned engine (`scripts/hledger-wasm.mjs`), so the parsers can be
-written and tested against these shapes:
-
-```
-balance -O csv
-  "account","balance"
-  "assets:bank:checking","$2501.10"
-
-balance --tree -O csv
-  "account","balance"
-  "expenses","$698.90"
-  "  food","$98.90"
-  "    coffee","$12.50"        <- hierarchy is the indentation
-
-register -O csv
-  "txnidx","date","code","description","account","amount","total"
-  "2","2024-01-05","rent:january","Landlord","expenses:housing:rent","$600.00","$600.00"
-
-balance -M -O csv
-  "account","2024-01","2024-02"    <- one column per period
-```
-
-`chart.js` already parses the multi-period balance CSV (`read`, `split`, `money`) and
-finds the header row rather than assuming it, because `balancesheet` and `cashflow` put a
-title above it. Those functions are pure and tested, and the plan reuses them.
+**Status: done.** Every chart the `chart` plugin opens is drawn with D3 7.9.0, the one library a
+chart window loads. Chart.js, Hammer.js and chartjs-plugin-zoom have been removed. This page
+began as the plan for that change; it now records what was built, what was decided, and why.
 
 ## The charts
 
-Each is a new preset on the existing `chart` word, so the command surface stays one word
-and `chart?` lists the presets. The report is still built by the plugin and run through
-`host.hledger`; only the renderer changes.
+Every chart is a preset on the one `chart` word, so `chart?` lists them all. The plugin asks
+hledger for the report, the window draws it.
 
-| command | report | what it shows | D3 modules |
-|---|---|---|---|
-| `chart treemap [account]` | `balance --tree -O csv` | composition of spending, area proportional to amount, nested by account segment | `d3-hierarchy` |
-| `chart calendar` | `register -O csv` | a year of daily spending as a calendar heatmap | `d3-time`, `d3-scale` |
-| `chart waterfall [period]` | `register -O csv` | income down to expenses to net, as a waterfall | `d3-scale`, `d3-shape` |
-| `chart sankey` | `register -O csv`, aggregated | money flowing from income accounts to expense accounts | `d3-sankey` |
-| `chart multiples` | `balance -M -O csv` | one sparkline per account, small multiples | `d3-shape`, `d3-scale` |
-| `chart stacked [account]` | `balance -M -O csv` | expenses by category over time, stacked area | `d3-shape`, `d3-scale` |
+| command | asks hledger for | draws |
+|---|---|---|
+| `chart`, `chart spending` | `balance expenses -M` | a line per account, month by month |
+| `chart income`, `cashflow`, `balances`, `payees` | a monthly `balance` | lines |
+| `chart networth` | `balance assets liabilities -H -M` | one filled line, the running total |
+| `chart top` | `balance expenses` | a ranking of bars, largest first |
+| `chart shares` | `balance expenses` | a doughnut of the positive balances |
+| `chart stacked [account]` | `balance <account> -M --depth n+1` | categories stacked over time |
+| `chart treemap [account]` | `balance --tree <account>` | the account tree, area by balance |
+| `chart sankey` | `balance income expenses --depth 2` | income flowing into spending and savings |
+| `chart calendar` | `register` | a square per day, darker for more spending |
+| `chart waterfall` | `register` | income, a step down per category, and net |
+| `chart multiples` | `balance -M` | a sparkline per account |
+| `chart <account>` | `balance <account> -M` | lines, for any account |
+| `chart <report …>` | the report, verbatim | whatever shape it comes back in |
 
-The existing `chart` presets (`spending`, `income`, `cashflow`, `networth`, `balances`,
-`payees`, `top`, `shares`) keep their names.
+A period passes through to hledger: `chart sankey -p 2024`, `chart calendar -p 2024`.
 
-## Architecture
-
-**Keep the plugin boundary.** `chart` stays a plugin: it decides what to ask hledger, the
-window decides what to draw. Nothing here belongs in the core.
-
-**One window, two renderers.** The plugin already imports `page()` from
-`chart-window.js`; the window module gets a renderer registry:
+## How it is built
 
 ```
-chart.js          build(args) -> {command, title, kind, options}   (pure, tested)
-chart-window.js   page(...) -> html; mount(...) -> chooses the renderer
-chart-d3.js       render(selection, data, colors) labelled svg renderer
+chart.js          build(args) -> {command, title, kind}; parseReport(kind, csv)    pure
+chart-data.js     CSV, amounts, formatting, series arithmetic, the palette        pure
+chart-window.js   modelFor(report) -> model; viewOf(state); page(); mount()      pure but mount
+chart-d3.js       parsers and aggregations for the shaped charts, the Sankey
+                  layout, the words and tables (pure), and render(kind, svg, ...)
+chart-ui.js       tooltip, legend, keys, saving                                  DOM, keyFor pure
+vendor/d3/        d3.min.js, the UMD build, and its licence
 ```
 
-The window's `scripts` list gains the d3 file, and `mount()` dispatches on `kind`. The
-existing line/bar/doughnut can be ported to D3 in a later phase, or kept on Chart.js while
-the new kinds use D3 — see the phases.
+**The plugin boundary held.** `chart` decides what to ask hledger; the window decides what to
+draw. Nothing here is in the core.
 
-**Theming is already solved and must be kept.** The window receives `host.colors()`
-(background, foreground, cursor, accent, dim). The series palette is the golden-angle
-spread the current chart uses; labels are foreground and dim; gridlines are `dim` at low
-alpha. Every new chart uses those, and the palette stays AA-readable against the
-background, which the plugin check can assert for any theme.
+**Two families, one renderer.** The balance charts (line, stacked, bar, doughnut) are built by
+`modelFor` from hledger's balance CSV: a plain object naming the series or rows, their
+colours, their shares, and whether a click can open them. The shaped charts (treemap,
+calendar, waterfall, multiples, Sankey) read the report their picture needs and aggregate it
+in `parseReport`, so the window, the headline and the table all receive the same finished
+data. Either way, `render(kind, svg, data, colors, hooks, state)` draws it.
 
-**Accessibility is not optional here.** The app has a `screenreader` command and takes the
-accessibility tree seriously. SVG is not readable, so every chart window carries a
-visually-hidden `<table>` of the same data (visible on request), and interactive marks are
-keyboard focusable with `aria-label`s.
+**Every mark answers through the same hooks.** A chart draws marks and reports what was
+pointed at, focused or clicked; `chart-ui.js` turns that into the tooltip, and the window into
+a drill-down. That is why all eleven behave alike.
 
-**Failure is a message, not a blank window.** The window opens before the report is
-fetched, writes a shell, and if d3 fails to load or the report returns nothing, says so.
-That is the pattern the chart window already follows.
+## What hledger writes
 
-## Data work
+Verified against the pinned engine (`scripts/hledger-wasm.mjs`), and copied into the plugin
+check byte for byte:
 
-Two new pure parsers, exported and tested:
+```
+balance -M -O csv
+  "account","2024-01","2024-02"        one column per period, one row per account
 
-- `readRegister(text)` — the register CSV (`txnidx,date,code,description,account,amount,total`),
-  returning transactions the calendar and waterfall can aggregate.
-- `readTree(text)` — the indented `--tree` CSV, turning the leading spaces into a
-  parent/child hierarchy for the treemap.
+balance --tree -O csv
+  "account","balance"
+  "expenses","$1333.89"
+  "␣␣food","$98.90"                    ␣ is U+00A0, the no-break space
+  "␣␣␣␣coffee","$12.50"                two a level; the hierarchy is the indentation
 
-Aggregations (`byDay`, `byAccount`, `flows`, `monthly`) are pure functions over those
-shapes. The accounting judgement lives there: a transfer between two asset accounts is not
-income, so the Sankey must not count it as one.
+balance income expenses --depth 2 -O csv
+  "expenses:food","$98.90"
+  "income:salary","$-3200.00"          income is negative
+
+register -O csv
+  "txnidx","date","code","description","account","amount","total"
+```
+
+The tree's indentation is the one that bit. A terminal shows a no-break space as a space, so
+the first fixture used spaces, the parser counted spaces, the check passed, and the real tree
+drew `expenses` as a leaf beside its own children. The parser now reads no-break spaces,
+spaces and tabs, and the fixture is the engine's bytes.
+
+## Decisions
+
+**Replace Chart.js, not keep it beside D3.** The plan said to decide by porting the line
+chart and comparing. The port kept everything Chart.js did (hover values, legend toggling,
+wheel zoom and drag pan along time, double-click reset, click to drill down, Escape back) and
+then did more: the crosshair lists every series at a period, the keyboard reaches every mark
+that stands for something, and a saved picture carries its legend. One theming path and one tooltip path won, and three
+vendored files became one.
+
+**The Sankey is income into spending, from `balance`, not `register`.** hledger has no flow
+report, so flows are derived. Asking for `balance income expenses --depth 2` gives income
+sources and expense categories and nothing else, so a transfer between two asset accounts can
+never be drawn as income: it is not in the report. The two sides are balanced the way a
+budget is: income above spending flows to *saved*, and spending above income is drawn from a
+*from savings* source, so every pixel of every link is money that moved.
+
+**No `d3-sankey`.** The flow has a fixed shape (sources, one hub, sinks), so its layout is a
+short pure function, `sankeyLayout`, tested in node for what matters: links into the
+hub are exactly as thick as the hub, every node is drawn at one scale, and everything fits.
+A general Sankey package would have been another vendored file for a layout this simple.
+
+**The waterfall walks down.** Income is the first bar; each expense category steps down from
+where the last one ended; net stands on zero. The first D3 version drew the categories rising
+from zero, which read as a stacked total rather than a waterfall.
+
+**Dates are the journal's.** The calendar groups by the date as written in the journal, with
+no time zone, and says so under the grid.
+
+**Size.** d3.min.js is 280 KB, against the 242 KB of Chart.js, Hammer and the zoom plugin it
+replaces. It is loaded only in a chart window, never in the app's page.
+
+## Using a chart
+
+The window has no buttons and no fields; everything is done to the chart.
+
+| pointer | keyboard | does |
+|---|---|---|
+| hover a mark | Tab to it | its numbers in a tooltip |
+| click a mark | Enter | chart that account on its own |
+| hover the plot of a line or area | ← → | a crosshair listing every series at that period |
+| click a legend entry | Tab, Enter | hide or show that series, and rescale |
+| scroll, drag | + − | zoom and pan through time |
+| double-click | 0 | reset the zoom |
+| | Esc | back to the chart you came from |
+| | s, p | save as SVG, or as a PNG at twice the size |
+
+Tab stops are the marks that stand for something: bars, slices, treemap cells, Sankey nodes,
+sparklines, and calendar days with spending. Empty days and Sankey links are left out, so Tab
+does not walk through hundreds of squares or repeat a node's numbers. A saved chart carries
+its title, subtitle and legend, and leaves out the crosshair and other interaction-only
+layers. The numbers are always in a table under the chart, which is also
+what a screen reader reads.
 
 ## Testing
 
-`scripts/check-example-plugin.mjs` already imports the plugin's pure functions and checks
-them in node. It grows the same way: sample CSV captured from the engine (the shapes above)
-through the parsers, aggregation sums, treemap areas summing to the total, the palette's
-contrast per theme, and the generated HTML carrying a script tag for d3 and an accessible
-table. The rendered pixels still want a browser, which is what the last piece of work did
-for the current charts.
+`node scripts/check-example-plugin.mjs` checks every pure part: the presets and the commands
+they build, the parsers on the engine's own CSV, the aggregations and their sums, the model
+behind each balance chart, the Sankey's flows and layout, axis labels, the keys, the saved
+picture's header, and the page markup. Drawing and interacting are verified in a browser,
+from the real app with the real engine: every chart in both themes, and hover, legend,
+keyboard stepping, Tab and Enter, click drill-down, Escape, wheel and keyboard zoom, and both
+exports.
 
-## Phases
+## Not done
 
-**Phase 0 — spike (half a day). Done.** d3 is vendored, and the four D3 charts load it as a
-classic script in a `blob:` window and draw from the theme colours.
-
-**Phase 1 — scaffolding and parity (one to two days).** A small `chart-d3.js` with the shared
-pieces (svg sizing, axes, legend, tooltip, accessible table), and the three existing kinds
-ported to it. If parity holds, remove Chart.js, `hammer.min.js` and
-`chartjs-plugin-zoom.umd.js`; if D3's zoom/hover is worse for the line chart, keep both for a
-while and decide again later. **Acceptance:** the existing chart presets look and behave the
-same, the plugin checks pass, three vendored files become one.
-
-**Phase 2 — the new charts (two to three days). Done, except Sankey and stacked area.**
-The treemap, calendar, waterfall and multiples are drawn from the register and the tree CSV,
-each with an accessible table and a tooltip on every mark. **Sankey is not done:** it needs
-`d3-sankey`, a separate package that the UMD bundle does not include, and the data question in
-the open questions below is still open. Stacked area waits on Phase 1, since it is a Chart.js
-kind today.
-
-**Phase 3 — polish.** SVG/PNG export from the window, keyboard navigation, transitions,
-`docs/plugins.md` examples, and the README's chart section listing the new presets.
-
-## Open questions
-
-1. **Sankey meaning.** hledger has no flow report; flows have to be derived. The honest
-   derivation is: income accounts to expense accounts over a period, from `register`, with
-   transfers between asset accounts excluded. Is that the picture worth drawing, or is the
-   waterfall a better answer to the same question?
-2. **Replace or keep Chart.js.** Decided in Phase 1 by comparing the ported line chart with
-   the current one. The tie-breaker is code: keeping one theming and one tooltip path is
-   worth a lot, but not more than a worse chart.
-3. **Dates and time zones.** `register` dates are journal dates with no zone. The calendar
-   heatmap groups by the date as written; that is the plan, but it should be stated in the
-   window rather than guessed.
-4. **Bundle size.** d3 UMD is ~280 KB against the current chart stack's ~250 KB, loaded only
-   in a chart window either way. Acceptable, but it is why Phase 3 delays and nothing else
-   is added.
+- **Transitions.** Zoom animates; a redraw after hiding a series or drilling down does not. It
+  is a redraw from data, which is simpler to trust than an animated one.
+- **Touch gestures** beyond what `d3-zoom` provides for pinch and drag, which is untested on a
+  real phone.

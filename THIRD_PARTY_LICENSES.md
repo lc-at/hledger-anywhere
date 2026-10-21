@@ -56,25 +56,12 @@ They are loaded by plain `<script>`/`<link>` tags in `index.html` and reached
 through the globals they publish (`window.Terminal`, `window.FitAddon.FitAddon`),
 which is why no npm dependency and no bundler are involved.
 
-## Chart.js, chartjs-plugin-zoom, Hammer.js, MIT
-
-Vendored in `assets/plugins/vendor/`, because the bundled chart plugin loads them into the
-window it opens:
-
-| File | Upstream |
-|---|---|
-| `chart.umd.js` | `chart.js@4.4.7`, <https://github.com/chartjs/Chart.js> |
-| `hammer.min.js` | `hammerjs@2.0.8`, <https://github.com/hammerjs/hammer.js> |
-| `chartjs-plugin-zoom.umd.js` | `chartjs-plugin-zoom@2.2.0`, <https://github.com/chartjs/chartjs-plugin-zoom> |
-
-They are loaded only in a chart window's own document, never in the app's page, so they are not
-part of loading hledger-anywhere. They are vendored rather than fetched at runtime so the app
-has no network dependency and no JavaScript build step, which is how xterm.js is handled too.
-
 ## D3, ISC
 
-Vendored in `assets/plugins/vendor/d3/`, loaded only in the chart windows that use it (the
-treemap, calendar, waterfall and sparkline charts).
+Vendored in `assets/plugins/vendor/d3/`, and loaded only in a chart window's own document,
+never in the app's page, so it is not part of loading hledger-anywhere. It is vendored rather
+than fetched at runtime so the app has no network dependency and no JavaScript build step,
+which is how xterm.js is handled too.
 
 - Upstream: <https://github.com/d3/d3>
 - Pinned version: **7.9.0**, the UMD build (`dist/d3.min.js`)

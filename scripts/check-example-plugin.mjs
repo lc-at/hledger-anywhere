@@ -3,10 +3,10 @@
 // The plugin is the worked example in docs/plugins.md and the only plugin most people will ever
 // see, so it has to keep working. None of this needs a browser: the plugin's job is turning
 // arguments into a command and a CSV into data, and the window's job is turning that data into a
-// Chart.js config, and both are functions.
+// model of what to draw, and both are functions.
 //
-// What cannot be checked here is the drawing and the interacting — a real canvas, a tooltip, a
-// wheel zoom, a click that asks hledger again. Those are verified in a browser.
+// What cannot be checked here is the drawing and the interacting — real SVG, a tooltip, a wheel
+// zoom, a click that asks hledger again. Those are verified in a browser.
 //
 // The CSVs below are copied from the shipped engine, not invented:
 //
@@ -25,28 +25,37 @@ import { readFile } from 'node:fs/promises';
 
 import Chart, { build, money, parseReport, read } from '../assets/plugins/chart.js';
 import {
-  KINDS,
+  CUSTOM,
   byDay,
+  flows,
   headlineFor,
-  isD3Kind,
+  heightFor,
+  isCustom,
   multiples,
   readRegister,
   readTree,
+  sankeyLayout,
   tableFor,
+  tick,
   waterfall,
 } from '../assets/plugins/chart-d3.js';
 import {
   accountAt,
-  configFor,
   format,
   group,
   headline,
+  keysLine,
+  modelFor,
   page,
   palette,
+  pointText,
+  shareText,
   tableView,
-  themeFor,
   typeFor,
+  viewOf,
 } from '../assets/plugins/chart-window.js';
+import { percent } from '../assets/plugins/chart-data.js';
+import { KEYS, fileName, header, keyFor } from '../assets/plugins/chart-ui.js';
 
 const MONTHLY_CSV = [
   '"account","2024-01","2024-02","2024-03"',
@@ -139,77 +148,79 @@ check('the subtitle counts periods when there are several',
   headline(report, 'line') === '3 periods, 2024-01 to 2024-03', headline(report, 'line'));
 check('and accounts when there is one', headline(ranking, 'bar').startsWith('3 accounts'), headline(ranking, 'bar'));
 
-// ------------------------------------------------------------------ the Chart.js config
+// ------------------------------------------------------------------ the model the charts draw
 
 {
-  const config = configFor({ report, colors: COLORS, title: 'spending' });
-  const dataset = (label) => config.data.datasets.find((entry) => entry.label === label);
-  check('a line chart is a line chart', config.type === 'line', config.type);
-  check('with one dataset per series', config.data.datasets.length === 3, String(config.data.datasets.length));
-  check('labelled by period', config.data.labels.join(',') === '2024-01,2024-02,2024-03', config.data.labels.join(','));
+  const model = modelFor({ report, colors: COLORS, title: 'spending' });
+  const series = (label) => model.series.find((entry) => entry.label === label);
+  check('a monthly report is a line chart', model.type === 'line', model.type);
+  check('with one line per series', model.series.length === 3, String(model.series.length));
+  check('labelled by period', model.periods.join(',') === '2024-01,2024-02,2024-03', model.periods.join(','));
   check('biggest first, so the legend reads in order of size',
-    config.data.datasets[0].label === 'expenses:housing:rent', config.data.datasets[0].label);
+    model.series[0].label === 'expenses:housing:rent', model.series[0].label);
   check('and the values are the amounts',
-    dataset('expenses:housing:rent').data.join(',') === '1200,1237.5,1286.4',
-    dataset('expenses:housing:rent').data.join(','));
-  check('each series has its own colour',
-    new Set(config.data.datasets.map((dataset) => dataset.borderColor)).size === 3, '');
+    series('expenses:housing:rent').values.join(',') === '1200,1237.5,1286.4',
+    series('expenses:housing:rent').values.join(','));
+  check('each series has its own colour', new Set(model.series.map((entry) => entry.colour)).size === 3, '');
   check('the tooltip writes an amount the way a person does',
-    config.options.plugins.tooltip.callbacks.label({ dataset: { label: 'rent' }, parsed: { y: 1286.4 } }) === ' rent: $1,286.40',
-    config.options.plugins.tooltip.callbacks.label({ dataset: { label: 'rent' }, parsed: { y: 1286.4 } }));
-  check('the legend is the library\'s, and is left switched on',
-    config.options.plugins.legend.display !== false && config.options.plugins.legend.labels.usePointStyle === true, '');
-  check('zoom and pan are on',
-    config.options.plugins.zoom.zoom.wheel.enabled === true && config.options.plugins.zoom.pan.enabled === true, '');
-  check('the axis labels are themed', config.options.scales.x.ticks.color === COLORS.dim, '');
+    pointText('rent', 1286.4, model.unit) === 'rent: $1,286.40', pointText('rent', 1286.4, model.unit));
+  check('several lines are not filled, so none hides another', model.fill === false, '');
+  check('and a click on one opens it', accountAt(model, { series: 0 }) === 'expenses:housing:rent',
+    String(accountAt(model, { series: 0 })));
 }
 
 {
-  const config = configFor({ report, colors: COLORS, title: 'net worth', options: { total: true, label: 'net worth' } });
-  check('a running total is one line, not one per account', config.data.datasets.length === 1, String(config.data.datasets.length));
-  check('filled, because there is nothing to compare it with', config.data.datasets[0].fill === true, '');
+  const model = modelFor({ report, colors: COLORS, title: 'net worth', options: { total: true, label: 'net worth' } });
+  check('a running total is one line, not one per account', model.series.length === 1, String(model.series.length));
+  check('filled, because there is nothing to compare it with', model.fill === true, '');
+  check('and not something to drill into, since it is not an account', accountAt(model, { series: 0 }) === null,
+    String(accountAt(model, { series: 0 })));
 }
 
 {
-  const config = configFor({ report: ranking, colors: COLORS, title: 'top' });
-  check('a ranking is a bar chart', config.type === 'bar', config.type);
-  check('drawn horizontally', config.options.indexAxis === 'y', config.options.indexAxis);
-  check('largest first', config.data.labels[0] === 'expenses:housing:rent', config.data.labels[0]);
-  check('with no legend, since the bars are labelled', config.options.plugins.legend.display === false, '');
-  check('and the tooltip gives the share',
-    config.options.plugins.tooltip.callbacks.label({ parsed: { x: 1200 } }).includes('90.8%'),
-    config.options.plugins.tooltip.callbacks.label({ parsed: { x: 1200 } }));
+  const model = modelFor({ report, colors: COLORS, title: 'by category', kind: 'stacked' });
+  check('a stacked report is a stacked area', model.type === 'stacked', model.type);
+  check('whose layers are not filled as one line', model.fill === false, '');
+  check('one period of it is a ranking, since there is nothing to stack over',
+    typeFor(ranking, 'stacked') === 'bar', typeFor(ranking, 'stacked'));
 }
 
 {
-  const config = configFor({ report: ranking, colors: COLORS, title: 'shares', kind: 'shares' });
-  check('shares is a doughnut', config.type === 'doughnut', config.type);
-  check('one slice per account', config.data.datasets[0].data.length === 3, String(config.data.datasets[0].data.length));
-  check('slices are separate colours',
-    new Set(config.data.datasets[0].backgroundColor).size === 3, '');
-  check('and the tooltip gives the share',
-    config.options.plugins.tooltip.callbacks.label({ parsed: 1200 }).includes('90.8%'),
-    config.options.plugins.tooltip.callbacks.label({ parsed: 1200 }));
+  const model = modelFor({ report: ranking, colors: COLORS, title: 'top' });
+  check('a ranking is a bar chart', model.type === 'bar', model.type);
+  check('largest first', model.rows[0].label === 'expenses:housing:rent', model.rows[0].label);
+  check('in the accent colour, since every bar is labelled', model.rows.every((row) => row.colour === COLORS.accent), '');
+  check('and each bar knows its share', model.rows[0].shareText === '90.8%', model.rows[0].shareText);
+  check('which the tooltip says', shareText(1200, model.total, model.unit) === '$1,200.00 (90.8%)',
+    shareText(1200, model.total, model.unit));
+}
+
+{
+  const model = modelFor({ report: ranking, colors: COLORS, title: 'shares', kind: 'shares' });
+  check('shares is a doughnut', model.type === 'doughnut', model.type);
+  check('one slice per account', model.rows.length === 3, String(model.rows.length));
+  check('slices are separate colours', new Set(model.rows.map((row) => row.colour)).size === 3, '');
+  check('and a slice knows its share', model.rows[0].shareText === '90.8%', model.rows[0].shareText);
+  const signed = read('"account","balance"\n"a","$10"\n"b","$-5"\n"c","$30"\n');
+  check('a negative balance is not a slice', modelFor({ report: signed, colors: COLORS, title: 'x', kind: 'shares' }).rows.length === 2, '');
 }
 
 check('a series colour comes from the theme, and they are all different',
   new Set(palette(COLORS, 5)).size === 5 && palette(COLORS, 1)[0].startsWith('hsl('), palette(COLORS, 3).join(' '));
-check('the theme reaches the tooltip and the grid',
-  themeFor(COLORS).plugins.tooltip.backgroundColor === COLORS.foreground && themeFor(COLORS).scales.y.grid.color.startsWith(COLORS.dim),
-  themeFor(COLORS).scales.y.grid.color);
+check('a sliver of a share is not rounded to nothing', percent(0.01, 1000) === '<0.1%' && percent(25, 100) === '25.0%',
+  `${percent(0.01, 1000)} ${percent(25, 100)}`);
+check('an axis label is short: $1,200, $12.5k, $1.5M',
+  tick(1200, { prefix: '$', suffix: '' }) === '$1,200' && tick(12500, { prefix: '$', suffix: '' }) === '$12.5k'
+  && tick(20000, { prefix: '$', suffix: '' }) === '$20k' && tick(1.5e6, { prefix: '$', suffix: '' }) === '$1.5M'
+  && tick(-2500, { prefix: '$', suffix: '' }) === '-$2,500' && tick(100, { prefix: '', suffix: 'EUR' }) === '100 EUR',
+  [1200, 12500, 20000, 1.5e6, -2500].map((value) => tick(value, { prefix: '$', suffix: '' })).join(' '));
 
-// ------------------------------------------------------------------ clicking a point
+// ------------------------------------------------------------------ clicking a mark
 
 {
-  const config = configFor({ report: ranking, colors: COLORS, title: 'top' });
-  check('a click on a bar names that account', accountAt(config, { datasetIndex: 0, index: 0 }) === 'expenses:housing:rent',
-    accountAt(config, { datasetIndex: 0, index: 0 }));
-}
-{
-  const config = configFor({ report, colors: COLORS, title: 'spending' });
-  const index = config.data.datasets.findIndex((dataset) => dataset.label === 'expenses:food:coffee');
-  check('a click on a line names that series', accountAt(config, { datasetIndex: index, index: 0 }) === 'expenses:food:coffee',
-    accountAt(config, { datasetIndex: index, index: 0 }));
+  const model = modelFor({ report: ranking, colors: COLORS, title: 'top' });
+  check('a click on a bar names that account', accountAt(model, { row: 0 }) === 'expenses:housing:rent',
+    String(accountAt(model, { row: 0 })));
 }
 {
   const many = {
@@ -220,14 +231,51 @@ check('the theme reaches the tooltip and the grid',
       amounts: [money(`$${index + 1}`), money(`$${index + 1}`)],
     })),
   };
-  const config = configFor({ report: many, colors: COLORS, title: 'many' });
-  check('more series than fit are added up as other', config.data.datasets.length === 7, String(config.data.datasets.length));
+  const model = modelFor({ report: many, colors: COLORS, title: 'many' });
+  check('more series than fit are added up as other', model.series.length === 7, String(model.series.length));
   check('the biggest are the ones kept and the rest are summed',
-    config.data.datasets[0].label === 's9' && config.data.datasets[6].label === 'other (4)',
-    config.data.datasets.map((dataset) => dataset.label).join(', '));
-  check('and other is not something to drill into', accountAt(config, { datasetIndex: 6, index: 0 }) === null,
-    String(accountAt(config, { datasetIndex: 6, index: 0 })));
-  check('a click on nothing is nothing', accountAt(config, undefined) === null, '');
+    model.series[0].label === 's9' && model.series[6].label === 'other (4)',
+    model.series.map((entry) => entry.label).join(', '));
+  check('and other is not something to drill into', accountAt(model, { series: 6 }) === null,
+    String(accountAt(model, { series: 6 })));
+  check('a click on nothing is nothing', accountAt(model, undefined) === null, '');
+}
+
+// ------------------------------------------------------------------ what the window shows
+
+{
+  const line = viewOf({ report, colors: COLORS, title: 'spending', kind: null });
+  check('a line chart has a legend, one entry per series', line.draw === 'line' && line.items.length === 3,
+    `${line.draw} ${line.items && line.items.length}`);
+  const bar = viewOf({ report: ranking, colors: COLORS, title: 'top', kind: null });
+  check('a ranking has none, since its bars are labelled', bar.draw === 'bar' && bar.items === null, String(bar.items));
+  check('and grows with its rows rather than squeezing them',
+    heightFor('bar', { rows: new Array(20).fill({}) }) > heightFor('bar', { rows: new Array(3).fill({}) }), '');
+}
+
+check('the keys are the ones the footer lists',
+  keyFor({ key: 'Escape' }) === 'back' && keyFor({ key: 'ArrowLeft' }) === 'previous'
+  && keyFor({ key: 'ArrowRight' }) === 'next' && keyFor({ key: '+' }) === 'zoom-in'
+  && keyFor({ key: '-' }) === 'zoom-out' && keyFor({ key: '0' }) === 'reset'
+  && keyFor({ key: 's' }) === 'save-svg' && keyFor({ key: 'p' }) === 'save-png'
+  && KEYS.every(([key]) => keysLine().includes(key)), keysLine());
+check('and a key with a modifier is left to the browser',
+  keyFor({ key: 's', ctrlKey: true }) === null && keyFor({ key: 'p', metaKey: true }) === null && keyFor({ key: 'a' }) === null, '');
+
+{
+  const items = Array.from({ length: 9 }, (_, index) => ({ label: `expenses:category:${index}`, colour: '#000000' }));
+  const top = header({ width: 420, title: 'spending', subtitle: '3 periods', items });
+  check('a saved picture carries its title and subtitle',
+    top.lines[0].text === 'spending' && top.lines[1].text === '3 periods', JSON.stringify(top.lines));
+  check('and a legend that wraps rather than running off the edge',
+    new Set(top.entries.map((entry) => entry.y)).size > 1
+    && top.entries.every((entry) => entry.x === 20 || entry.x + entry.label.length * 6.4 + 18 <= 420 - 20),
+    JSON.stringify(top.entries.map((entry) => [entry.x, entry.y])));
+  check('a chart of one series needs no legend in the picture',
+    header({ width: 420, title: 't', items: items.slice(0, 1) }).entries.length === 0, '');
+  check('the file is named after the chart',
+    fileName('Where the money went', 'svg') === 'hledger-where-the-money-went.svg' && fileName('', 'png') === 'hledger-chart.png',
+    fileName('Where the money went', 'svg'));
 }
 
 check('the numbers are a table, with a row per period',
@@ -246,16 +294,17 @@ check('an amount is written as a person writes it', format(money('-$1234.56')) =
     token: 'token-1',
     kind: null,
     module: '/plugins/chart-window.js',
-    scripts: ['/plugins/vendor/chart.umd.js', '/plugins/vendor/hammer.min.js', '/plugins/vendor/chartjs-plugin-zoom.umd.js'],
+    scripts: ['/plugins/vendor/d3/d3.min.js'],
   });
   // The whole point of this round: the chart is the chart.
   check('the window has no buttons', !html.includes('<button'), '');
   check('no fields', !html.includes('<input') && !html.includes('<select'), '');
   check('and nothing hidden behind a disclosure', !html.includes('<details'), '');
-  check('it has a canvas to draw on', html.includes('<canvas id="chart"'), '');
-  check('it loads the charting library', html.includes('/plugins/vendor/chart.umd.js'), '');
-  check('and the zoom plugin, and what that needs',
-    html.includes('/plugins/vendor/chartjs-plugin-zoom.umd.js') && html.includes('/plugins/vendor/hammer.min.js'), '');
+  check('it has an svg to draw on', html.includes('<svg class="chart" id="chart"') && !html.includes('<canvas'), '');
+  check('it loads D3, and only D3', html.includes('/plugins/vendor/d3/d3.min.js')
+    && !/chart\.umd|hammer|chartjs-plugin-zoom/.test(html), '');
+  check('a legend has somewhere to go', html.includes('id="legend"'), '');
+  check('and the keys are written under the chart', html.includes(keysLine()), '');
   check('and then the module that mounts it', html.includes('chart-window.js') && html.includes('mount()'), '');
   check('the numbers are in the page already, not left to a script', html.includes('<table') && html.includes('2024-02'), '');
   check('with the heading and the range above them', html.includes('spending') && html.includes('3 periods'), '');
@@ -309,7 +358,8 @@ function stub(overrides = {}) {
   check('it registers a bridge for a click to ask through', typeof globalThis.__chartBridges === 'object', '');
   check('it remembers the account', log.said.includes('remember account=expenses'), JSON.stringify(log.said));
   check('and says what it drew', log.said.some((line) => line.includes('3 periods of expenses') && line.includes('$1,286.40')), JSON.stringify(log.said));
-  check('the page it wrote is the chart', last().includes('<canvas') && !last().includes('<button'), '');
+  check('the page it wrote is the chart', last().includes('<svg class="chart"') && !last().includes('<button'), '');
+  check('and it loads D3 from beside the plugin', last().includes('vendor/d3/d3.min.js') && !last().includes('chart.umd'), '');
 }
 
 {
@@ -334,7 +384,7 @@ function stub(overrides = {}) {
 {
   const { host, last } = stub({ colors: undefined });
   await Chart.run('spending', host);
-  check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<canvas'), '');
+  check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<svg class="chart"'), '');
 }
 
 // ------------------------------------------------------------------ the repository itself
@@ -376,7 +426,7 @@ const unreadable = (manifest.themes || []).flatMap((theme) =>
     .map((role) => `${theme.name}.${role}=${contrast(theme.colors[role], theme.colors.background).toFixed(2)}`));
 check('every theme role is readable (WCAG AA, 4.5:1)', unreadable.length === 0, unreadable.join(', '));
 
-// ------------------------------------------------------------------ the D3 charts
+// ------------------------------------------------------------------ the shaped charts
 
 const REGISTER_CSV = [
   '"txnidx","date","code","description","account","amount","total"',
@@ -390,13 +440,29 @@ const REGISTER_CSV = [
   '"4","2024-02-02","","Coffee","assets:bank:checking","$-12.50","0"',
 ].join('\n');
 
+// The indentation is two no-break spaces a level, U+00A0, exactly as the engine writes it.
+// A terminal shows them as spaces, which is how an earlier fixture came to use spaces and pass
+// against a shape hledger never produces, while the real tree drew its parent beside its own
+// children. The amounts are smaller than the demo's, so the totals here are this fixture's own.
+const NBSP = '\u00a0';
 const TREE_CSV = [
   '"account","balance"',
   '"expenses","$698.90"',
-  '"  food","$98.90"',
-  '"    coffee","$12.50"',
-  '"    groceries","$86.40"',
-  '"  housing:rent","$600.00"',
+  `"${NBSP.repeat(2)}food","$98.90"`,
+  `"${NBSP.repeat(4)}coffee","$12.50"`,
+  `"${NBSP.repeat(4)}groceries","$86.40"`,
+  `"${NBSP.repeat(2)}housing:rent","$600.00"`,
+  '"Total:","$698.90"',
+].join('\n');
+
+// hledger balance income expenses --depth 2 -O csv, on the demo journal.
+const FLOWS_CSV = [
+  '"account","balance"',
+  '"expenses:food","$98.90"',
+  '"expenses:housing","$1200.00"',
+  '"expenses:reading","$34.99"',
+  '"income:salary","$-3200.00"',
+  '"Total:","$-1866.11"',
 ].join('\n');
 
 const register = readRegister(REGISTER_CSV);
@@ -426,6 +492,9 @@ check('the tree parser reads indentation as depth',
   && Math.abs(tree.total - 698.90) < 0.005,
   JSON.stringify(tree && tree.rows));
 check('a chain written in one row becomes a chain of nodes', tree.rows[4].label === 'housing:rent');
+check('indentation in plain spaces is read the same way',
+  readTree(TREE_CSV.replaceAll(NBSP, ' ')).rows.map((row) => row.depth).join() === tree.rows.map((row) => row.depth).join(),
+  readTree(TREE_CSV.replaceAll(NBSP, ' ')).rows.map((row) => row.depth).join());
 
 const monthly = read(MONTHLY_CSV);
 const spark = multiples(monthly);
@@ -446,10 +515,20 @@ check('the new presets ask for the report their shape needs',
   [build('treemap').command, build('calendar -p 2024').command, build('multiples').command].join(' | '));
 check('a named account still overrides a preset that takes one',
   build('treemap assets').command === 'balance --tree assets -O csv'
-  && build('treemap assets').title === 'where the money went of assets',
+  && build('treemap assets').title === 'assets, as a treemap',
   build('treemap assets').title);
-check('exactly four kinds are D3',
-  KINDS.length === 4 && isD3Kind('treemap') && isD3Kind('multiples') && !isD3Kind('line'));
+check('stacked asks for one level of categories below the account',
+  build('stacked').command === 'balance expenses -M --depth 2 -O csv'
+  && build('stacked expenses:food').command === 'balance expenses:food -M --depth 3 -O csv'
+  && build('stacked expenses:food').title === 'expenses:food by category',
+  `${build('stacked').command} | ${build('stacked expenses:food').command} | ${build('stacked expenses:food').title}`);
+check('the Sankey asks for income and expense categories, and a period passes through',
+  build('sankey').command === 'balance income expenses --depth 2 -O csv'
+  && build('sankey -p 2024').command === 'balance income expenses --depth 2 -p 2024 -O csv',
+  build('sankey -p 2024').command);
+check('five charts read a report of their own, and every other is a balance chart',
+  CUSTOM.length === 5 && isCustom('sankey') && isCustom('treemap') && !isCustom('stacked') && !isCustom(null),
+  CUSTOM.join(','));
 
 const d3Page = page({
   report: tree,
@@ -461,14 +540,14 @@ const d3Page = page({
   module: 'about:blank',
   scripts: ['https://example.invalid/d3.min.js'],
 });
-check('a D3 page draws into an svg and keeps the table',
+check('a shaped chart draws into an svg and keeps the table',
   d3Page.includes('<svg class="chart" id="chart"') && d3Page.includes('<table>')
   && !d3Page.includes('<canvas'));
-check('a Chart.js page still draws into a canvas',
+check('and so does a balance chart',
   page({
     report: monthly, colors: COLORS, title: 'spending', command: 'balance expenses -M -O csv',
     token: 't', kind: null, module: 'about:blank', scripts: [],
-  }).includes('<canvas'));
+  }).includes('<svg class="chart"'));
 check('the treemap headline counts leaves, not parents',
   headlineFor('treemap', tree) === '3 accounts, $698.90 at the leaves',
   headlineFor('treemap', tree));
@@ -478,17 +557,60 @@ check('the waterfall headline reads like a sentence',
 check('the treemap table carries every row',
   ['food', 'coffee', 'housing'].every((name) => tableFor('treemap', tree).includes(name)));
 
+// ------------------------------------------------------------------ the Sankey
+
+{
+  const flow = flows(read(FLOWS_CSV));
+  check('income is the source, turned the right way round',
+    flow.sources.length === 1 && flow.sources[0].label === 'salary' && flow.sources[0].value === 3200,
+    JSON.stringify(flow.sources));
+  check('each expense category is a sink, largest first',
+    flow.sinks.slice(0, 3).map((node) => node.label).join() === 'housing,food,reading', flow.sinks.map((node) => node.label).join());
+  check('and what was not spent flows to saved',
+    flow.sinks[3].kind === 'saved' && Math.abs(flow.sinks[3].value - 1866.11) < 0.005, JSON.stringify(flow.sinks[3]));
+  check('so both sides add up to the income',
+    Math.abs(flow.sinks.reduce((sum, node) => sum + node.value, 0) - 3200) < 0.005, '');
+  check('the headline says where it went',
+    headlineFor('sankey', flow) === 'income $3,200.00 into 3 categories, $1,866.11 saved', headlineFor('sankey', flow));
+  check('and the table lists every flow',
+    ['from salary', 'to housing', 'to reading', 'saved'].every((text) => tableFor('sankey', flow).includes(text)), '');
+  check('a node opens its own account', flow.sinks[0].account === 'expenses:housing' && flow.sinks[3].account === null,
+    `${flow.sinks[0].account} ${flow.sinks[3].account}`);
+
+  const short = flows(read('"account","balance"\n"expenses:rent","$150"\n"income:job","$-100"\n"assets:bank","$-50"\n'));
+  check('spending above income is drawn from savings, not hidden',
+    short.sources.some((node) => node.kind === 'drawn' && node.value === 50) && !short.sinks.some((node) => node.kind === 'saved'),
+    JSON.stringify(short.sources));
+  check('and an asset row is neither a source nor a sink',
+    ![...short.sources, ...short.sinks].some((node) => /assets/.test(node.account || '')), '');
+  check('the headline says so', /\$50\.00 more spent than came in/.test(headlineFor('sankey', short)), headlineFor('sankey', short));
+
+  const layout = sankeyLayout(flow, 800, 400, { left: 100, right: 100, top: 10, bottom: 10 });
+  const hub = layout.nodes.find((node) => node.column === 1);
+  const into = layout.links.filter((link) => link.to === 'income').reduce((sum, link) => sum + link.thickness, 0);
+  const out = layout.links.filter((link) => link.from === 'income').reduce((sum, link) => sum + link.thickness, 0);
+  check('every source and sink has one link through the middle',
+    layout.links.length === flow.sources.length + flow.sinks.length, String(layout.links.length));
+  check('what flows in is as thick as the middle, and so is what flows out',
+    Math.abs(into - hub.h) < 1e-6 && Math.abs(out - hub.h) < 1e-6, `${into} ${out} ${hub.h}`);
+  check('every node is drawn at the same scale',
+    layout.nodes.every((node) => Math.abs(node.h / node.value - layout.scale) < 1e-9), '');
+  check('and every node fits inside the chart',
+    layout.nodes.every((node) => node.y >= 10 - 1e-6 && node.y + node.h <= 390 + 1e-6 && node.x >= 100 && node.x + node.w <= 700),
+    JSON.stringify(layout.nodes.map((node) => [node.label, Math.round(node.y), Math.round(node.h)])));
+  check('a link is a closed band', layout.links.every((link) => /^M.*C.*L.*C.*Z$/.test(link.path)), '');
+  check('a parse of the report is the flow itself', parseReport('sankey', FLOWS_CSV).income === 3200, '');
+}
+
 let filesThere = true;
 for (const file of [
   '../assets/plugins/chart.js',
   '../assets/plugins/chart-window.js',
   '../assets/plugins/chart-data.js',
   '../assets/plugins/chart-d3.js',
+  '../assets/plugins/chart-ui.js',
   '../assets/plugins/vendor/d3/d3.min.js',
   '../assets/plugins/vendor/d3/LICENSE',
-  '../assets/plugins/vendor/chart.umd.js',
-  '../assets/plugins/vendor/hammer.min.js',
-  '../assets/plugins/vendor/chartjs-plugin-zoom.umd.js',
   '../assets/plugins/edit.js',
   '../assets/plugins/edit-window.js',
   '../assets/plugins/vendor/ace/ace.js',

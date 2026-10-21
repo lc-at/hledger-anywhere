@@ -2,8 +2,8 @@
  * The pure part of the charts: reading hledger's CSV, and the numbers and colours that do not
  * need a browser.
  *
- * Both the plugin (which asks hledger and parses) and the window (which draws, with Chart.js or
- * D3) import from here, so the amount parser and the palette exist once. Everything in this
+ * Both the plugin (which asks hledger and parses) and the window (which draws, with D3) import
+ * from here, so the amount parser and the palette exist once. Everything in this
  * file is deterministic and covered by `scripts/check-example-plugin.mjs`.
  */
 
@@ -99,6 +99,55 @@ export function unitOf(amounts) {
   return { prefix: found ? found.prefix : '', suffix: found ? found.suffix : '' };
 }
 
+// --------------------------------------------------------------------------- series
+
+/** Amounts added up, keeping the commodity of the first one that has it. */
+export function add(amounts) {
+  const present = amounts.filter(Boolean);
+  const sum = present.reduce((total, amount) => total + (Number.isFinite(amount.value) ? amount.value : 0), 0);
+  return {
+    value: sum,
+    prefix: (present.find((amount) => amount.prefix) || {}).prefix || '',
+    suffix: (present.find((amount) => amount.suffix) || {}).suffix || '',
+  };
+}
+
+/** The total of every series in a period. */
+export function periodTotal(report, index) {
+  return add(report.series.map((series) => series.amounts[index]));
+}
+
+/** The total of one series across every period. */
+export function seriesTotal(series) {
+  return add(series.amounts);
+}
+
+/** The series worth drawing, largest first, with the rest added up as "other". */
+export function ordered(report, limit = 7) {
+  const ranked = report.series
+    .map((series) => ({ ...series, sum: seriesTotal(series).value }))
+    .sort((left, right) => Math.abs(right.sum) - Math.abs(left.sum));
+  if (ranked.length <= limit) return ranked;
+  const shown = ranked.slice(0, limit - 1);
+  const rest = ranked.slice(limit - 1);
+  return [
+    ...shown,
+    {
+      label: `other (${rest.length})`,
+      amounts: report.periods.map((_, index) => add(rest.map((series) => series.amounts[index]))),
+      other: true,
+    },
+  ];
+}
+
+/** "90.8%", or "<0.1%" for a sliver that would otherwise read as nothing. */
+export function percent(value, total) {
+  if (!total) return '0%';
+  const share = (100 * value) / total;
+  if (share > 0 && share < 0.05) return '<0.1%';
+  return `${share.toFixed(1)}%`;
+}
+
 // --------------------------------------------------------------------------- colour
 
 /**
@@ -106,7 +155,7 @@ export function unitOf(amounts) {
  *
  * The hue starts at the accent and spreads by the golden angle, so two, five or nine series
  * are as far apart as the wheel allows, at one lightness that reads on the background. It is
- * the same palette the Chart.js chart used, so the two libraries look like one plugin.
+ * one palette for every chart, so the eleven of them look like one plugin.
  */
 export function palette(colors, count) {
   const [hue] = toHsl(colors.accent);

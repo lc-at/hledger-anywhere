@@ -1,21 +1,23 @@
 /**
  * The chart window: one chart, and nothing else on the page.
  *
- * Chart.js draws the line, bar and doughnut charts from a balance report. D3 draws the
- * treemap, calendar, waterfall and sparklines, which Chart.js has no mark for; the window
- * loads only the library the chart it is showing uses.
+ * Every chart is drawn by D3, from the vendored UMD build the page loads as a classic script.
+ * The balance charts (a line per series, a stacked area, a ranking, a doughnut) are built here
+ * from hledger's balance CSV; the shaped charts (treemap, calendar, waterfall, sparklines,
+ * Sankey) bring their own data from chart-d3.js.
  *
  * There are no buttons, no fields and no disclosures. What is drawn comes from the command that
  * was run; everything you can do is done to the chart itself, which is what a chart is for:
- * hover for values, click the legend to hide a series, scroll to zoom, drag to pan,
- * double-click to reset, and click a point to chart that account on its own.
+ * hover or Tab to a mark for its numbers, click a legend entry to hide a series, scroll to zoom
+ * and drag to pan through time, double-click to reset, click or Enter on a mark to chart that
+ * account on its own, and Escape to go back. The keys are listed under the chart.
  *
- * Shared by both sides of the plugin. The plugin imports the page to write the window; the
- * window imports `mount` to draw it and to handle clicks. Everything that decides what a chart
- * looks like is a plain function from data to a config object, which is why it can be tested
- * without a browser, and only `mount` touches the DOM.
+ * Shared by both sides of the plugin. The plugin imports `page` to write the window; the window
+ * imports `mount` to draw it. Everything that decides what a chart shows is a plain function
+ * from data to a model — `modelFor`, `viewOf` — which is why it can be tested without a
+ * browser, and only `mount` touches the DOM.
  *
- * The data shape is one row per series and one column per period, which is what hledger's
+ * The balance data is one row per series and one column per period, which is what hledger's
  * balance CSV is:
  *
  *   { periods: ['2024-01', '2024-02'],
@@ -23,67 +25,28 @@
  *     unit: { prefix: '$', suffix: '' } }
  */
 
-/** Grid lines and axis labels, dimmed. A theme colour is `#rrggbb`, so an alpha is appended. */
-const GRID_ALPHA = '3d';
+import { format, isLight, ordered, palette, percent, periodTotal, seriesTotal } from './chart-data.js';
+import { headlineFor, heightFor, isCustom, render, tableFor } from './chart-d3.js';
+import { KEYS, keyFor, legend, save, tooltip } from './chart-ui.js';
 
-// --------------------------------------------------------------------------- numbers
-
-// The formatter, the palette and the light/dark test are defined once in chart-data.js, so
-// the plugin, this window and the D3 chart cannot drift apart. Re-exported here because this
-// is where the window's own helpers are read, by tests and by callers.
-import { format, isLight, palette } from './chart-data.js';
-import { headlineFor, isD3Kind, render as renderD3, tableFor } from './chart-d3.js';
-export { format, group, isLight, palette } from './chart-data.js';
-
-/** The series worth drawing, largest first, with the rest added up as "other". */
-export function ordered(report, limit = 7) {
-  const ranked = report.series
-    .map((series) => ({ ...series, sum: seriesTotal(series).value }))
-    .sort((left, right) => Math.abs(right.sum) - Math.abs(left.sum));
-  if (ranked.length <= limit) return ranked;
-  const shown = ranked.slice(0, limit - 1);
-  const rest = ranked.slice(limit - 1);
-  return [
-    ...shown,
-    {
-      label: `other (${rest.length})`,
-      amounts: report.periods.map((_, index) => add(rest.map((series) => series.amounts[index]))),
-      other: true,
-    },
-  ];
-}
-
-/** The total of every series in a period. */
-export function periodTotal(report, index) {
-  return add(report.series.map((series) => series.amounts[index]));
-}
-
-/** The total of one series across every period. */
-export function seriesTotal(series) {
-  return add(series.amounts);
-}
-
-function add(amounts) {
-  const present = amounts.filter(Boolean);
-  const sum = present.reduce((total, amount) => total + (Number.isFinite(amount.value) ? amount.value : 0), 0);
-  return {
-    value: sum,
-    prefix: (present.find((amount) => amount.prefix) || {}).prefix || '',
-    suffix: (present.find((amount) => amount.suffix) || {}).suffix || '',
-  };
-}
+// The formatter, the palette and the series arithmetic are defined once in chart-data.js, so
+// the plugin, this window and the drawing cannot drift apart. Re-exported here because this is
+// where the window's own helpers are read, by tests and by callers.
+export { format, group, isLight, ordered, palette, periodTotal, seriesTotal } from './chart-data.js';
 
 // --------------------------------------------------------------------------- the report
 
 /**
- * Which chart this report asks for.
+ * Which chart a balance report asks for.
  *
- * The window has no controls, so the shape of the data decides: several periods is a line,
- * a report with one column is a ranking, and a preset that is about shares is a doughnut.
+ * The window has no controls, so the shape of the data decides: several periods is a line (or
+ * a stacked area, when that was asked for), one column is a ranking, and a preset that is about
+ * shares is a doughnut.
  */
 export function typeFor(report, kind) {
   if (kind === 'shares') return 'doughnut';
-  return report.periods.length > 1 ? 'line' : 'bar';
+  if (report.periods.length <= 1) return 'bar';
+  return kind === 'stacked' ? 'stacked' : 'line';
 }
 
 /** What the page says under the heading. */
@@ -99,178 +62,118 @@ export function headline(report, type) {
   return `${report.periods.length} periods, ${first} to ${last}`;
 }
 
-// --------------------------------------------------------------------------- the library
-
 /**
- * The theme, as Chart.js options.
+ * What a balance chart shows, without a library in sight.
  *
- * One place maps the app's colours onto the library, so a theme change is one function to read
- * rather than a dozen scattered colours.
- */
-export function themeFor(colors) {
-  const grid = { color: `${colors.dim}${GRID_ALPHA}`, drawTicks: false };
-  const ticks = { color: colors.dim, maxRotation: 0, autoSkipPadding: 12 };
-  return {
-    color: colors.foreground,
-    maintainAspectRatio: false,
-    animation: { duration: 220 },
-    plugins: {
-      legend: {
-        labels: { color: colors.foreground, boxWidth: 10, boxHeight: 10, usePointStyle: true },
-      },
-      tooltip: {
-        backgroundColor: colors.foreground,
-        titleColor: colors.background,
-        bodyColor: colors.background,
-        borderColor: colors.dim,
-        borderWidth: 1,
-        padding: 8,
-        displayColors: false,
-      },
-      zoom: {
-        // Wheel to zoom, drag to pan, both along the axis that means time. Double-click resets.
-        zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
-        pan: { enabled: true, mode: 'x' },
-      },
-    },
-    scales: {
-      x: { grid, ticks, border: { color: `${colors.dim}${GRID_ALPHA}` } },
-      y: { grid, ticks, border: { display: false } },
-    },
-  };
-}
-
-/**
- * The Chart.js config for a report.
+ * One function, four shapes. A line or stacked area gets the series worth drawing, largest
+ * first, with the rest folded into "other (n)"; `options.total` collapses a running total such
+ * as net worth into one filled line. A ranking gets one row per account, largest first; a
+ * doughnut gets the positive ones only, since a share of a negative is not a slice. Every row
+ * carries its colour and its share, so the renderer only has to draw.
  *
- * One function, three shapes: a line per series over time, horizontal bars for a ranking, and a
- * doughnut for shares. `options.total` collapses a running total such as net worth into one line.
+ * `drillable` says whether clicking a mark should chart that account on its own. A running
+ * total is not an account, so it is the one thing that is not.
  */
-export function configFor({ report, colors, title, kind, options = {} }) {
+export function modelFor({ report, colors, title, kind, options = {} }) {
   const type = typeFor(report, kind);
   const unit = report.unit || { prefix: '', suffix: '' };
-  const theme = themeFor(colors);
-  const amount = (value) => format({ value, ...unit });
 
-  if (type === 'doughnut') {
-    const rows = report.series
-      .map((series) => ({ label: series.label, amount: seriesTotal(series) }))
-      .filter((row) => row.amount.value > 0)
-      .sort((left, right) => right.amount.value - left.amount.value);
-    const total = rows.reduce((sum, row) => sum + row.amount.value, 0) || 1;
+  if (type === 'bar' || type === 'doughnut') {
+    let rows = report.series.map((series) => ({ label: series.label, value: seriesTotal(series).value }));
+    rows = type === 'doughnut'
+      ? rows.filter((row) => row.value > 0).sort((left, right) => right.value - left.value)
+      : rows.sort((left, right) => Math.abs(right.value) - Math.abs(left.value));
+    const total = rows.reduce((sum, row) => sum + row.value, 0);
+    const colours = type === 'doughnut' ? palette(colors, rows.length) : rows.map(() => colors.accent);
     return {
-      type: 'doughnut',
-      data: {
-        labels: rows.map((row) => row.label),
-        datasets: [{
-          label: title,
-          data: rows.map((row) => row.amount.value),
-          backgroundColor: palette(colors, rows.length),
-          borderColor: colors.background,
-          borderWidth: 2,
-        }],
-      },
-      options: {
-        ...theme,
-        cutout: '58%',
-        scales: {},
-        plugins: {
-          ...theme.plugins,
-          tooltip: {
-            ...theme.plugins.tooltip,
-            callbacks: {
-              label: (item) => ` ${amount(item.parsed)} (${((100 * item.parsed) / total).toFixed(1)}%)`,
-            },
-          },
-        },
-      },
-    };
-  }
-
-  if (type === 'bar') {
-    const rows = report.series
-      .map((series) => ({ label: series.label, amount: seriesTotal(series) }))
-      .sort((left, right) => Math.abs(right.amount.value) - Math.abs(left.amount.value));
-    const total = rows.reduce((sum, row) => sum + row.amount.value, 0) || 1;
-    return {
-      type: 'bar',
-      data: {
-        labels: rows.map((row) => row.label),
-        datasets: [{
-          label: title,
-          data: rows.map((row) => row.amount.value),
-          backgroundColor: colors.accent,
-          borderColor: colors.accent,
-          borderWidth: 0,
-        }],
-      },
-      options: {
-        ...theme,
-        indexAxis: 'y',
-        plugins: {
-          ...theme.plugins,
-          legend: { display: false },
-          tooltip: {
-            ...theme.plugins.tooltip,
-            callbacks: {
-              label: (item) => ` ${amount(item.parsed.x)} (${((100 * item.parsed.x) / total).toFixed(1)}%)`,
-            },
-          },
-        },
-      },
+      type,
+      title,
+      unit,
+      drillable: true,
+      total,
+      rows: rows.map((row, index) => ({
+        ...row,
+        colour: colours[index],
+        share: total ? row.value / total : 0,
+        shareText: percent(row.value, total),
+      })),
     };
   }
 
   const series = options.total
     ? [{ label: options.label || title, amounts: report.periods.map((_, index) => periodTotal(report, index)) }]
-    : ordered(report, 7);
-  const colors_ = palette(colors, series.length);
+    : ordered(report, type === 'stacked' ? 8 : 7);
+  const colours = palette(colors, series.length);
   return {
-    type: 'line',
-    data: {
-      labels: report.periods,
-      datasets: series.map((entry, index) => ({
-        label: entry.label,
-        data: entry.amounts.map((value) => value.value),
-        borderColor: colors_[index],
-        backgroundColor: series.length === 1 ? `${colors_[index]}2e` : colors_[index],
-        fill: series.length === 1,
-        tension: 0.25,
-        pointRadius: 3,
-        pointHoverRadius: 5,
-        borderWidth: 2,
-      })),
-    },
-    options: {
-      ...theme,
-      interaction: { mode: 'nearest', intersect: false },
-      plugins: {
-        ...theme.plugins,
-        tooltip: {
-          ...theme.plugins.tooltip,
-          callbacks: { label: (item) => ` ${item.dataset.label}: ${amount(item.parsed.y)}` },
-        },
-      },
-    },
+    type,
+    title,
+    unit,
+    drillable: !options.total,
+    periods: report.periods,
+    fill: type === 'line' && series.length === 1,
+    series: series.map((entry, index) => ({
+      label: entry.label,
+      values: entry.amounts.map((amount) => (amount ? amount.value : 0)),
+      colour: colours[index],
+      other: Boolean(entry.other),
+    })),
   };
 }
 
 /**
- * The account a click landed on, or null.
+ * The account a hit on a mark stands for, or null.
  *
- * A bar or a doughnut names an account per element; a line names one per dataset, so clicking a
- * point on a line means "chart this series". `other (n)` is a sum of several accounts and is not
- * something to drill into.
+ * A hit names a series (`{ series: i }`, for lines and areas) or a row (`{ row: i }`, for bars
+ * and slices). `other (n)` is a sum of several accounts and is not something to drill into, and
+ * nothing is, in a chart that is not drillable.
  */
-export function accountAt(config, element) {
-  if (!config || !element) return null;
-  const datasets = config.data.datasets;
-  const dataset = datasets[element.datasetIndex];
-  if (!dataset) return null;
-  const single = datasets.length === 1 && config.type !== 'line';
-  const label = single ? config.data.labels[element.index] : dataset.label;
-  if (!label || String(label).startsWith('other (')) return null;
-  return String(label);
+export function accountAt(model, hit) {
+  if (!model || !hit || !model.drillable) return null;
+  const entry = hit.series !== undefined ? (model.series || [])[hit.series] : (model.rows || [])[hit.row];
+  if (!entry || entry.other || String(entry.label).startsWith('other (')) return null;
+  return String(entry.label);
+}
+
+/** A line of tooltip for a point: "rent: $1,286.40". */
+export function pointText(label, value, unit) {
+  return `${label}: ${format({ value, ...unit })}`;
+}
+
+/** A line of tooltip for a share: "$1,200.00 (90.8%)". */
+export function shareText(value, total, unit) {
+  return `${format({ value, ...unit })} (${percent(value, total)})`;
+}
+
+/**
+ * Everything the window shows for a state, decided in one place: which renderer, with what
+ * data, which legend, and the words and table around it. Both the first page and every redraw
+ * after a drill-down come from here.
+ */
+export function viewOf(state) {
+  if (isCustom(state.kind)) {
+    return {
+      draw: state.kind,
+      data: state.report,
+      items: null,
+      sub: headlineFor(state.kind, state.report),
+      table: tableFor(state.kind, state.report),
+      height: heightFor(state.kind, state.report),
+    };
+  }
+  const model = modelFor(state);
+  const items = model.series
+    ? model.series.map((series) => ({ label: series.label, colour: series.colour }))
+    : model.type === 'doughnut'
+      ? model.rows.map((row) => ({ label: row.label, colour: row.colour }))
+      : null;
+  return {
+    draw: model.type,
+    data: model,
+    items,
+    sub: headline(state.report, model.type),
+    table: tableView(state.report),
+    height: heightFor(model.type, model),
+  };
 }
 
 // --------------------------------------------------------------------------- the page
@@ -281,20 +184,21 @@ function escape(text) {
   }[character]));
 }
 
+/** The keys, as the window's footer says them. */
+export function keysLine() {
+  return KEYS.map(([key, action]) => `${key} ${action}`).join(' · ');
+}
+
 /**
  * The whole document.
  *
- * The data travels in a JSON block, the library arrives as classic scripts from beside this
- * plugin, and the chart is drawn by `mount`. The table is rendered here rather than by script:
- * a canvas says nothing to a screen reader, and a window that shows nothing until a script runs
+ * The data travels in a JSON block, D3 arrives as a classic script from beside this plugin,
+ * and the chart is drawn by `mount`. The table is rendered here rather than by script: an svg
+ * of shapes says little to a screen reader, and a window that shows nothing until a script runs
  * shows nothing if the script does not.
  */
 export function page({ report, colors, title, command, token, kind, options = {}, module, scripts = [] }) {
-  // A D3 chart carries a different report and gets an svg instead of a canvas. Everything
-  // else on the page — the heading, the table, the note — is the same.
-  const d3Kind = isD3Kind(kind);
-  const type = d3Kind ? null : typeFor(report, kind);
-  const sub = d3Kind ? headlineFor(kind, report) : headline(report, type);
+  const view = viewOf({ report, colors, title, kind, options });
   const data = JSON.stringify({ report, colors, token, kind, options, title, command })
     .replace(/</g, '\\u003c');
   const dark = !isLight(colors.background);
@@ -306,28 +210,33 @@ export function page({ report, colors, title, command, token, kind, options = {}
     font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif; }
   main { max-width:960px; margin:0 auto; padding:24px 24px 40px; }
   h1 { font-size:18px; font-weight:600; margin:0 0 2px; }
-  .sub { color:${colors.dim}; margin:0 0 16px; }
-  .frame { position:relative; height:${d3Kind ? '420px' : type === 'doughnut' ? '380px' : '400px'}; }
-  canvas { cursor:pointer; }
-  svg.chart { display:block; width:100%; height:100%; }
+  .sub { color:${colors.dim}; margin:0 0 14px; }
+  .frame { position:relative; height:${view.height}px; }
+  svg.chart { display:block; width:100%; height:100%; overflow:visible; }
+  svg.chart :focus { outline:none; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 16px; list-style:none; margin:0 0 12px; padding:0; font-size:12px; }
+  .legend li { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; border-radius:3px; }
+  .legend li:focus-visible { outline:2px solid ${colors.foreground}; outline-offset:2px; }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:50%; }
   table { border-collapse:collapse; margin-top:22px; font-size:13px; width:100%; }
   th { font-weight:500; text-align:left; color:${colors.dim}; padding-bottom:4px; }
   th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
   td { padding:1px 0; }
-  .note { color:${colors.dim}; margin:18px 0 0; font-size:12px; }
+  .note, .keys { color:${colors.dim}; margin:18px 0 0; font-size:12px; }
+  .keys { margin-top:4px; }
   .warn { color:${colors.foreground}; margin:0 0 12px; font-size:13px; }
   code { color:${colors.foreground}; }
 </style></head>
 <body>
 <main>
   <h1 id="heading">${escape(title)}</h1>
-  <p class="sub" id="sub">${escape(sub)}</p>
+  <p class="sub" id="sub">${escape(view.sub)}</p>
   <p class="warn" id="warn" hidden></p>
-  <div class="frame">${d3Kind
-    ? `<svg class="chart" id="chart" role="img" aria-label="${escape(title)}"></svg>`
-    : `<canvas id="chart" role="img" aria-label="${escape(title)}"></canvas>`}</div>
-  <div id="table">${d3Kind ? tableFor(kind, report) : tableView(report)}</div>
+  <div id="legend" hidden></div>
+  <div class="frame"><svg class="chart" id="chart" role="img" aria-label="${escape(title)}"></svg></div>
+  <div id="table">${view.table}</div>
   <p class="note">from hledger's own numbers: <code id="command">${escape(command)}</code></p>
+  <p class="keys">${escape(keysLine())}</p>
 </main>
 <script type="application/json" id="chart-data">${data}</script>
 ${scripts.map((src) => `<script src="${escape(src)}"></script>`).join('\n')}
@@ -354,92 +263,128 @@ export function tableView(report) {
 // --------------------------------------------------------------------------- the window
 
 /**
- * Draw the chart, and let a click ask for another one.
+ * Draw the chart, and let the pointer and the keyboard ask for another one.
  *
- * Only this function touches the DOM. The library arrives in the page's own script tags, so if it
- * did not load this leaves the table standing and says so, rather than showing an empty canvas.
+ * Only this function touches the DOM. D3 arrives in the page's own script tag, so if it did not
+ * load this leaves the table standing and says so, rather than showing an empty frame.
  *
  * The window keeps what it is showing and what it has shown. Undoing a drill-down needs no
- * hledger round trip, because the report it came from is still here.
+ * hledger round trip, because the report it came from is still here, and neither does
+ * restoring which series were hidden and how far the chart was zoomed.
  */
 export function mount(root = document) {
   const data = JSON.parse(root.getElementById('chart-data').textContent);
-  const canvas = root.getElementById('chart');
+  const svg = root.getElementById('chart');
+  const holder = svg.parentElement;
   const warn = root.getElementById('warn');
   const table = root.getElementById('table');
   const heading = root.getElementById('heading');
   const sub = root.getElementById('sub');
   const command = root.getElementById('command');
+  const legendBox = root.getElementById('legend');
 
-  // The D3 charts draw themselves from the data in the page. They have no drill-down: the
-  // bridge that asks the plugin for another report belongs to the Chart.js charts.
-  if (isD3Kind(data.kind)) {
-    heading.textContent = data.title;
-    document.title = `hledger: ${data.title}`;
-    sub.textContent = headlineFor(data.kind, data.report);
-    command.textContent = data.command;
-    if (!window.d3) {
-      show(warn, 'The chart library did not load, so this is the numbers alone.');
-      return;
-    }
-    const svg = root.getElementById('chart');
-    const paint = () => {
-      try {
-        renderD3(data.kind, svg, data.report, data.colors);
-        show(warn, '');
-      } catch (error) {
-        show(warn, error && error.message ? error.message : String(error));
-      }
-    };
-    paint();
-    // A new size is a new layout, so the chart is redrawn rather than stretched.
-    let timer = null;
-    window.addEventListener('resize', () => {
-      clearTimeout(timer);
-      timer = setTimeout(paint, 120);
-    });
-    return;
-  }
-
-  if (typeof window.Chart !== 'function') {
+  if (!window.d3) {
     show(warn, 'The chart library did not load, so this is the numbers alone.');
     return;
   }
 
   const state = { ...data };
   const stack = [];
-  let chart = null;
+  const tip = tooltip(holder, data.colors);
+  let view = { hidden: new Set() };
+  let controls = {};
+  let busy = false;
 
-  function draw() {
-    if (chart) chart.destroy();
-    chart = new window.Chart(canvas, configFor(state));
-    heading.textContent = state.title;
-    document.title = `hledger: ${state.title}`;
-    sub.textContent = headline(state.report, typeFor(state.report, state.kind));
-    command.textContent = state.command;
-    table.innerHTML = tableView(state.report);
-    show(warn, '');
+  const hooks = {
+    tip,
+    async pick(account) {
+      if (busy) return;
+      busy = true;
+      tip.hide();
+      show(warn, `Reading ${account}…`);
+      const answer = await requery(data.token, account);
+      busy = false;
+      if (!answer) return;
+      stack.push({ state: { ...state }, view });
+      Object.assign(state, answer, { options: answer.options || {} });
+      view = { hidden: new Set() };
+      draw();
+    },
+  };
+
+  function paint() {
+    const shown = viewOf(state);
+    try {
+      controls = render(shown.draw, svg, shown.data, state.colors, hooks, view) || {};
+      show(warn, '');
+    } catch (error) {
+      controls = {};
+      show(warn, error && error.message ? error.message : String(error));
+    }
   }
 
-  canvas.addEventListener('click', async (event) => {
-    const [element] = chart.getElementsAtEventForMode(event, 'nearest', { intersect: true }, true);
-    const account = accountAt(chart.config, element);
-    if (!account) return;
-    const answer = await requery(data.token, account);
-    if (!answer) return;
-    stack.push({ ...state });
-    Object.assign(state, answer, { options: answer.options || {} });
-    draw();
+  function drawLegend(items) {
+    legend(legendBox, items, view.hidden, (label) => {
+      if (view.hidden.has(label)) view.hidden.delete(label);
+      else view.hidden.add(label);
+      drawLegend(items);
+      paint();
+      // Keep the keyboard where it was, on the entry just toggled.
+      const entry = [...legendBox.querySelectorAll('li')].find((item) => item.textContent === label);
+      if (entry) entry.focus();
+    }, state.colors);
+  }
+
+  function draw() {
+    const shown = viewOf(state);
+    heading.textContent = state.title;
+    document.title = `hledger: ${state.title}`;
+    sub.textContent = shown.sub;
+    command.textContent = state.command;
+    table.innerHTML = shown.table;
+    holder.style.height = `${shown.height}px`;
+    svg.setAttribute('aria-label', state.title);
+    drawLegend(shown.items);
+    paint();
+  }
+
+  window.addEventListener('keydown', (event) => {
+    const action = keyFor(event);
+    if (!action) return;
+    // A key typed into something editable is not a command, should the page ever have one.
+    if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    event.preventDefault();
+    if (action === 'back') {
+      // Escape undoes the last drill-down. A key rather than a button, because the window has
+      // no buttons, and a drill-down that could not be undone would be a dead end.
+      const previous = stack.pop();
+      if (!previous) return;
+      for (const key of Object.keys(state)) delete state[key];
+      Object.assign(state, previous.state);
+      view = previous.view;
+      draw();
+      return;
+    }
+    if (action === 'previous' && controls.step) controls.step(-1);
+    if (action === 'next' && controls.step) controls.step(1);
+    if (action === 'zoom-in' && controls.zoomBy) controls.zoomBy(1.6);
+    if (action === 'zoom-out' && controls.zoomBy) controls.zoomBy(1 / 1.6);
+    if (action === 'reset' && controls.reset) controls.reset();
+    if (action === 'save-svg' || action === 'save-png') {
+      // The picture says what the page around it said: the subtitle, and the legend for
+      // what is still shown.
+      const shown = viewOf(state);
+      const items = (shown.items || []).filter((item) => !view.hidden.has(item.label));
+      save(svg, state.colors, state.title, action === 'save-svg' ? 'svg' : 'png', { subtitle: shown.sub, items })
+        .catch((error) => show(warn, error && error.message ? error.message : String(error)));
+    }
   });
 
-  // Escape undoes the last click. A key rather than a button, because the window has no
-  // buttons, and a drill-down that could not be undone would be a dead end.
-  window.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    const previous = stack.pop();
-    if (!previous) return;
-    Object.assign(state, previous);
-    draw();
+  // A new size is a new layout, so the chart is redrawn rather than stretched.
+  let timer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(timer);
+    timer = setTimeout(paint, 120);
   });
 
   draw();
