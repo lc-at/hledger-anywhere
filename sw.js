@@ -94,10 +94,7 @@ self.addEventListener('fetch', (event) => {
           return cached;
         }
         const response = await fetch(request);
-        if (response.ok) {
-          const cache = await caches.open(CACHE);
-          await cache.put(request, response.clone());
-        }
+        remember(event, request, response);
         return response;
       })(),
     );
@@ -108,10 +105,7 @@ self.addEventListener('fetch', (event) => {
     (async () => {
       try {
         const response = await fetch(request);
-        if (response.ok) {
-          const cache = await caches.open(CACHE);
-          await cache.put(request, response.clone());
-        }
+        remember(event, request, response);
         return response;
       } catch (error) {
         const cached = await caches.match(request);
@@ -130,3 +124,28 @@ self.addEventListener('fetch', (event) => {
     })(),
   );
 });
+
+/**
+ * Keep a copy of a good response, without making the page wait for it or depend on it.
+ *
+ * Caching is best effort. A browser can refuse an entry: a full quota, a private window, or
+ * one that will not store the 13 MB engine at all, which is what Chrome did here, with
+ * "Cache.put() encountered a network error" for a body it had just downloaded intact. When
+ * the put was awaited before answering, that refusal became the answer, and the engine failed
+ * to load from a network that had delivered every byte of it. Now the page gets the response
+ * either way, and the copy is written alongside it for next time.
+ */
+function remember(event, request, response) {
+  if (!response.ok) {
+    return;
+  }
+  const copy = response.clone();
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((cache) => cache.put(request, copy))
+      .catch(() => {
+        // Nothing to do: the response was already served, and the next visit fetches again.
+      }),
+  );
+}
