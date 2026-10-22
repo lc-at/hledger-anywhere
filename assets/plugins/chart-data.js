@@ -124,22 +124,86 @@ export function seriesTotal(series) {
   return add(series.amounts);
 }
 
-/** The series worth drawing, largest first, with the rest added up as "other". */
-export function ordered(report, limit = 7) {
-  const ranked = report.series
-    .map((series) => ({ ...series, sum: seriesTotal(series).value }))
-    .sort((left, right) => Math.abs(right.sum) - Math.abs(left.sum));
-  if (ranked.length <= limit) return ranked;
-  const shown = ranked.slice(0, limit - 1);
-  const rest = ranked.slice(limit - 1);
-  return [
-    ...shown,
-    {
+/**
+ * The report as the chart options shape it: inverted, then accumulated, then as percentages.
+ *
+ * In that order because each reads the one before: a running total of inverted income is
+ * income so far, and a percentage of running totals is each account's share of everything so
+ * far. A percentage is of its period's total, so with one period it is each account's share.
+ * The report is copied, never changed: the window keeps the original to come back to.
+ */
+export function shape(report, options = {}) {
+  const series = report.series.map((entry) => ({
+    ...entry,
+    amounts: entry.amounts.map((amount) => ({ ...amount })),
+  }));
+  let unit = report.unit || { prefix: '', suffix: '' };
+  if (options.invert) {
+    for (const entry of series) for (const amount of entry.amounts) amount.value = -amount.value;
+  }
+  if (options.cumulative) {
+    for (const entry of series) {
+      let running = 0;
+      for (const amount of entry.amounts) {
+        running += amount.value;
+        amount.value = running;
+      }
+    }
+  }
+  if (options.percent) {
+    const totals = report.periods.map((_, index) => series.reduce((sum, entry) => sum + (entry.amounts[index] ? entry.amounts[index].value : 0), 0));
+    for (const entry of series) {
+      entry.amounts.forEach((amount, index) => {
+        amount.value = totals[index] ? (100 * amount.value) / totals[index] : 0;
+        amount.prefix = '';
+        amount.suffix = '%';
+      });
+    }
+    unit = { prefix: '', suffix: '%' };
+  }
+  return { ...report, series, unit };
+}
+
+/**
+ * The entries worth drawing: largest first, the rest added up as one "other (n)".
+ *
+ * `--top N` keeps N. Without it a chart keeps up to `fits`, and past that `fits - 1` and an
+ * other, so a chart never shows an other standing in for a single account. `--sort name` then
+ * orders what was kept by name, with the other last, since it is not one of them.
+ */
+export function chosen(entries, { top, sort, fits = Infinity, size, combine }) {
+  const ranked = [...entries].sort((left, right) => Math.abs(size(right)) - Math.abs(size(left)));
+  const room = top || fits;
+  let kept = ranked;
+  if (ranked.length > room) {
+    const keep = top || Math.max(1, fits - 1);
+    kept = [...ranked.slice(0, keep), combine(ranked.slice(keep))];
+  }
+  if (sort === 'name') {
+    kept = [...kept.filter((entry) => !entry.other).sort((left, right) => left.label.localeCompare(right.label)),
+      ...kept.filter((entry) => entry.other)];
+  }
+  return kept;
+}
+
+/** The series of a report as `chosen` keeps them, the rest added up period by period. */
+export function chosenSeries(report, options = {}, fits = 7) {
+  return chosen(report.series, {
+    top: options.top,
+    sort: options.sort,
+    fits,
+    size: (entry) => seriesTotal(entry).value,
+    combine: (rest) => ({
       label: `other (${rest.length})`,
-      amounts: report.periods.map((_, index) => add(rest.map((series) => series.amounts[index]))),
+      amounts: report.periods.map((_, index) => add(rest.map((entry) => entry.amounts[index]))),
       other: true,
-    },
-  ];
+    }),
+  });
+}
+
+/** "1 account", "3 accounts". */
+export function counted(count, noun) {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
 /** "90.8%", or "<0.1%" for a sliver that would otherwise read as nothing. */

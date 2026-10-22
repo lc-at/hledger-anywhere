@@ -207,72 +207,75 @@ JavaScript module listed in a repository manifest. One repository is bundled and
 at every start, so its commands are simply there:
 
 ```
-hledger.journal » chart expenses
-chart: 2 periods of expenses, $47.49, down $1,238.91, in a new window.
+hledger.journal » chart bar -M expenses
+chart: bar of 4 accounts over 2 periods, the last $47.49, down $1,238.91, in a new window.
 ```
 
 The bundled repository is `/plugins/plugins.json`, and its `chart` plugin opens a chart in a
-window of its own, using hledger's own numbers. It answers to named questions, and to any
-report you write out yourself:
-
-| command | what it charts |
-| --- | --- |
-| `chart` or `chart spending` | what spending did, month by month |
-| `chart income` | what came in |
-| `chart cashflow` | income against expenses, per month |
-| `chart networth` | assets against liabilities, as a running total |
-| `chart balances` | every account, end of month |
-| `chart payees` | spending by payee, month by month |
-| `chart top` | where it all went, largest first |
-| `chart shares` | what share each account is of the total |
-| `chart stacked [account]` | spending by category, stacked month by month |
-| `chart treemap [account]` | where the money went, as a treemap of the account tree |
-| `chart sankey` | income flowing into each kind of spending, and what was saved |
-| `chart calendar` | a year of spending, one square per day |
-| `chart waterfall` | income, each expense category, and what is left |
-| `chart multiples` | one sparkline per account, month by month |
-| `chart food` | any account, month by month; `food` matches `expenses:food` |
-| `chart balance assets -Q` | any balance report, as written |
-
-**Say when and how often in words.** A year, month or quarter (`2024`, `2024-03`, `2024q1`),
-`this month`, `last year`, `since 2024-06`, `until 2024-06`, `2023 to 2024`, `today`; and
-`daily`, `weekly`, `monthly`, `quarterly` or `yearly`. They go anywhere after `chart`, and so
-does the question, so these all mean what they say:
+window of its own, using hledger's own numbers:
 
 ```
-chart sankey 2024                  where 2024's income went
-chart food weekly                  food, week by week
-chart income last year quarterly   last year's income, by quarter
-chart expenses:food treemap        inside one category
+chart [chart options] <type> [hledger arguments]
 ```
 
-They become hledger's own `-p "last year"` and `-W`, which you can still write yourself, and
-the window shows the command it ran. Months are the default; a day or a week is split by the
-day. A chart that draws one period, such as the treemap, leaves an interval out and says so.
-Tab after `chart` lists the questions, and `chart?` says what each one does.
+Chart options shape the picture and come first; then the type; then the query, which goes to
+hledger as you write it, so anything `balance` takes works there: `-p 2026`, `-M`, `--depth 2`,
+`-H`, account names and patterns. The window shows the command it ran.
 
-The shaped charts ask hledger for the report their picture needs: the treemap the account
-tree, the Sankey income and expense categories (`balance income expenses --depth 2`, so a
-transfer between two of your own accounts can never be drawn as income), and the calendar and
-waterfall the register.
+| type | draws | from |
+| --- | --- | --- |
+| `line` | one line per account, over time | `balance … -M` |
+| `bar` | accounts ranked; with an interval such as `-M`, columns per period | `balance …` |
+| `stacked` | accounts stacked over time | `balance … -M` |
+| `pie` | each account's share of the whole | `balance …` |
+| `treemap` | the account tree, area by balance | `balance --tree …` |
+| `sankey` | income flowing into spending, and what was saved | `balance … --depth 2` |
+| `calendar` | a square per day, darker for more spending | `register …` |
+| `waterfall` | income, a step down per expense category, then net | `register …` |
+| `multiples` | a small line per account | `balance … -M` |
 
-Otherwise the shape comes from the report: several periods is a line, one column is a ranking
-with the largest first, and `chart shares` is a doughnut.
+A chart over time is monthly unless the query names an interval (`-D`, `-W`, `-Q`, `-Y`); a
+Sankey is two levels deep unless the query sets `--depth`. Nothing else is added.
+
+| option | does | for |
+| --- | --- | --- |
+| `--log` | a logarithmic value axis, for amounts of very different sizes | line, bar, multiples |
+| `--percent` | each period as shares of its total | line, bar, stacked, multiples |
+| `--cumulative` | a running total across the periods | line, bar, stacked, multiples |
+| `--top N` | the N largest accounts, and the rest as "other" | those, pie, sankey |
+| `--sort name\|value` | order by name, or by size, which is the default | line, bar, stacked, pie, multiples |
+| `--invert` | flip the sign, so income and liabilities read as positive | line, bar, stacked, pie, multiples |
+
+```
+chart --log bar -p 2026 coffee                 coffee in 2026, on a log scale
+chart bar -M expenses                          spending in monthly columns
+chart --percent stacked --depth 2 expenses     what spending is made of, month by month
+chart --cumulative --invert line income        income so far
+chart --top 5 pie -p 2026 expenses             2026's five largest expenses
+chart line -H assets liabilities               balances at each month's end
+chart sankey -p 2026                           where 2026's income went
+```
+
+A line that cannot be charted is answered in the terminal, with no window opened, and the
+answer says what to type: a missing type lists the types, a misspelt one (`lien`) is offered
+the one it was probably meant to be, a chart option after the type is moved before it, and an
+option a type cannot use is named along with the ones it can. Tab after `chart` lists the types
+and options, and `chart?` explains each.
 
 **The chart is the chart.** The window has no buttons, no fields, and nothing hidden behind a
-disclosure. What is drawn comes from the command; under it, an "Also" line links related
-charts, each written as the command it is (`chart treemap expenses:food 2024`), so following
-one shows how to ask for it next time. Everything else is done to the chart itself, which is
-what a chart is for: hover a mark for its numbers, click a legend entry to
-take a series out and put it back, scroll to zoom through time, drag to pan, double-click to
-reset, and click a mark to chart that account on its own. Escape goes back to the chart you
-came from.
+disclosure. What is drawn comes from the command; under it, an "Also" line links the same query
+drawn as the other types, each written as the line it is (`chart pie -p 2026 coffee`), so
+following one shows how to ask for it next time. Everything else is done to the chart itself,
+which is what a chart is for: hover a mark for its numbers, click a legend entry to take a
+series out and put it back, scroll to zoom through time, drag to pan, double-click to reset,
+and click a mark to chart that account over time, in the same period. Escape goes back to the
+chart you came from.
 
 Everything the pointer does, the keyboard does too, and the keys are written under the chart:
 
 | key | does |
 | --- | --- |
-| Tab, then Enter | reach a mark and see its numbers, then chart that account |
+| Tab, then Enter | reach a mark and see its numbers, then chart that account over time |
 | ← → | step a crosshair through the periods |
 | + − 0 | zoom in, out, and reset |
 | Esc | go back |

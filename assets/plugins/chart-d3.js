@@ -247,6 +247,19 @@ export function flows(report) {
 }
 
 /**
+ * The flows with only the `n` largest expense categories, the rest added up as one "other".
+ * What was saved, or drawn from savings, is never folded: it is the point of the picture.
+ */
+export function foldFlows(data, n) {
+  const spending = data.sinks.filter((node) => node.kind === 'expense');
+  if (spending.length <= n) return data;
+  const kept = spending.slice(0, n);
+  const rest = spending.slice(n);
+  const other = { account: null, label: `other (${rest.length})`, value: rest.reduce((sum, node) => sum + node.value, 0), kind: 'expense' };
+  return { ...data, sinks: [...kept, other, ...data.sinks.filter((node) => node.kind !== 'expense')] };
+}
+
+/**
  * Where every node and link of the Sankey goes, without a DOM.
  *
  * Three columns: the sources, one hub for the money that came in, and the sinks. Every column
@@ -375,7 +388,47 @@ export function tick(value, unit = { prefix: '', suffix: '' }) {
   if (size >= 1e6) body = `${short(size / 1e6, size >= 1e8 ? 0 : 1)}M`;
   else if (size >= 1e4) body = `${short(size / 1e3, size >= 1e5 ? 0 : 1)}k`;
   else body = group(size, size > 0 && size < 10 && size % 1 !== 0 ? 1 : 0);
-  return `${sign}${unit.prefix || ''}${body}${unit.suffix ? ` ${unit.suffix}` : ''}`;
+  const suffix = !unit.suffix ? '' : unit.suffix === '%' ? '%' : ` ${unit.suffix}`;
+  return `${sign}${unit.prefix || ''}${body}${suffix}`;
+}
+
+/**
+ * The ticks of a logarithmic axis between `low` and `high`: zero, and the powers of ten on
+ * either side of it. A logarithmic axis with evenly spaced ticks says nothing about the scale,
+ * which is the one thing its ticks are for. When there are too many decades, every other one.
+ */
+export function logTicks(low, high) {
+  const ticks = [0];
+  for (let power = 1; power <= 1e15; power *= 10) {
+    if (power <= high) ticks.push(power);
+    if (-power >= low) ticks.unshift(-power);
+    if (power > Math.max(Math.abs(low), Math.abs(high))) break;
+  }
+  const kept = ticks.filter((value) => value >= low && value <= high);
+  return kept.length > 9 ? kept.filter((value) => value === 0 || Math.round(Math.log10(Math.abs(value))) % 2 === 0) : kept;
+}
+
+/** A bound pushed out to the next power of ten, which is where a logarithmic axis ends. */
+function decade(value) {
+  if (value === 0) return 0;
+  return Math.sign(value) * 10 ** Math.ceil(Math.log10(Math.abs(value)));
+}
+
+/**
+ * The value axis, linear or logarithmic, and its ticks.
+ *
+ * Logarithmic is d3's symmetric log, which is a log scale that also has a zero and negatives:
+ * balances cross zero, and a plain log scale cannot draw one that does.
+ */
+function valueScale(d3, log, low, high, range, count) {
+  if (log) {
+    const domain = [decade(Math.min(low, 0)), decade(Math.max(high, 0))];
+    if (domain[0] === domain[1]) domain[1] = 10;
+    const scale = d3.scaleSymlog().constant(1).domain(domain).range(range);
+    return { scale, ticks: logTicks(domain[0], domain[1]) };
+  }
+  const scale = d3.scaleLinear().domain([low, high]).nice(count).range(range);
+  return { scale, ticks: scale.ticks(count) };
 }
 
 /** How tall a chart wants to be, before it is drawn. The charts may grow their frame. */
@@ -492,6 +545,7 @@ export function render(kind, svg, data, colors, hooks, state = {}) {
   state.hidden = state.hidden || new Set();
   if (kind === 'line' || kind === 'stacked') return drawSeries(svg, data, colors, hooks, state);
   if (kind === 'bar') return drawBar(svg, data, colors, hooks);
+  if (kind === 'columns') return drawColumns(svg, data, colors, hooks, state);
   if (kind === 'doughnut') return drawDoughnut(svg, data, colors, hooks, state);
   if (kind === 'treemap') return drawTreemap(svg, data, colors, hooks);
   if (kind === 'calendar') return drawCalendar(svg, data, colors, hooks);
@@ -544,8 +598,7 @@ function drawSeries(svg, model, colors, hooks, state) {
   // One count for both: a domain made nice for ten ticks and labelled with eight leaves its
   // top unlabelled, and the highest value floating above the last gridline.
   const tickCount = Math.max(2, Math.floor((height - margin.top - margin.bottom) / 46));
-  const y = d3.scaleLinear().domain([low, high]).nice(tickCount).range([height - margin.bottom, margin.top]);
-  const ticksY = y.ticks(tickCount);
+  const { scale: y, ticks: ticksY } = valueScale(d3, model.log, low, high, [height - margin.bottom, margin.top], tickCount);
   margin.left = 12 + Math.max(...ticksY.map((value) => tick(value, unit).length)) * 6.6;
   const x0 = d3.scaleLinear()
     .domain(count > 1 ? [0, count - 1] : [-0.5, 0.5])
@@ -767,13 +820,12 @@ function drawBar(svg, model, colors, hooks) {
   const right = 16 + Math.max(...rows.map((row) => amountOf(row.value, unit).length)) * 6.6;
   const margin = { top: 6, bottom: 26 };
   const values = rows.map((row) => row.value);
-  const x = d3.scaleLinear()
-    .domain([Math.min(0, ...values), Math.max(0, ...values)]).nice()
-    .range([left, width - right]);
+  const { scale: x, ticks } = valueScale(d3, model.log, Math.min(0, ...values), Math.max(0, ...values),
+    [left, width - right], Math.max(2, Math.floor((width - left - right) / 90)));
   const y = d3.scaleBand().domain(rows.map((_, index) => index))
     .range([margin.top, height - margin.bottom]).paddingInner(0.24).paddingOuter(0.12);
 
-  for (const value of x.ticks(Math.max(2, Math.floor((width - left - right) / 90)))) {
+  for (const value of ticks) {
     root.append('line')
       .attr('x1', x(value)).attr('x2', x(value)).attr('y1', margin.top).attr('y2', height - margin.bottom)
       .attr('stroke', colors.dim).attr('stroke-opacity', value === 0 ? 0.55 : 0.2);
@@ -806,6 +858,70 @@ function drawBar(svg, model, colors, hooks) {
     .attr('fill', colors.dim).attr('font-size', 11)
     .style('pointer-events', 'none')
     .text((row) => amountOf(row.value, unit));
+  return {};
+}
+
+// ---------------------------------------------------------------- columns
+
+/**
+ * Columns per period, one per account side by side: `chart bar -M expenses`.
+ *
+ * Side by side rather than stacked, which is the stacked type's job, so a logarithmic axis
+ * still means what it says: each column's height is its own amount. A legend entry hides an
+ * account and the rest rescale, as on a line chart.
+ */
+function drawColumns(svg, model, colors, hooks, state) {
+  const { d3, width, height, root } = frame(svg);
+  const visible = model.series.filter((series) => !state.hidden.has(series.label));
+  if (visible.length === 0) {
+    nothing(root, colors, 'Every series is hidden. Click one in the legend.');
+    return {};
+  }
+  const unit = model.unit;
+  const count = model.periods.length;
+  const values = visible.flatMap((series) => series.values);
+  const margin = { top: 12, right: 12, bottom: 28, left: 12 };
+  const tickCount = Math.max(2, Math.floor((height - margin.top - margin.bottom) / 46));
+  const { scale: y, ticks } = valueScale(d3, model.log, Math.min(0, ...values), Math.max(0, ...values),
+    [height - margin.bottom, margin.top], tickCount);
+  margin.left = 12 + Math.max(...ticks.map((value) => tick(value, unit).length)) * 6.6;
+  const x = d3.scaleBand().domain(model.periods.map((_, index) => index)).range([margin.left, width - margin.right]).paddingInner(0.2);
+  const inner = d3.scaleBand().domain(visible.map((_, index) => index)).range([0, x.bandwidth()]).padding(0.08);
+
+  for (const value of ticks) {
+    root.append('line').attr('x1', margin.left).attr('x2', width - margin.right)
+      .attr('y1', y(value)).attr('y2', y(value))
+      .attr('stroke', colors.dim).attr('stroke-opacity', value === 0 ? 0.55 : 0.22);
+    root.append('text').attr('x', margin.left - 8).attr('y', y(value)).attr('dy', '0.32em')
+      .attr('text-anchor', 'end').attr('fill', colors.dim).attr('font-size', 11).text(tick(value, unit));
+  }
+
+  const cells = [];
+  model.periods.forEach((period, at) => {
+    visible.forEach((series, key) => cells.push({ series, key, at, period, value: series.values[at] || 0 }));
+  });
+  const columns = root.append('g').selectAll('rect').data(cells).join('rect')
+    .attr('x', (cell) => x(cell.at) + inner(cell.key))
+    .attr('y', (cell) => y(Math.max(0, cell.value)))
+    .attr('width', Math.max(1, inner.bandwidth()))
+    .attr('height', (cell) => Math.max(cell.value ? 1 : 0, Math.abs(y(cell.value) - y(0))))
+    .attr('rx', 1.5)
+    .attr('fill', (cell) => cell.series.colour);
+  interactive(columns, {
+    d3, svg, hooks, colors,
+    tip: (cell) => ({ title: cell.period, rows: [{ colour: cell.series.colour, label: cell.series.label, value: amountOf(cell.value, unit) }] }),
+    account: (cell) => (model.drillable && !cell.series.other ? cell.series.label : null),
+    label: (cell) => `${cell.series.label}, ${cell.period}, ${amountOf(cell.value, unit)}`,
+  });
+
+  // Period labels: as many as fit without touching.
+  const widest = Math.max(...model.periods.map((period) => period.length)) * 6.6 + 12;
+  const every = Math.max(1, Math.ceil(widest / Math.max(1, x.step())));
+  model.periods.forEach((period, at) => {
+    if (at % every) return;
+    root.append('text').attr('x', x(at) + x.bandwidth() / 2).attr('y', height - margin.bottom + 18)
+      .attr('text-anchor', 'middle').attr('fill', colors.dim).attr('font-size', 11).text(period);
+  });
   return {};
 }
 
@@ -1116,7 +1232,9 @@ function drawMultiples(svg, data, colors, hooks) {
     const low = Math.min(...values, 0);
     const high = Math.max(...values, 0);
     const x = d3.scalePoint().domain(values.map((_, at) => at)).range([plot.left, plot.right]);
-    const y = d3.scaleLinear().domain([low, high === low ? high + 1 : high]).range([plot.bottom - 2, plot.top + 3]);
+    const y = data.log
+      ? d3.scaleSymlog().constant(1).domain([low, high === low ? high + 1 : high]).range([plot.bottom - 2, plot.top + 3])
+      : d3.scaleLinear().domain([low, high === low ? high + 1 : high]).range([plot.bottom - 2, plot.top + 3]);
     const points = values.map((value, at) => [x(at), y(value)]);
 
     root.append('text').attr('x', x0 + 4).attr('y', y0 + 14)

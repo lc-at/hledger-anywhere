@@ -48,12 +48,12 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
       "name": "chart",
       "group": "Reports",
       "summary": "open a chart of hledger's numbers in a window",
-      "usage": "chart [question] [account] [when] [how often]",
+      "usage": "chart [chart options] <type> [hledger arguments]",
       "help": "Opens a chart of hledger's own numbers in a window of its own.",
       "sections": [
-        { "title": "Over time", "rows": [["chart income", "what came in, month by month"]] }
+        { "title": "Types", "rows": [["line", "one line per account, over time"]] }
       ],
-      "examples": [["chart sankey 2024", "where 2024's income went"]],
+      "examples": [["chart --log bar -p 2026 coffee", "coffee in 2026, on a log scale"]],
       "completes": ["balance", "expenses", "-M"],
       "module": "./chart.js",
       "themes": [
@@ -71,7 +71,7 @@ A manifest may also carry `themes` of its own, beside any a plugin declares:
 | `summary` | One line for the help. Required: a command nobody can find is not a feature. |
 | `usage` | The word with its arguments, shown at the top of `chart?`. Defaults to the name. |
 | `help` | The paragraph `chart?` prints. Defaults to `summary`, so a repository written before per-command help still gets a page. |
-| `sections` | Headings on the page, each over rows of a form and what it does: `{"title": "...", "rows": [["form", "what it does"]]}`. The questions a command answers, the keys of a window it opens. |
+| `sections` | Headings on the page, each over rows of a form and what it does: `{"title": "...", "rows": [["form", "what it does"]]}`. The types and options a command takes, the keys of a window it opens. |
 | `examples` | Commands worth trying, as `[["command", "what it does"]]`, shown last under Examples, as the app's own pages show theirs. |
 | `completes` | Extra words it adds to Tab completion, such as the arguments it expects. |
 | `module` | The module implementing it, relative to the manifest. Imported the first time one of its commands runs. |

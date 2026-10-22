@@ -38,7 +38,7 @@ self.connect();
 await self.post('Profiler.enable');
 await self.post('Profiler.startPreciseCoverage', { callCount: true, detailed: true });
 const { page } = await import('../assets/plugins/chart-window.js');
-const { parseReport } = await import('../assets/plugins/chart.js');
+const { build, parseReport } = await import('../assets/plugins/chart.js');
 const { page: editPage } = await import('../assets/plugins/edit-window.js');
 
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
@@ -51,54 +51,56 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // ------------------------------------------------------------------ the windows
 
 /**
- * Each case is one window: a kind, a report in the engine's shape, and a theme. They are the
- * same calls the plugin makes, so what is drawn here is what a user would see.
+ * Each case is one window: a chart line and a report in the engine's shape. The window is
+ * written from `build(line)`, the plugin's own reading of the line, so its type, options, title,
+ * command and related charts are what a user typing `chart <line>` would get.
  */
+const SINGLE_CSV = MONTHLY_CSV.split('\n').filter((row) => !/coffee|books/.test(row)).join('\n');
 const CASES = {
-  line: { kind: null, csv: MONTHLY_CSV, title: 'expenses', command: 'balance expenses -M -O csv' },
-  daily: { kind: null, csv: dailyCsv(40), title: 'expenses daily', command: 'balance expenses -D -O csv' },
-  networth: {
-    kind: null, csv: MONTHLY_CSV, title: 'net worth', command: 'balance assets liabilities -H -M -O csv',
-    options: { total: true, label: 'net worth' },
-  },
-  stacked: { kind: 'stacked', csv: MONTHLY_CSV, title: 'spending by category', command: 'balance expenses -M --depth 2 -O csv' },
-  bar: {
-    kind: null, csv: RANKING_CSV, title: 'top', command: 'balance expenses -O csv',
-    related: [{ label: 'chart shares expenses', args: 'shares expenses' }, { label: 'chart treemap expenses', args: 'treemap expenses' }],
-  },
-  doughnut: { kind: 'shares', csv: RANKING_CSV, title: 'shares', command: 'balance expenses -O csv' },
-  treemap: { kind: 'treemap', csv: TREE_CSV, title: 'where the money went', command: 'balance --tree expenses -O csv' },
-  calendar: { kind: 'calendar', csv: REGISTER_CSV, title: 'daily spending', command: 'register -O csv' },
-  waterfall: { kind: 'waterfall', csv: REGISTER_CSV, title: 'income to net', command: 'register -O csv' },
-  multiples: { kind: 'multiples', csv: MONTHLY_CSV, title: 'accounts over time', command: 'balance -M -O csv' },
-  sankey: { kind: 'sankey', csv: FLOWS_CSV, title: 'where income went', command: 'balance income expenses --depth 2 -O csv' },
+  line: { line: 'line expenses', csv: MONTHLY_CSV },
+  daily: { line: 'line -D expenses', csv: dailyCsv(40) },
+  single: { line: '--cumulative line expenses:housing:rent', csv: SINGLE_CSV },
+  loglines: { line: '--log --top 2 line expenses', csv: MONTHLY_CSV },
+  stacked: { line: '--percent stacked expenses', csv: MONTHLY_CSV },
+  bar: { line: 'bar expenses', csv: RANKING_CSV },
+  columns: { line: '--log bar -M expenses', csv: MONTHLY_CSV },
+  doughnut: { line: '--top 2 pie expenses', csv: RANKING_CSV },
+  treemap: { line: 'treemap expenses', csv: TREE_CSV },
+  calendar: { line: 'calendar', csv: REGISTER_CSV },
+  waterfall: { line: 'waterfall', csv: REGISTER_CSV },
+  multiples: { line: '--log --sort name multiples', csv: MONTHLY_CSV },
+  sankey: { line: '--top 2 sankey', csv: FLOWS_CSV },
 };
 
 function windowFor(name, theme, { library = true } = {}) {
   const entry = CASES[name];
+  const query = build(entry.line);
   return page({
-    report: parseReport(entry.kind, entry.csv),
+    report: parseReport(query.kind, entry.csv),
     colors: theme === 'dark' ? DARK : COLORS,
-    title: entry.title,
-    command: entry.command,
+    title: query.title,
+    command: query.command,
     token: 'check',
-    kind: entry.kind,
-    options: entry.options || {},
-    related: entry.related || [],
+    kind: query.kind,
+    options: query.options,
+    args: query.args,
+    related: query.related,
     module: '/plugins/chart-window.js',
     scripts: library ? ['/plugins/vendor/d3/d3.min.js'] : [],
   });
 }
 
 /**
- * What a drill-down gets back. The window asks the opener's bridge for an account; the answer
- * is a monthly report of it, which is what the plugin's bridge returns.
+ * What following a mark or a link gets back. The window asks the opener's bridge for a chart
+ * line; the answer is a monthly line chart titled with the line it was asked for, so a check
+ * can see which line was asked.
  */
 const ANSWER = {
-  report: parseReport(null, MONTHLY_CSV.replace('expenses:food:coffee', 'expenses:drilled')),
+  report: parseReport('line', MONTHLY_CSV.replace('expenses:food:coffee', 'expenses:drilled')),
   command: 'balance expenses:drilled -M -O csv',
   options: {},
-  kind: null,
+  kind: 'line',
+  related: [],
 };
 
 // The page a window was opened by, stood in for: a chart bridge that records what it was asked
@@ -110,10 +112,10 @@ const OPENER = `
   window.__refuse = '';
   Object.defineProperty(window, 'opener', { configurable: true, value: {
     __chartBridges: { check: {
-      async requery(account) {
-        window.__asked.push(account);
+      async requery(args) {
+        window.__asked.push(args);
         await new Promise((resolve) => setTimeout(resolve, 30));
-        return { ...${JSON.stringify(ANSWER)}, title: account };
+        return { ...${JSON.stringify(ANSWER)}, title: args, args };
       },
     } },
     __editBridges: { check: {
@@ -477,9 +479,9 @@ const check = (what, ok, detail = '') => checks.push([what, Boolean(ok), detail]
 async function everyChartDraws(tab) {
   // How many marks each chart should have, at least, from its fixture.
   const marks = {
-    line: 'path.line', daily: 'path.line', networth: 'path.line', stacked: 'path', bar: 'rect[role=button]',
-    doughnut: 'path[role=button]', treemap: 'rect[role=button]', calendar: 'rect', waterfall: 'rect[role=button]',
-    multiples: 'path', sankey: 'rect[role=button]',
+    line: 'path.line', daily: 'path.line', single: 'path.line', loglines: 'path.line', stacked: 'path', bar: 'rect[role=button]',
+    columns: 'rect[role=button]', doughnut: 'path[role=button]', treemap: 'rect[role=button]', calendar: 'rect',
+    waterfall: 'rect[role=button]', multiples: 'path', sankey: 'rect[role=button]',
   };
   for (const theme of ['light', 'dark']) {
     for (const name of Object.keys(CASES)) {
@@ -490,8 +492,36 @@ async function everyChartDraws(tab) {
         `${count} marks, warning "${warning}", errors ${tab.errors.join(' | ')}`);
     }
   }
-  await tab.show('networth');
-  check('a running total is filled', await tab.eval("document.querySelectorAll('#chart path.fill').length === 1"));
+  const texts = () => tab.eval("[...document.querySelectorAll('#chart text')].map((node) => node.textContent)");
+  await tab.show('single');
+  check('one account\'s line is filled', await tab.eval("document.querySelectorAll('#chart path.fill').length === 1"));
+  check('--cumulative draws the running total', (await texts()).some((text) => text === '$3,500' || text === '$4,000'), (await texts()).join(','));
+  await tab.show('loglines');
+  const logged = await texts();
+  check('--log ticks the axis at powers of ten', ['$1', '$10', '$100', '$1,000'].every((text) => logged.includes(text)), logged.join(','));
+  check('--top 2 keeps two accounts and an other', (await tab.eval("[...document.querySelectorAll('.legend li')].map((li) => li.textContent).join()")) === 'expenses:housing:rent,expenses:food:coffee,other (1)',
+    await tab.eval("[...document.querySelectorAll('.legend li')].map((li) => li.textContent).join()"));
+  await tab.show('stacked');
+  check('--percent labels the axis in percent', (await texts()).includes('100%') && !(await texts()).some((text) => text.startsWith('$')), (await texts()).join(','));
+  await tab.show('columns');
+  check('a bar chart of several periods is columns, one per account per period',
+    (await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")) === 9
+    && ['2024-01', '2024-02', '2024-03'].every(async () => true) && (await texts()).includes('2024-02'), String(await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")));
+  check('on a logarithmic axis', (await texts()).includes('$1,000') && (await texts()).includes('$10'), (await texts()).join(','));
+  await tab.eval("document.querySelector('.legend li').click()");
+  check('and a legend entry takes an account\'s columns out', (await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")) === 6, '');
+  await tab.show('doughnut');
+  // An other is not an account, so it is a labelled mark but not a button to follow.
+  check('--top 2 on a pie keeps two slices and an other, which is not a button',
+    (await tab.eval("document.querySelectorAll('#chart path[aria-label]').length")) === 3
+    && (await tab.eval("document.querySelectorAll('#chart path[role=button]').length")) === 2, '');
+  await tab.show('sankey');
+  check('--top 2 on a Sankey keeps two categories, an other, and what was saved',
+    (await tab.eval("[...document.querySelectorAll('#chart rect[aria-label]')].map((node) => node.getAttribute('aria-label').split(',')[0]).join()")) === 'income:salary,income,expenses:housing,expenses:food,other (1),saved',
+    await tab.eval("[...document.querySelectorAll('#chart rect[aria-label]')].map((node) => node.getAttribute('aria-label').split(',')[0]).join()"));
+  await tab.show('multiples');
+  check('--sort name orders the sparklines by name', (await tab.eval("[...document.querySelectorAll('#table td:first-child')].map((td) => td.textContent).join()"))
+    === 'expenses:food:coffee,expenses:housing:rent,expenses:reading:books', '');
   await tab.show('treemap');
   check('the treemap draws one cell per leaf, not the parents',
     (await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")) === 3,
@@ -542,14 +572,14 @@ async function theLineChart(tab) {
 
   await tab.click(point[0] + 1, point[1] + 1);
 
-  await tab.until("document.getElementById('heading').textContent === 'expenses:housing:rent'");
-  check('a click on a line asks for that account, and charts it', (await tab.heading()) === 'expenses:housing:rent'
-    && (await tab.eval('window.__asked.join()')) === 'expenses:housing:rent', `${await tab.heading()} ${await tab.eval('window.__asked.join()')}`);
+  await tab.until("document.getElementById('heading').textContent === 'line expenses:housing:rent'");
+  check('a click on a line asks for that account over time, by the line that would', (await tab.heading()) === 'line expenses:housing:rent'
+    && (await tab.eval('window.__asked.join()')) === 'line expenses:housing:rent', `${await tab.heading()} ${await tab.eval('window.__asked.join()')}`);
   check('with the command it ran', (await tab.eval("document.getElementById('command').textContent")) === ANSWER.command);
   await tab.key('Escape', { keyCode: 27 });
-  check('Escape goes back to the chart before', (await tab.heading()) === 'expenses', await tab.heading());
+  check('Escape goes back to the chart before', (await tab.heading()) === 'line: expenses', await tab.heading());
   await tab.key('Escape', { keyCode: 27 });
-  check('and Escape with nowhere to go back to does nothing', (await tab.heading()) === 'expenses');
+  check('and Escape with nowhere to go back to does nothing', (await tab.heading()) === 'line: expenses');
 
   await tab.eval("window.dispatchEvent(new Event('resize'))");
   await sleep(250);
@@ -592,8 +622,11 @@ async function zooming(tab) {
 }
 
 async function byKeyboard(tab) {
-  for (const [name, expected] of [['bar', 'expenses:housing:rent'], ['doughnut', 'expenses:housing:rent'],
-    ['treemap', 'expenses:food:coffee'], ['waterfall', 'income'], ['multiples', 'expenses:housing:rent'], ['sankey', 'income:salary']]) {
+  // What Enter on the first mark asks for: that account over time, in the same period, with the
+  // options that still mean something for one account (--log does; --top and --sort do not).
+  for (const [name, expected] of [['bar', 'line expenses:housing:rent'], ['columns', '--log line -M expenses:housing:rent'],
+    ['doughnut', 'line expenses:housing:rent'], ['treemap', 'line expenses:food:coffee'], ['waterfall', 'line income'],
+    ['multiples', '--log line expenses:food:coffee'], ['sankey', 'line income:salary']]) {
     await tab.show(name);
     await tab.eval('document.activeElement && document.activeElement.blur()');
     // The first stop is whatever comes first in the page; walk until a mark has focus.
@@ -608,7 +641,7 @@ async function byKeyboard(tab) {
     await tab.key('Enter', { keyCode: 13, text: '\r' });
     await tab.until(`window.__asked.length > ${before}`);
     const asked = await tab.eval('window.__asked[window.__asked.length - 1]');
-    check(`Enter on it charts that account (${name})`, asked === expected, String(asked));
+    check(`Enter on it charts that account over time (${name})`, asked === expected, String(asked));
     await tab.key('Tab', { keyCode: 9 });
   }
   await tab.show('calendar');
@@ -640,12 +673,12 @@ async function saving(tab, downloads) {
   const until = Date.now() + 8000;
   while (Date.now() < until && readdirSync(downloads).filter((file) => /\.(svg|png)$/.test(file)).length < 2) await sleep(100);
   const files = readdirSync(downloads);
-  const svg = files.includes('hledger-expenses.svg') ? readFileSync(join(downloads, 'hledger-expenses.svg'), 'utf8') : '';
+  const svg = files.includes('hledger-line-expenses.svg') ? readFileSync(join(downloads, 'hledger-line-expenses.svg'), 'utf8') : '';
   check('s saves an SVG named after the chart', svg.startsWith('<?xml') && /xmlns="http:\/\/www.w3.org\/2000\/svg"/.test(svg), files.join(','));
   check('with its title, subtitle and the legend of what is shown',
-    svg.includes('>expenses<') && svg.includes('3 periods') && svg.includes('food:coffee') && !svg.includes('>expenses:housing:rent<'), '');
+    svg.includes('>line: expenses<') && svg.includes('3 periods') && svg.includes('food:coffee') && !svg.includes('>expenses:housing:rent<'), '');
   check('and none of the interaction layers', svg && !svg.includes('data-transient'), '');
-  const png = files.includes('hledger-expenses.png') ? readFileSync(join(downloads, 'hledger-expenses.png')) : Buffer.alloc(0);
+  const png = files.includes('hledger-line-expenses.png') ? readFileSync(join(downloads, 'hledger-line-expenses.png')) : Buffer.alloc(0);
   check('p saves a PNG of it', png.subarray(0, 8).toString('hex') === '89504e470d0a1a0a' && png.length > 4000, `${png.length} bytes`);
   check('at twice the size, header included', png.length && png.readUInt32BE(16) > 1900, png.length ? String(png.readUInt32BE(16)) : '');
   check('a key with a modifier is left to the browser', await (async () => {
@@ -660,22 +693,23 @@ async function saving(tab, downloads) {
 async function relatedCharts(tab) {
   await tab.show('bar');
   const links = await tab.eval("[...document.querySelectorAll('#also a')].map(a => a.textContent).join(' | ')");
-  check('a chart lists related charts under it, by the command each one is',
-    links === 'chart shares expenses | chart treemap expenses' && !(await tab.eval("document.getElementById('also').hidden")), links);
+  check('a chart lists the same query as the other types, by the line each one is',
+    links === 'chart line expenses | chart stacked expenses | chart pie expenses | chart treemap expenses | chart multiples expenses'
+    && !(await tab.eval("document.getElementById('also').hidden")), links);
   const link = await tab.centre('#also a', 'last');
   await tab.click(link[0], link[1]);
-  await tab.until("document.getElementById('heading').textContent === 'treemap expenses'");
-  check('clicking one charts it, through the app', (await tab.heading()) === 'treemap expenses'
-    && (await tab.eval('window.__asked[window.__asked.length - 1]')) === 'treemap expenses', await tab.heading());
+  await tab.until("document.getElementById('heading').textContent === 'multiples expenses'");
+  check('clicking one charts it, through the app', (await tab.heading()) === 'multiples expenses'
+    && (await tab.eval('window.__asked[window.__asked.length - 1]')) === 'multiples expenses', await tab.heading());
   check('and a chart with nothing related has no line for it', await tab.eval("document.getElementById('also').hidden"));
   await tab.key('Escape', { keyCode: 27 });
-  check('Escape comes back, with the links where they were', (await tab.heading()) === 'top'
-    && (await tab.eval("document.querySelectorAll('#also a').length")) === 2, await tab.heading());
+  check('Escape comes back, with the links where they were', (await tab.heading()) === 'bar: expenses'
+    && (await tab.eval("document.querySelectorAll('#also a').length")) === 5, await tab.heading());
   // A link is reached by Tab and followed with Enter, like the rest of the window.
   await tab.eval("document.querySelector('#also a').focus()");
   await tab.key('Enter', { keyCode: 13, text: '\r' });
-  await tab.until("document.getElementById('heading').textContent === 'shares expenses'");
-  check('Enter on a focused link follows it', (await tab.heading()) === 'shares expenses', await tab.heading());
+  await tab.until("document.getElementById('heading').textContent === 'line expenses'");
+  check('Enter on a focused link follows it', (await tab.heading()) === 'line expenses', await tab.heading());
 }
 
 async function whenThingsGoWrong(tab) {

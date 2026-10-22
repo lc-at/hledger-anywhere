@@ -26,23 +26,27 @@
  *     unit: { prefix: '$', suffix: '' } }
  */
 
-import { format, ordered, palette, percent, periodTotal, seriesTotal } from './chart-data.js';
+import { chosen, chosenSeries, counted, format, palette, percent, periodTotal, seriesTotal, shape } from './chart-data.js';
 import { escape, isLight } from './window-kit.js';
-import { headlineFor, heightFor, isCustom, render, tableFor } from './chart-d3.js';
+import { foldFlows, headlineFor, heightFor, isCustom, multiples, render, tableFor } from './chart-d3.js';
+import { drill, parse } from './chart-args.js';
 import { KEYS, keyFor, legend, save, tooltip } from './chart-ui.js';
 
 // --------------------------------------------------------------------------- the report
 
 /**
- * Which chart a balance report asks for.
+ * Which picture a balance report gets, from the type asked for and the shape of the report.
  *
- * The window has no controls, so the shape of the data decides: several periods is a line (or
- * a stacked area, when that was asked for), one column is a ranking, and a preset that is about
- * shares is a doughnut.
+ * A bar chart of one period ranks the accounts; of several it is columns per period. A line or
+ * a stacked area of a single period would be one point, so it is drawn as the ranking. A pie
+ * is a doughnut. A report with no type, as an older window might carry, is a line when it has
+ * periods and a ranking when it does not.
  */
 export function typeFor(report, kind) {
-  if (kind === 'shares') return 'doughnut';
-  if (report.periods.length <= 1) return 'bar';
+  const many = report.periods.length > 1;
+  if (kind === 'pie') return 'doughnut';
+  if (kind === 'bar') return many ? 'columns' : 'bar';
+  if (!many) return 'bar';
   return kind === 'stacked' ? 'stacked' : 'line';
 }
 
@@ -51,7 +55,7 @@ export function headline(report, type) {
   if (report.periods.length <= 1) {
     const positives = report.series.filter((series) => seriesTotal(series).value > 0).length;
     const dropped = type === 'doughnut' ? report.series.length - positives : 0;
-    return `${report.series.length} accounts, ${report.periods[0] || 'one period'}${
+    return `${counted(report.series.length, 'account')}, ${report.periods[0] || 'one period'}${
       dropped > 0 ? `, ${dropped} with nothing to show` : ''}`;
   }
   const first = report.periods[0];
@@ -62,30 +66,35 @@ export function headline(report, type) {
 /**
  * What a balance chart shows, without a library in sight.
  *
- * One function, four shapes. A line or stacked area gets the series worth drawing, largest
- * first, with the rest folded into "other (n)"; `options.total` collapses a running total such
- * as net worth into one filled line. A ranking gets one row per account, largest first; a
- * doughnut gets the positive ones only, since a share of a negative is not a slice. Every row
- * carries its colour and its share, so the renderer only has to draw.
- *
- * `drillable` says whether clicking a mark should chart that account on its own. A running
- * total is not an account, so it is the one thing that is not.
+ * The report is shaped by the chart options first (`shape`: inverted, accumulated, as
+ * percentages), then the entries worth drawing are chosen (`chosen`: largest first, `--top N`
+ * of them, `--sort name` if asked). A ranking and a doughnut get one row per account, a
+ * doughnut only the positive ones, since a share of a negative is not a slice; lines, areas and
+ * columns get one series per account. Every entry carries its colour and its share, and
+ * `log` says whether the value axis is logarithmic, so the renderer only has to draw.
  */
 export function modelFor({ report, colors, title, kind, options = {} }) {
   const type = typeFor(report, kind);
-  const unit = report.unit || { prefix: '', suffix: '' };
+  const shaped = shape(report, options);
+  const unit = shaped.unit;
+  const log = Boolean(options.log);
 
   if (type === 'bar' || type === 'doughnut') {
-    let rows = report.series.map((series) => ({ label: series.label, value: seriesTotal(series).value }));
-    rows = type === 'doughnut'
-      ? rows.filter((row) => row.value > 0).sort((left, right) => right.value - left.value)
-      : rows.sort((left, right) => Math.abs(right.value) - Math.abs(left.value));
+    let rows = shaped.series.map((series) => ({ label: series.label, value: seriesTotal(series).value }));
+    if (type === 'doughnut') rows = rows.filter((row) => row.value > 0);
+    rows = chosen(rows, {
+      top: options.top,
+      sort: options.sort,
+      size: (row) => row.value,
+      combine: (rest) => ({ label: `other (${rest.length})`, value: rest.reduce((sum, row) => sum + row.value, 0), other: true }),
+    });
     const total = rows.reduce((sum, row) => sum + row.value, 0);
-    const colours = type === 'doughnut' ? palette(colors, rows.length) : rows.map(() => colors.accent);
+    const colours = type === 'doughnut' ? palette(colors, rows.length) : rows.map((row) => (row.other ? colors.dim : colors.accent));
     return {
       type,
       title,
       unit,
+      log,
       drillable: true,
       total,
       rows: rows.map((row, index) => ({
@@ -97,15 +106,14 @@ export function modelFor({ report, colors, title, kind, options = {} }) {
     };
   }
 
-  const series = options.total
-    ? [{ label: options.label || title, amounts: report.periods.map((_, index) => periodTotal(report, index)) }]
-    : ordered(report, type === 'stacked' ? 8 : 7);
+  const series = chosenSeries(shaped, options, type === 'stacked' ? 8 : 7);
   const colours = palette(colors, series.length);
   return {
     type,
     title,
     unit,
-    drillable: !options.total,
+    log,
+    drillable: true,
     periods: report.periods,
     fill: type === 'line' && series.length === 1,
     series: series.map((entry, index) => ({
@@ -118,43 +126,31 @@ export function modelFor({ report, colors, title, kind, options = {} }) {
 }
 
 /**
- * The account a hit on a mark stands for, or null.
- *
- * A hit names a series (`{ series: i }`, for lines and areas) or a row (`{ row: i }`, for bars
- * and slices). `other (n)` is a sum of several accounts and is not something to drill into, and
- * nothing is, in a chart that is not drillable.
- */
-export function accountAt(model, hit) {
-  if (!model || !hit || !model.drillable) return null;
-  const entry = hit.series !== undefined ? (model.series || [])[hit.series] : (model.rows || [])[hit.row];
-  if (!entry || entry.other || String(entry.label).startsWith('other (')) return null;
-  return String(entry.label);
-}
-
-/** A line of tooltip for a point: "rent: $1,286.40". */
-export function pointText(label, value, unit) {
-  return `${label}: ${format({ value, ...unit })}`;
-}
-
-/** A line of tooltip for a share: "$1,200.00 (90.8%)". */
-export function shareText(value, total, unit) {
-  return `${format({ value, ...unit })} (${percent(value, total)})`;
-}
-
-/**
  * Everything the window shows for a state, decided in one place: which renderer, with what
  * data, which legend, and the words and table around it. Both the first page and every redraw
  * after a drill-down come from here.
  */
 export function viewOf(state) {
+  const options = state.options || {};
+  if (state.kind === 'multiples') {
+    // Sparklines are a balance chart drawn small: shaped and chosen the same way.
+    const data = multiples(shape(state.report, options), options.top || 8);
+    if (options.sort === 'name') data.rows.sort((left, right) => left.label.localeCompare(right.label));
+    data.log = Boolean(options.log);
+    return {
+      draw: 'multiples', data, items: null,
+      sub: headlineFor('multiples', data), table: tableFor('multiples', data), height: heightFor('multiples', data),
+    };
+  }
   if (isCustom(state.kind)) {
+    const data = state.kind === 'sankey' && options.top ? foldFlows(state.report, options.top) : state.report;
     return {
       draw: state.kind,
-      data: state.report,
+      data,
       items: null,
-      sub: headlineFor(state.kind, state.report),
-      table: tableFor(state.kind, state.report),
-      height: heightFor(state.kind, state.report),
+      sub: headlineFor(state.kind, data),
+      table: tableFor(state.kind, data),
+      height: heightFor(state.kind, data),
     };
   }
   const model = modelFor(state);
@@ -201,9 +197,9 @@ export function alsoLine(related = []) {
     .join(' · ')}`;
 }
 
-export function page({ report, colors, title, command, token, kind, options = {}, related = [], module, scripts = [] }) {
+export function page({ report, colors, title, command, token, kind, options = {}, args = '', related = [], module, scripts = [] }) {
   const view = viewOf({ report, colors, title, kind, options });
-  const data = JSON.stringify({ report, colors, token, kind, options, title, command, related })
+  const data = JSON.stringify({ report, colors, token, kind, options, title, command, args, related })
     .replace(/</g, '\\u003c');
   const dark = !isLight(colors.background);
   return `<!doctype html>
@@ -228,8 +224,10 @@ export function page({ report, colors, title, command, token, kind, options = {}
   td { padding:1px 0; }
   .note, .keys { color:${colors.dim}; margin:18px 0 0; font-size:12px; }
   .also { color:${colors.dim}; margin:8px 0 10px; font-size:12px; }
+  .also { line-height:1.9; }
+  /* A link is a command, so it is never broken across lines in the middle of an option. */
   .also a { color:${colors.foreground}; text-decoration:underline; text-decoration-color:${colors.dim};
-    text-underline-offset:2px; }
+    text-underline-offset:2px; white-space:nowrap; }
   .also a:focus-visible { outline:2px solid ${colors.foreground}; outline-offset:2px; border-radius:2px; }
   .keys { margin-top:4px; }
   .warn { color:${colors.foreground}; margin:0 0 12px; font-size:13px; }
@@ -309,20 +307,28 @@ export function mount(root = document) {
   let controls = {};
   let busy = false;
 
+  // Ask the plugin for another chart, by the line that would ask for it in the terminal, and
+  // keep the one being left so Escape can come back to it.
+  async function follow(args) {
+    if (busy) return;
+    busy = true;
+    tip.hide();
+    show(warn, `Reading chart ${args}…`);
+    const answer = await requery(data.token, args);
+    busy = false;
+    if (!answer) return;
+    stack.push({ state: { ...state }, view });
+    Object.assign(state, answer, { options: answer.options || {}, related: answer.related || [] });
+    view = { hidden: new Set() };
+    draw();
+  }
+
   const hooks = {
     tip,
-    async pick(account) {
-      if (busy) return;
-      busy = true;
-      tip.hide();
-      show(warn, `Reading ${account}…`);
-      const answer = await requery(data.token, account);
-      busy = false;
-      if (!answer) return;
-      stack.push({ state: { ...state }, view });
-      Object.assign(state, answer, { options: answer.options || {}, related: answer.related || [] });
-      view = { hidden: new Set() };
-      draw();
+    // A mark names an account: that account over time, in the same period, is the next chart.
+    pick(account) {
+      const parsed = parse(state.args || 'line');
+      return follow(drill(parsed.error ? { type: 'line', query: [], options: {} } : parsed, account));
     },
   };
 
@@ -331,7 +337,7 @@ export function mount(root = document) {
     const link = event.target.closest('a[data-args]');
     if (!link) return;
     event.preventDefault();
-    hooks.pick(link.dataset.args);
+    follow(link.dataset.args);
   });
 
   function paint() {

@@ -4,39 +4,55 @@
 chart window loads. Chart.js, Hammer.js and chartjs-plugin-zoom have been removed. This page
 began as the plan for that change; it now records what was built, what was decided, and why.
 
-## The charts
+## The command
 
-Every chart is a preset on the one `chart` word, so `chart?` lists them all. The plugin asks
-hledger for the report, the window draws it.
+```
+chart [chart options] <type> [hledger arguments]
+chart --log bar -p 2026 coffee
+```
 
-| command | asks hledger for | draws |
+Chart options shape the picture and come before the type; everything after the type is the
+query, handed to hledger as it was typed. Each type adds only what its picture cannot do
+without, and the command under the chart shows it.
+
+| type | asks hledger for | draws |
 |---|---|---|
-| `chart`, `chart spending` | `balance expenses -M` | a line per account, month by month |
-| `chart income`, `cashflow`, `balances`, `payees` | a monthly `balance` | lines |
-| `chart networth` | `balance assets liabilities -H -M` | one filled line, the running total |
-| `chart top` | `balance expenses` | a ranking of bars, largest first |
-| `chart shares` | `balance expenses` | a doughnut of the positive balances |
-| `chart stacked [account]` | `balance <account> -M --depth n+1` | categories stacked over time |
-| `chart treemap [account]` | `balance --tree <account>` | the account tree, area by balance |
-| `chart sankey` | `balance income expenses --depth 2` | income flowing into spending and savings |
-| `chart calendar` | `register` | a square per day, darker for more spending |
-| `chart waterfall` | `register` | income, a step down per category, and net |
-| `chart multiples` | `balance -M` | a sparkline per account |
-| `chart <account>` | `balance <account> -M` | lines, for any account |
-| `chart <report …>` | the report, verbatim | whatever shape it comes back in |
+| `line` | `balance <query> -M` | a line per account over time |
+| `bar` | `balance <query>` | a ranking; columns per period when the query has an interval |
+| `stacked` | `balance <query> -M` | accounts stacked over time |
+| `pie` | `balance <query>` | a doughnut of the positive balances |
+| `treemap` | `balance --tree <query>` | the account tree, area by balance |
+| `sankey` | `balance <query> --depth 2` | income flowing into spending and savings |
+| `calendar` | `register <query>` | a square per day, darker for more spending |
+| `waterfall` | `register <query>` | income, a step down per category, and net |
+| `multiples` | `balance <query> -M` | a sparkline per account |
 
-Periods and intervals are words, anywhere after `chart`, and the question can come before or
-after the account: `chart sankey 2024`, `chart food weekly`, `chart income last year
-quarterly`, `chart expenses:food treemap`. `understand()` in `chart.js` turns them into
-hledger's `-p` and `-W`; flags written out are passed through as they are. A chart that draws
-one period leaves an interval out and says so in the terminal. Each window ends with an "Also"
-line of related charts, each a link written as its own command, which `related()` chooses: the
-other ways to ask about the same account, or the questions in the same family.
+`-M` is added only when the query names no interval, and `--depth 2` only when it sets no
+depth. The options, and the types each applies to:
+
+| option | does | types |
+|---|---|---|
+| `--log` | symmetric log value axis, so zero and negatives still draw | line, bar, multiples |
+| `--percent` | each period as shares of its total | line, bar, stacked, multiples |
+| `--cumulative` | running totals across periods | line, bar, stacked, multiples |
+| `--top N` | the N largest, the rest as "other (n)" | line, bar, stacked, pie, multiples, sankey |
+| `--sort name\|value` | by name, or by size (the default) | line, bar, stacked, pie, multiples |
+| `--invert` | flip the sign | line, bar, stacked, pie, multiples |
+
+An option given to a type it does not apply to is refused and the ones that do are named,
+rather than ignored. `--invert`, `--cumulative` and `--percent` are applied in that order by
+`shape()`, so a percentage of running totals is each account's share of everything so far.
+
+Clicking a mark charts that account as a line, keeping the query's flags (its period, interval,
+depth) and the options that still mean something for one account (`--log`, `--cumulative`,
+`--invert`). The "Also" line under each chart is the same query drawn as the other types of its
+family, each written as the line it is.
 
 ## How it is built
 
 ```
-chart.js          build(args) -> {command, title, kind}; parseReport(kind, csv)    pure
+chart-args.js     the grammar: parse, command, title, drill, related              pure
+chart.js          run(); build(args); parseReport(kind, csv)                      pure but run
 chart-data.js     CSV, amounts, formatting, series arithmetic, the palette        pure
 chart-window.js   modelFor(report) -> model; viewOf(state); page(); mount()      pure but mount
 chart-d3.js       parsers and aggregations for the shaped charts, the Sankey
@@ -94,13 +110,19 @@ spaces and tabs, and the fixture is the engine's bytes.
 chart and comparing. The port kept everything Chart.js did (hover values, legend toggling,
 wheel zoom and drag pan along time, double-click reset, click to drill down, Escape back) and
 then did more: the crosshair lists every series at a period, the keyboard reaches every mark
-that stands for something, and a saved picture carries its legend. One theming path and one tooltip path won, and three
-vendored files became one.
+that stands for something, and a saved picture carries its legend. One theming path and one
+tooltip path won, and three vendored files became one.
+
+**A type and a query, not named questions.** The plugin used to answer to fourteen named
+questions (`chart spending`, `chart networth`...) and read periods out of plain words. Both
+were replaced by `chart [options] <type> [hledger arguments]`: the query is hledger's own
+language, so nothing has to be learned twice and nothing is guessed, and what a question
+added is now an option (`--cumulative`, `--invert`, `--top`) that works on every type it
+makes sense for. Errors are said before a window opens, and say what to type.
 
 **The Sankey is income into spending, from `balance`, not `register`.** hledger has no flow
-report, so flows are derived. Asking for `balance income expenses --depth 2` gives income
-sources and expense categories and nothing else, so a transfer between two asset accounts can
-never be drawn as income: it is not in the report. The two sides are balanced the way a
+report, so flows are derived from income and expense rows; any other row in the report, such
+as a transfer between two asset accounts, is never drawn as income or spending. The two sides are balanced the way a
 budget is: income above spending flows to *saved*, and spending above income is drawn from a
 *from savings* source, so every pixel of every link is money that moved.
 
@@ -145,11 +167,11 @@ what a screen reader reads.
 
 Two checks, both run by CI.
 
-`node scripts/check-example-plugin.mjs` checks every pure part: the presets and the commands
-they build, the parsers on the engine's own CSV, the aggregations and their sums, the model
-behind each balance chart, the Sankey's flows and layout, axis labels, the keys, the saved
-picture's header, the page markup, the bridge a drill-down calls, and that `chart?` lists
-every question `chart.js` answers to.
+`node scripts/check-example-plugin.mjs` checks every pure part: the grammar and every refusal
+it can give, the commands it builds, the options' arithmetic, the parsers on the engine's own
+CSV, the aggregations and their sums, the model behind each balance chart, the Sankey's flows
+and layout, axis labels, the keys, the saved picture's header, the page markup, the bridge a
+window calls, and that `chart?` lists every type and option the grammar reads.
 
 `node scripts/check-plugin-windows.mjs` draws every chart in both themes in headless Chrome
 and uses it the way a person would, with real input events: hover, the legend, Tab and

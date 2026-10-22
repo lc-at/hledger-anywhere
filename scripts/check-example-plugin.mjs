@@ -34,7 +34,9 @@ import {
   TREE_CSV,
 } from './chart-fixtures.mjs';
 
-import Chart, { build, closestQuestion, parseReport, questions, read, related, understand } from '../assets/plugins/chart.js';
+import Chart, { build, parseReport, read } from '../assets/plugins/chart.js';
+import { OPTIONS, TYPES, closestType, command, drill, line, parse, quote, related, title, tokenize, typeOf } from '../assets/plugins/chart-args.js';
+import { chosen, shape } from '../assets/plugins/chart-data.js';
 import Edit from '../assets/plugins/edit.js';
 import { page as editPage } from '../assets/plugins/edit-window.js';
 import { alsoLine } from '../assets/plugins/chart-window.js';
@@ -51,17 +53,15 @@ import {
   readTree,
   sankeyLayout,
   tableFor,
+  logTicks,
   tick,
   waterfall,
 } from '../assets/plugins/chart-d3.js';
 import {
-  accountAt,
   headline,
   keysLine,
   modelFor,
   page,
-  pointText,
-  shareText,
   tableView,
   typeFor,
   viewOf,
@@ -76,76 +76,77 @@ const check = (what, ok, detail = '') => checks.push([what, ok, detail]);
 const report = read(MONTHLY_CSV);
 const ranking = read(RANKING_CSV);
 
-// ------------------------------------------------------------------ the named questions
-
-check('nothing asks for monthly expenses', build('').command === 'balance expenses -M -O csv', build('').command);
-check('spending is the same question said out loud', build('spending').command === 'balance expenses -M -O csv', build('spending').command);
-check('income asks for income', build('income').command === 'balance income -M -O csv', build('income').command);
-check('cashflow puts income against expenses', build('cashflow').command === 'balance income expenses -M -O csv', build('cashflow').command);
-check('net worth runs a running total of assets and liabilities',
-  build('networth').command === 'balance assets liabilities -H -M -O csv', build('networth').command);
-check('and asks to be drawn as one line', build('networth').options.total === true, JSON.stringify(build('networth').options));
-check('balances asks for every account', build('balances').command === 'balance -H -M -O csv', build('balances').command);
-check('payees pivots by payee', build('payees').command === 'balance expenses --pivot payee -M -O csv', build('payees').command);
-check('shares is a single column, for a doughnut', build('shares').command === 'balance expenses -O csv', build('shares').command);
-check('and says it wants shares drawn', build('shares').kind === 'shares', JSON.stringify(build('shares').kind));
-check('top is a ranking, so no months', build('top').command === 'balance expenses -O csv', build('top').command);
-check('a preset account can be named', build('shares income').command === 'balance income -O csv', build('shares income').command);
-check('a period the caller named is not overridden',
-  build('spending -p 2024').command === 'balance expenses -M -p 2024 -O csv', build('spending -p 2024').command);
-check('an account is charted over months', build('expenses:food').command === 'balance expenses:food -M -O csv', build('expenses:food').command);
-check('a report command is passed through whole',
-  build('balance assets -M').command === 'balance assets -M -O csv', build('balance assets -M').command);
-check('a format the caller chose is left alone',
-  build('balance assets -O json').command === 'balance assets -O json', build('balance assets -O json').command);
-
-// ------------------------------------------------------------------ asking in words
+// ------------------------------------------------------------------ the grammar
 
 {
   const asked = (args) => build(args).command;
-  check('a year is a period', asked('spending 2024') === 'balance expenses -M -p 2024 -O csv', asked('spending 2024'));
-  check('and so are a month, a quarter and a day',
-    asked('spending 2024-03').includes('-p 2024-03') && asked('sankey 2024q1').includes('-p 2024q1')
-    && asked('food 2024-03-15').includes('-p 2024-03-15'), '');
-  check('this and last are periods, quoted for hledger',
-    asked('income last year') === 'balance income -M -p "last year" -O csv' && asked('top this month').includes('-p "this month"'),
-    asked('income last year'));
-  check('since, until and a range are periods',
-    asked('top since 2024-06').includes('-p "from 2024-06"') && asked('top until 2024-06').includes('-p "to 2024-06"')
-    && asked('food 2023 to 2024').includes('-p "from 2023 to 2024"'), asked('food 2023 to 2024'));
-  check('an interval in words replaces the monthly default',
-    asked('spending weekly') === 'balance expenses -W -O csv' && asked('networth quarterly').includes('-H -Q')
-    && !asked('networth quarterly').includes('-M'), asked('networth quarterly'));
-  check('and so does one given as a flag', asked('spending -W') === 'balance expenses -W -O csv', asked('spending -W'));
-  check('a day or a week is split by the day, not by the month',
-    asked('spending today').includes('-D') && asked('food this week').includes('-D') && asked('spending this month').includes('-M'),
-    asked('food this week'));
-  check('the question can come after the account', asked('food treemap') === asked('treemap food') && asked('food treemap') === 'balance --tree food -O csv',
-    asked('food treemap'));
-  check('and a period is never mistaken for an account', asked('top 2024') === 'balance expenses -p 2024 -O csv', asked('top 2024'));
-  check('a flag keeps its value, which is not read again as a period',
-    asked('expenses:food -p 2024') === 'balance expenses:food -M -p 2024 -O csv' && understand(['-p', '2024']).period === null,
-    asked('expenses:food -p 2024'));
-  check('a report keeps its words and takes a period and an interval too',
-    asked('balance assets 2024 quarterly') === 'balance assets -Q -p 2024 -O csv', asked('balance assets 2024 quarterly'));
-  check('the title says what was asked', build('income last year weekly').title === 'income, last year, weekly'
-    && build('treemap food').title === 'food, as a treemap', build('income last year weekly').title);
-  check('an interval on a chart of one period is left out, and the note says so',
-    build('treemap weekly').command === 'balance --tree expenses -O csv' && /weekly was left out: treemap draws one period/.test(build('treemap weekly').note),
-    build('treemap weekly').note);
-  check('two periods are not one: the second is left as a word', understand(['2024', '2025']).rest.join() === '2025', '');
+  check('the example from the request asks hledger for exactly the query',
+    asked('--log bar -p 2026 coffee') === 'balance -p 2026 coffee -O csv' && build('--log bar -p 2026 coffee').options.log === true
+    && build('--log bar -p 2026 coffee').kind === 'bar', asked('--log bar -p 2026 coffee'));
+  check('the query is passed as written, in its order', asked('bar --depth 2 -H assets liabilities') === 'balance --depth 2 -H assets liabilities -O csv',
+    asked('bar --depth 2 -H assets liabilities'));
+  check('a quoted period stays one argument, quoted again for hledger',
+    asked('bar -p "last year" food') === 'balance -p "last year" food -O csv' && tokenize('-p "last year" food').length === 3,
+    asked('bar -p "last year" food'));
+  check('a chart over time is monthly unless the query names an interval',
+    asked('line expenses') === 'balance expenses -M -O csv' && asked('line -W expenses') === 'balance -W expenses -O csv'
+    && asked('stacked --quarterly expenses') === 'balance --quarterly expenses -O csv' && asked('multiples') === 'balance -M -O csv',
+    asked('line -W expenses'));
+  check('a bar chart and a pie are not split unless asked',
+    asked('bar expenses') === 'balance expenses -O csv' && asked('bar -M expenses') === 'balance -M expenses -O csv' && asked('pie expenses') === 'balance expenses -O csv', '');
+  check('each shaped type reads the report its picture needs',
+    asked('treemap expenses') === 'balance --tree expenses -O csv' && asked('calendar -p 2026') === 'register -p 2026 -O csv'
+    && asked('waterfall') === 'register -O csv' && asked('sankey -p 2026') === 'balance -p 2026 --depth 2 -O csv'
+    && asked('sankey --depth 3') === 'balance --depth 3 -O csv',
+    [asked('treemap expenses'), asked('sankey -p 2026')].join(' | '));
+  check('a format the caller chose is left alone', asked('bar -O json') === 'balance -O json', asked('bar -O json'));
+  check('every option is read, with or without =',
+    JSON.stringify(parse('--log --percent --cumulative --top 3 --sort=name --invert line').options)
+      === JSON.stringify({ log: true, percent: true, cumulative: true, top: 3, sort: 'name', invert: true }),
+    JSON.stringify(parse('--log --percent --cumulative --top 3 --sort=name --invert line').options));
+  check('an alias names its type', typeOf('doughnut') === 'pie' && typeOf('AREA') === 'stacked' && typeOf('sparklines') === 'multiples' && typeOf('food') === null, '');
+  check('every type and option is documented in code', Object.values(TYPES).every((type) => type.says) && Object.values(OPTIONS).every((option) => option.says), '');
 }
 
 {
-  const links = related('top', 'expenses:food', ['top', 'expenses:food', '2024']);
-  check('a chart of an account suggests the other ways to ask about it, period and all',
-    links.map((link) => link.label).join(' | ') === 'chart expenses:food 2024 | chart shares expenses:food 2024 | chart treemap expenses:food 2024 | chart stacked expenses:food 2024',
+  const refused = (args) => build(args).refusal || '';
+  check('nothing after chart asks which chart, and lists the types', /^which chart\? Name a type: line, bar, .* or multiples\./.test(refused('')), refused(''));
+  check('a word that is not a type says where the type goes', /coffee is not a chart type; the type comes before the query, as in chart bar coffee/.test(refused('coffee')), refused('coffee'));
+  check('a misspelt type is offered the one it was probably meant to be, swaps included',
+    refused('lien expenses') === 'lien is not a chart type. Did you mean line?' && closestType('stakced') === 'stacked' && closestType('pei') === 'pie'
+    && closestType('expenses') === null && closestType('food:x') === null, refused('lien expenses'));
+  check('an unknown option lists the real ones', /--wat is not a chart option\. Chart options are --log, --percent, --cumulative, --top N, --sort name\|value, --invert/.test(refused('--wat bar')), refused('--wat bar'));
+  check('a chart option after the type is moved, not handed to hledger',
+    refused('bar --log coffee') === '--log is a chart option, so it goes before the type: chart --log bar ...', refused('bar --log coffee'));
+  check('an option that does not apply to a type is refused, with the ones that do',
+    refused('--log pie expenses') === '--log does not apply to a pie; it takes --top, --sort, --invert.'
+    && refused('--log --percent treemap') === '--log and --percent do not apply to a treemap; it takes no chart options.'
+    && refused('--top 2 calendar') === '--top does not apply to a calendar; it takes no chart options.', refused('--log --percent treemap'));
+  check('a value an option needs is asked for',
+    refused('--top bar') === '--top takes a number of accounts, such as --top 5, not bar.' && refused('--sort') === '--sort needs a value: --sort name|value.'
+    && refused('--sort size bar') === '--sort takes name or value, not size.' && refused('--top 0 bar').startsWith('--top takes a number'), refused('--sort size bar'));
+  check('every refusal is terminal text', ['', 'coffee', 'lien', '--wat bar', 'bar --log x', '--log pie', '--top bar'].every((args) => !/[`\u2014]/.test(refused(args))), '');
+}
+
+{
+  const parsed = parse('--log --percent --top 3 bar -p "last year" -M food');
+  check('the title reads as it would be said', title(parse('--log bar -p 2026 coffee')) === 'bar: coffee, -p 2026 (log scale)'
+    && title(parse('line')) === 'line: all accounts' && title(parsed) === 'bar: food, -p "last year" -M (log scale, percent, top 3)', title(parsed));
+  check('a parsed line is written back as the line that asks for it', line(parsed) === '--log --percent --top 3 bar -p "last year" -M food', line(parsed));
+  check('a click on an account charts it over time, in the same period, with the options that still mean something',
+    drill(parsed, 'expenses:food:coffee') === '--log line -p "last year" -M expenses:food:coffee'
+    && drill(parse('treemap --tree expenses'), 'expenses:food') === 'line expenses:food', drill(parsed, 'expenses:food:coffee'));
+  const links = related(parse('--log --top 3 bar -p 2026 coffee'));
+  check('related charts are the same query as the other types of its family, each with the options it takes',
+    links.map((link) => link.label).join(' | ') === 'chart --log --top 3 line -p 2026 coffee | chart --top 3 stacked -p 2026 coffee | chart --top 3 pie -p 2026 coffee | chart treemap -p 2026 coffee | chart --log --top 3 multiples -p 2026 coffee',
     links.map((link) => link.label).join(' | '));
-  check('a question without an account suggests its family',
-    related('income', null, ['income']).map((link) => link.args).join() === 'cashflow,sankey,waterfall',
-    related('income', null, ['income']).map((link) => link.args).join());
-  check('every suggestion is a chart the plugin builds',
-    ['spending', 'networth', 'sankey', 'calendar', 'food 2024', 'top food'].every((args) => (build(args).related || []).every((link) => !build(link.args).refusal)), '');
+  check('a flow suggests the other flows', related(parse('sankey -p 2026')).map((link) => link.args).join() === 'waterfall -p 2026,calendar -p 2026',
+    related(parse('sankey -p 2026')).map((link) => link.args).join());
+  check('every suggestion and every drill is a line the plugin builds',
+    ['--log bar coffee', 'sankey', 'calendar', '--top 2 pie', '--percent stacked'].every((args) => build(args).related.every((link) => !build(link.args).refusal)
+      && !build(drill(parse(args), 'expenses:x')).refusal), '');
+  check('a word with a space is quoted, and one without is not', quote('last year') === '"last year"' && quote('2026') === '2026', '');
+  check('command and parse agree', command(parse('line food')) === 'balance food -M -O csv', '');
   check('the links are escaped, and say their command',
     alsoLine([{ label: 'chart <x>', args: 'a"b' }]) === 'Also: <a href="#" data-args="a&quot;b">chart &lt;x&gt;</a>' && alsoLine([]) === '',
     alsoLine([{ label: 'chart <x>', args: 'a"b' }]));
@@ -169,12 +170,15 @@ check('nothing to read is null', read('') === null && read('"account","x"\n') ==
 
 // ------------------------------------------------------------------ which chart
 
-check('several periods is a line', typeFor(report) === 'line', typeFor(report));
-check('one period is a ranking', typeFor(ranking) === 'bar', typeFor(ranking));
-check('and shares is a doughnut', typeFor(ranking, 'shares') === 'doughnut', typeFor(ranking, 'shares'));
+check('a line is a line when it has periods', typeFor(report, 'line') === 'line' && typeFor(report) === 'line', typeFor(report, 'line'));
+check('a bar chart ranks one period, and makes columns of several',
+  typeFor(ranking, 'bar') === 'bar' && typeFor(report, 'bar') === 'columns', typeFor(report, 'bar'));
+check('a pie is a doughnut', typeFor(ranking, 'pie') === 'doughnut', typeFor(ranking, 'pie'));
+check('a line of one period is drawn as the ranking, not one point', typeFor(ranking, 'line') === 'bar', typeFor(ranking, 'line'));
 check('the subtitle counts periods when there are several',
   headline(report, 'line') === '3 periods, 2024-01 to 2024-03', headline(report, 'line'));
 check('and accounts when there is one', headline(ranking, 'bar').startsWith('3 accounts'), headline(ranking, 'bar'));
+check('and one account is one', headline(read('"account","balance"\n"a","$1"\n'), 'bar').startsWith('1 account,'), '');
 
 // ------------------------------------------------------------------ the model the charts draw
 
@@ -190,19 +194,54 @@ check('and accounts when there is one', headline(ranking, 'bar').startsWith('3 a
     series('expenses:housing:rent').values.join(',') === '1200,1237.5,1286.4',
     series('expenses:housing:rent').values.join(','));
   check('each series has its own colour', new Set(model.series.map((entry) => entry.colour)).size === 3, '');
-  check('the tooltip writes an amount the way a person does',
-    pointText('rent', 1286.4, model.unit) === 'rent: $1,286.40', pointText('rent', 1286.4, model.unit));
+  check('the unit is the report\'s, for the axis and the tooltip', model.unit.prefix === '$', JSON.stringify(model.unit));
   check('several lines are not filled, so none hides another', model.fill === false, '');
-  check('and a click on one opens it', accountAt(model, { series: 0 }) === 'expenses:housing:rent',
-    String(accountAt(model, { series: 0 })));
+  check('and a click on one can open it', model.drillable === true && !model.series[0].other, '');
 }
 
+// ------------------------------------------------------------------ the chart options
+
 {
-  const model = modelFor({ report, colors: COLORS, title: 'net worth', options: { total: true, label: 'net worth' } });
-  check('a running total is one line, not one per account', model.series.length === 1, String(model.series.length));
-  check('filled, because there is nothing to compare it with', model.fill === true, '');
-  check('and not something to drill into, since it is not an account', accountAt(model, { series: 0 }) === null,
-    String(accountAt(model, { series: 0 })));
+  const inverted = shape(report, { invert: true });
+  check('--invert flips every amount, and leaves the report it was given alone',
+    inverted.series[1].amounts.map((amount) => amount.value).join() === '-1200,-1237.5,-1286.4' && report.series[1].amounts[0].value === 1200, '');
+  const running = shape(report, { cumulative: true });
+  check('--cumulative is a running total, period by period',
+    running.series[1].amounts.map((amount) => amount.value).join() === '1200,2437.5,3723.9', running.series[1].amounts.map((amount) => amount.value).join());
+  const shares = shape(report, { percent: true });
+  check('--percent is each account\'s share of its period, and the unit becomes %',
+    shares.series[0].amounts[1].value === 1 && shares.series[1].amounts[0].value === 100 && shares.unit.suffix === '%' && shares.unit.prefix === '',
+    shares.series.map((series) => series.amounts.map((amount) => amount.value.toFixed(1)).join('/')).join(' '));
+  const both = shape(report, { cumulative: true, percent: true });
+  check('and of running totals, each account\'s share of everything so far',
+    Math.abs(both.series[0].amounts[2].value - (100 * 12.5) / 3736.4) < 1e-9, String(both.series[0].amounts[2].value));
+  check('a period with nothing in it is 0%, not a division by zero',
+    shape(read('"account","a","b"\n"x","$1","0"\n'), { percent: true }).series[0].amounts[1].value === 0, '');
+
+  const rows = [{ label: 'b', value: 5 }, { label: 'a', value: -9 }, { label: 'c', value: 1 }, { label: 'd', value: 2 }];
+  const combine = (rest) => ({ label: `other (${rest.length})`, value: rest.reduce((sum, row) => sum + row.value, 0), other: true });
+  const size = (row) => row.value;
+  check('--top keeps the largest by size, whatever their sign, and adds up the rest',
+    chosen(rows, { top: 2, size, combine }).map((row) => `${row.label}=${row.value}`).join() === 'a=-9,b=5,other (2)=3', '');
+  check('--sort name orders what was kept, with the other last',
+    chosen(rows, { top: 2, sort: 'name', size, combine }).map((row) => row.label).join() === 'a,b,other (2)', '');
+  check('without --top, a chart keeps what fits and never an other for one account',
+    chosen(rows, { fits: 4, size, combine }).length === 4 && chosen(rows, { fits: 3, size, combine }).map((row) => row.label).join() === 'a,b,other (2)', '');
+
+  const logBar = modelFor({ report: ranking, colors: COLORS, title: 't', kind: 'bar', options: { log: true, top: 1 } });
+  check('the model carries --log, and --top folds the ranking',
+    logBar.log === true && logBar.rows.map((row) => row.label).join() === 'expenses:housing:rent,other (2)' && logBar.rows[1].colour === COLORS.dim,
+    logBar.rows.map((row) => row.label).join());
+  const percentBar = modelFor({ report: ranking, colors: COLORS, title: 't', kind: 'bar', options: { percent: true } });
+  check('--percent on a ranking is each account\'s share', Math.abs(percentBar.rows[0].value - 90.81) < 0.01 && percentBar.unit.suffix === '%',
+    String(percentBar.rows[0].value));
+  const columns = modelFor({ report, colors: COLORS, title: 't', kind: 'bar', options: { top: 1, sort: 'name' } });
+  check('columns are series per period, chosen the same way', columns.type === 'columns' && columns.series.length === 2 && columns.series[1].other, '');
+  check('an axis tick for a percentage has no space before the sign', tick(45, { prefix: '', suffix: '%' }) === '45%', tick(45, { prefix: '', suffix: '%' }));
+  check('a logarithmic axis is ticked at the powers of ten, either side of zero',
+    logTicks(-100, 1000).join() === '-100,-10,-1,0,1,10,100,1000' && logTicks(0, 1e12).length <= 9
+    && logTicks(0, 1e12).includes(0) && logTicks(0, 1e12).includes(1e12),
+    `${logTicks(-100, 1000).join()} / ${logTicks(0, 1e12).join()}`);
 }
 
 {
@@ -211,6 +250,8 @@ check('and accounts when there is one', headline(ranking, 'bar').startsWith('3 a
   check('whose layers are not filled as one line', model.fill === false, '');
   check('one period of it is a ranking, since there is nothing to stack over',
     typeFor(ranking, 'stacked') === 'bar', typeFor(ranking, 'stacked'));
+  const single = modelFor({ report: { ...report, series: report.series.slice(1, 2) }, colors: COLORS, title: 'x', kind: 'line' });
+  check('a line of one account is filled, since there is nothing to compare it with', single.fill === true, '');
 }
 
 {
@@ -219,18 +260,17 @@ check('and accounts when there is one', headline(ranking, 'bar').startsWith('3 a
   check('largest first', model.rows[0].label === 'expenses:housing:rent', model.rows[0].label);
   check('in the accent colour, since every bar is labelled', model.rows.every((row) => row.colour === COLORS.accent), '');
   check('and each bar knows its share', model.rows[0].shareText === '90.8%', model.rows[0].shareText);
-  check('which the tooltip says', shareText(1200, model.total, model.unit) === '$1,200.00 (90.8%)',
-    shareText(1200, model.total, model.unit));
+  check('of a total the tooltip can say', Math.abs(model.total - 1321.39) < 0.005, String(model.total));
 }
 
 {
-  const model = modelFor({ report: ranking, colors: COLORS, title: 'shares', kind: 'shares' });
+  const model = modelFor({ report: ranking, colors: COLORS, title: 'shares', kind: 'pie' });
   check('shares is a doughnut', model.type === 'doughnut', model.type);
   check('one slice per account', model.rows.length === 3, String(model.rows.length));
   check('slices are separate colours', new Set(model.rows.map((row) => row.colour)).size === 3, '');
   check('and a slice knows its share', model.rows[0].shareText === '90.8%', model.rows[0].shareText);
   const signed = read('"account","balance"\n"a","$10"\n"b","$-5"\n"c","$30"\n');
-  check('a negative balance is not a slice', modelFor({ report: signed, colors: COLORS, title: 'x', kind: 'shares' }).rows.length === 2, '');
+  check('a negative balance is not a slice', modelFor({ report: signed, colors: COLORS, title: 'x', kind: 'pie' }).rows.length === 2, '');
 }
 
 check('a series colour comes from the theme, and they are all different',
@@ -247,8 +287,7 @@ check('an axis label is short: $1,200, $12.5k, $1.5M',
 
 {
   const model = modelFor({ report: ranking, colors: COLORS, title: 'top' });
-  check('a click on a bar names that account', accountAt(model, { row: 0 }) === 'expenses:housing:rent',
-    String(accountAt(model, { row: 0 })));
+  check('a bar names its account', model.rows[0].label === 'expenses:housing:rent' && !model.rows[0].other, model.rows[0].label);
 }
 {
   const many = {
@@ -264,9 +303,7 @@ check('an axis label is short: $1,200, $12.5k, $1.5M',
   check('the biggest are the ones kept and the rest are summed',
     model.series[0].label === 's9' && model.series[6].label === 'other (4)',
     model.series.map((entry) => entry.label).join(', '));
-  check('and other is not something to drill into', accountAt(model, { series: 6 }) === null,
-    String(accountAt(model, { series: 6 })));
-  check('a click on nothing is nothing', accountAt(model, undefined) === null, '');
+  check('and other is marked as one, so it is not something to drill into', model.series[6].other === true && !model.series[0].other, '');
 }
 
 // ------------------------------------------------------------------ what the window shows
@@ -382,122 +419,108 @@ function stub(overrides = {}) {
 
 {
   const { host, log, last } = stub();
-  await Chart.run('', host);
+  await Chart.run('line expenses', host);
   check('it opens the window before asking hledger', log.events[0] === 'window' && log.events.includes('hledger'), log.events.join(','));
   check('it shows something while it waits', log.pages[0].includes('Reading hledger'), '');
-  check('it titles the window after what it is charting', log.title === 'hledger: expenses', log.title);
+  check('it titles the window after what it is charting', log.title === 'hledger: line: expenses', log.title);
+  check('it asks hledger for the query, monthly', log.asked[0] === 'balance expenses -M -O csv', log.asked[0]);
   check('it registers a bridge for a click to ask through', typeof globalThis.__chartBridges === 'object', '');
-  check('it remembers the account', log.said.includes('remember account=expenses'), JSON.stringify(log.said));
-  check('and says what it drew', log.said.some((line) => line.includes('3 periods of expenses') && line.includes('$1,286.40')), JSON.stringify(log.said));
+  check('and says what it drew', log.said[0] === 'chart: line of 3 accounts over 3 periods, the last $1,286.40, up $86.40, in a new window.', log.said[0]);
   check('the page it wrote is the chart', last().includes('<svg class="chart"') && !last().includes('<button'), '');
   check('and it loads D3 from beside the plugin', last().includes('vendor/d3/d3.min.js') && !last().includes('chart.umd'), '');
+  check('the page carries the line, for following marks from, and its related charts',
+    last().includes('"args":"line expenses"') && last().includes('Also: <a href="#" data-args="bar expenses">chart bar expenses</a>'), '');
 }
 
 {
-  // The plugin's half of a drill-down: the bridge a window calls with an account, which asks
-  // hledger again and hands back a report the window can draw.
+  // The plugin's half of following a mark or a link: the bridge runs any line chart takes.
   const { host, log } = stub();
-  await Chart.run('top', host);
+  await Chart.run('--log bar -p 2026 coffee', host);
+  check('the example from the request asks hledger for the query alone',
+    log.asked[0] === 'balance -p 2026 coffee -O csv' && log.pages[log.pages.length - 1].includes('"options":{"log":true}'), log.asked[0]);
   const token = /"token":"([^"]+)"/.exec(log.pages[log.pages.length - 1])[1];
   const bridge = globalThis.__chartBridges[token];
-  const answer = await bridge.requery('expenses:housing:rent');
-  check('a window\'s drill-down asks hledger for that account, month by month',
-    log.asked[log.asked.length - 1] === 'balance expenses:housing:rent -M -O csv', log.asked.join(' | '));
-  check('and gets back a report it can draw, titled after the account',
-    answer.title === 'expenses:housing:rent' && answer.report.periods.length === 3 && answer.command.endsWith('-O csv'),
-    JSON.stringify({ title: answer.title, command: answer.command }));
-  const followed = await bridge.requery('treemap expenses:food 2024');
-  check('a window can follow a related chart, which is any line chart takes',
-    log.asked[log.asked.length - 1] === 'balance --tree expenses:food -p 2024 -O csv' && followed.related.length > 0,
+  const answer = await bridge.requery('--log line -p 2026 expenses:food:coffee');
+  check('a window\'s line is run, and comes back with what the window needs',
+    log.asked[log.asked.length - 1] === 'balance -p 2026 expenses:food:coffee -M -O csv' && answer.kind === 'line'
+    && answer.args === '--log line -p 2026 expenses:food:coffee' && answer.options.log && answer.related.length > 0,
     log.asked[log.asked.length - 1]);
+  const sankey = await bridge.requery('sankey -p 2026');
+  check('a shaped chart comes back parsed the way its type is', sankey.kind === 'sankey' && 'sinks' in sankey.report, String(sankey.kind));
   let refusedLine = '';
   try { await bridge.requery('register'); } catch (error) { refusedLine = error.message; }
-  check('and a line chart refuses is refused there too', /register is not a report a chart can draw/.test(refusedLine), refusedLine);
-  const sankey = await bridge.requery('sankey');
-  check('a drill-down into a question is parsed the way that question is', sankey.kind === 'sankey' && 'sinks' in sankey.report,
-    String(sankey.kind));
+  check('and a line chart refuses is refused there too', /register is not a chart type/.test(refusedLine), refusedLine);
   host.hledger = async () => '"account","2024-01"\n';
   let refused = '';
   try {
-    await bridge.requery('expenses:nothing');
+    await bridge.requery('line expenses:nothing');
   } catch (error) {
     refused = error.message;
   }
-  check('and an account with nothing in it is an error the window can show', /nothing to chart for expenses:nothing/.test(refused), refused);
+  check('and a query with nothing in it is an error the window can show', /nothing to chart for line: expenses:nothing/.test(refused), refused);
 }
 
 {
   const { host, log } = stub({ hledger: async () => RANKING_CSV });
-  await Chart.run('top', host);
+  await Chart.run('bar expenses', host);
   check('a ranking is summed up by its largest account',
-    log.said.some((line) => line.includes('3 accounts, $1,200.00 in expenses:housing:rent')), JSON.stringify(log.said));
+    log.said[0] === 'chart: bar of 3 accounts, the largest $1,200.00 in expenses:housing:rent, in a new window.', log.said[0]);
+}
+
+{
+  const { host, log } = stub({ hledger: async () => '"account","2024-01","2024-02"\n"income:salary","$-3200.00","0"\n' });
+  await Chart.run('--cumulative --invert line income', host);
+  check('the terminal sums up the numbers as the chart shows them, and counts one account as one',
+    log.said[0] === 'chart: line of 1 account over 2 periods, the last $3,200.00, up $0.00, in a new window.', log.said[0]);
+}
+
+{
+  const { host, log } = stub({ hledger: async () => FLOWS_CSV });
+  await Chart.run('sankey', host);
+  check('a shaped chart is summed up in its own words', log.said[0] === 'chart: sankey, income $3,200.00 into 3 categories, $1,866.11 saved, in a new window.', log.said[0]);
 }
 
 {
   const { host, log } = stub({ hledger: async () => { throw new Error('<bad> & worse'); } });
-  await Chart.run('spending', host);
+  await Chart.run('line expenses', host);
   check('a message is escaped before it is written into the window',
     log.pages[log.pages.length - 1].includes('&lt;bad&gt; &amp; worse'), log.pages[log.pages.length - 1]);
 }
 
 {
   const { host, log } = stub({ hledger: async () => { throw new Error('no journal is loaded'); } });
-  await Chart.run('spending', host);
+  await Chart.run('line expenses', host);
   check('a failed run is on the page', log.pages[log.pages.length - 1].includes('no journal is loaded'), '');
   check('and in the terminal', log.said.some((line) => line.includes('no journal is loaded')), JSON.stringify(log.said));
 }
 
 {
   const { host, log } = stub({ hledger: async () => '"account","2024-01"\n' });
-  await Chart.run('spending', host);
-  check('an empty report is reported, not charted', log.said.some((line) => line.includes('no amounts')), JSON.stringify(log.said));
+  await Chart.run('bar -p 2031 coffee', host);
+  check('an empty report is reported with the command that found nothing',
+    log.said[0] === 'chart: bar: coffee, -p 2031 has no amounts to chart. The command was: hledger balance -p 2031 coffee -O csv', log.said[0]);
 }
 
 {
   const { host, log } = stub({ window: () => null });
-  await Chart.run('spending', host);
+  await Chart.run('line expenses', host);
   check('a blocked window is reported', log.said.some((line) => line.includes('blocked')), JSON.stringify(log.said));
 }
 
 {
   const { host, log } = stub();
   await Chart.run('', host);
-  check('the bare word points to the other questions', log.said.some((line) => line.endsWith('Tab after chart lists the other questions.')), JSON.stringify(log.said));
-  const again = stub();
-  await Chart.run('treemap weekly', again.host);
-  check('a chart asked for by name does not repeat that, and a left-out interval is said',
-    again.log.said.some((line) => /in a new window\. weekly was left out/.test(line)) && !again.log.said.some((line) => /Tab after chart/.test(line)),
-    JSON.stringify(again.log.said));
-  check('the page carries its related charts', again.log.pages[again.log.pages.length - 1].includes('Also: <a href="#" data-args='), '');
+  check('a line chart cannot read is answered in the terminal, with no window opened',
+    log.events.length === 0 && /^chart: which chart\? Name a type/.test(log.said[0]), JSON.stringify(log));
+  const misspelt = stub();
+  await Chart.run('--log lien coffee', misspelt.host);
+  check('and so is a misspelt type, with the one it was probably meant to be',
+    misspelt.log.said[0] === 'chart: lien is not a chart type. Did you mean line?', misspelt.log.said[0]);
 }
-
-{
-  const { host, log } = stub();
-  await Chart.run('register -p 2024', host);
-  check('a report no chart can draw is refused, and says what to ask instead',
-    log.events.length === 0 && log.said.some((line) => /register is not a report a chart can draw; try chart calendar/.test(line)),
-    JSON.stringify(log))
-}
-
-{
-  const { host, log } = stub({ hledger: async () => '"account","balance"\n"Total:","0"\n' });
-  await Chart.run('spendng', host);
-  check('a near miss of a question is answered with the question it was probably meant to be',
-    log.said.some((line) => line.includes('Did you mean chart spending?')), JSON.stringify(log.said));
-}
-
-check('only a near miss is a near miss',
-  closestQuestion('incme') === 'income' && closestQuestion('sankee') === 'sankey'
-  && closestQuestion('expenses:fod') === null && closestQuestion('groceries') === null
-  && closestQuestion('top') === null && closestQuestion('') === null,
-  ['incme', 'sankee', 'expenses:fod', 'groceries'].map((word) => `${word}=${closestQuestion(word)}`).join(' '));
-check('balance statements are reports a chart can draw',
-  build('bs').command === 'bs -O csv' && build('cf -p 2024').command === 'cf -p 2024 -O csv' && !build('bs').refusal,
-  `${build('bs').command} ${build('cf -p 2024').command}`);
 
 {
   const { host, last } = stub({ colors: undefined });
-  await Chart.run('spending', host);
+  await Chart.run('line expenses', host);
   check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<svg class="chart"'), '');
 }
 
@@ -695,25 +718,6 @@ check('a kind picks its parser',
   && parseReport('calendar', REGISTER_CSV).days.length === 3
   && parseReport('line', MONTHLY_CSV).periods.length === 3);
 
-check('the new presets ask for the report their shape needs',
-  build('treemap').command === 'balance --tree expenses -O csv'
-  && build('calendar -p 2024').command === 'register -p 2024 -O csv'
-  && build('waterfall').command === 'register -O csv'
-  && build('multiples').command === 'balance -M -O csv',
-  [build('treemap').command, build('calendar -p 2024').command, build('multiples').command].join(' | '));
-check('a named account still overrides a preset that takes one',
-  build('treemap assets').command === 'balance --tree assets -O csv'
-  && build('treemap assets').title === 'assets, as a treemap',
-  build('treemap assets').title);
-check('stacked asks for one level of categories below the account',
-  build('stacked').command === 'balance expenses -M --depth 2 -O csv'
-  && build('stacked expenses:food').command === 'balance expenses:food -M --depth 3 -O csv'
-  && build('stacked expenses:food').title === 'expenses:food by category',
-  `${build('stacked').command} | ${build('stacked expenses:food').command} | ${build('stacked expenses:food').title}`);
-check('the Sankey asks for income and expense categories, and a period passes through',
-  build('sankey').command === 'balance income expenses --depth 2 -O csv'
-  && build('sankey -p 2024').command === 'balance income expenses --depth 2 -p 2024 -O csv',
-  build('sankey -p 2024').command);
 check('five charts read a report of their own, and every other is a balance chart',
   CUSTOM.length === 5 && isCustom('sankey') && isCustom('treemap') && !isCustom('stacked') && !isCustom(null),
   CUSTOM.join(','));
@@ -819,16 +823,17 @@ check('every bundled plugin documents itself for `<command>?`',
   plugins.length > 0 && documented.length === plugins.length,
   plugins.map((plugin) => `${plugin.name}:${plugin.usage ? 'usage' : 'no usage'}/${plugin.help ? 'help' : 'no help'}`).join(' '));
 
-// The help page is written in the manifest and the questions in chart.js, so a question can be
-// added to one and forgotten in the other. This is what keeps `chart?` complete.
+// The help page is written in the manifest and the grammar in chart-args.js, so a type or an
+// option can be added to one and forgotten in the other. This is what keeps `chart?` complete.
 {
   const chartEntry = plugins.find((plugin) => plugin.name === 'chart');
   const forms = (chartEntry.sections || []).flatMap((section) => section.rows.map(([form]) => form));
-  const listed = (name) => forms.some((form) => form === `chart ${name}` || form.startsWith(`chart ${name} `))
-    || (name === 'spending' && forms.includes('chart'));
-  const aliases = new Set(['savings', 'nw', 'everything', 'area', 'sparklines', 'flows']);
-  const missing = questions().filter((name) => !aliases.has(name) && !listed(name));
-  check('chart? lists every question the plugin answers to', missing.length === 0, missing.join(', '));
+  const missing = [
+    ...Object.keys(TYPES).filter((name) => !forms.includes(name)),
+    ...Object.entries(OPTIONS).filter(([name, option]) => !forms.includes(option.takes ? `--${name} ${option.takes}` : `--${name}`)).map(([name]) => `--${name}`),
+  ];
+  check('chart? lists every type and every option the grammar reads', missing.length === 0, missing.join(', '));
+  check('and Tab offers them all', [...Object.keys(TYPES), ...Object.keys(OPTIONS).map((name) => `--${name}`)].every((word) => chartEntry.completes.includes(word)), '');
   const rows = plugins.flatMap((plugin) => [...(plugin.sections || []).flatMap((section) => section.rows), ...(plugin.examples || [])]);
   check('every row on a help page is a form and what it does',
     rows.length > 0 && rows.every((row) => Array.isArray(row) && row.length === 2 && row.every((cell) => typeof cell === 'string' && cell.trim())),

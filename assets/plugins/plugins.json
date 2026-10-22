@@ -37,137 +37,123 @@
     {
       "name": "chart",
       "group": "Reports",
-      "summary": "open a chart of hledger's numbers in a window",
+      "summary": "chart hledger's numbers in a window: chart [options] <type> [query]",
       "completes": [
-        "spending",
-        "income",
-        "cashflow",
-        "networth",
-        "balances",
-        "payees",
+        "line",
+        "bar",
         "stacked",
-        "multiples",
-        "calendar",
-        "top",
-        "shares",
+        "pie",
         "treemap",
         "sankey",
+        "calendar",
         "waterfall",
-        "weekly",
-        "monthly",
-        "quarterly",
-        "yearly",
-        "daily",
-        "this",
-        "last",
-        "since",
-        "expenses"
+        "multiples",
+        "--log",
+        "--percent",
+        "--cumulative",
+        "--top",
+        "--sort",
+        "--invert",
+        "expenses",
+        "income",
+        "assets"
       ],
       "module": "./chart.js",
-      "usage": "chart [question] [account] [when] [how often]",
-      "help": "Opens a chart of hledger's own numbers in a window of its own. Name a question, an account, or both in either order, and say when and how often in words: chart food 2024 weekly. Anything that starts with a dash goes to hledger as it is. Under each chart are related charts to follow, and the numbers as a table.",
+      "usage": "chart [chart options] <type> [hledger arguments]",
+      "help": "Opens a chart of hledger's own numbers in a window of its own. Chart options come first and shape the picture; then the type; then the query, which goes to hledger as you write it, so anything balance takes works there. A chart over time is monthly unless the query names an interval. The window shows the command it ran, related charts to follow, and the numbers as a table.",
       "sections": [
         {
-          "title": "Over time",
+          "title": "Types",
           "rows": [
             [
-              "chart",
-              "spending by account, month by month; the same as chart spending"
+              "line",
+              "one line per account, over time"
             ],
             [
-              "chart income",
-              "what came in, month by month"
+              "bar",
+              "accounts ranked; with -M or another interval, columns per period"
             ],
             [
-              "chart cashflow",
-              "income against expenses, month by month"
+              "stacked",
+              "accounts stacked over time"
             ],
             [
-              "chart networth",
-              "assets and liabilities as one running total"
+              "pie",
+              "each account as a share of the whole"
             ],
             [
-              "chart balances",
-              "every account, at the end of each month"
-            ],
-            [
-              "chart payees",
-              "spending by payee, month by month"
-            ],
-            [
-              "chart stacked [account]",
-              "categories stacked month by month"
-            ],
-            [
-              "chart multiples",
-              "a small line per account, largest first"
-            ],
-            [
-              "chart calendar",
-              "a square per day, darker for more spending"
-            ]
-          ]
-        },
-        {
-          "title": "Where it went",
-          "rows": [
-            [
-              "chart top [account]",
-              "accounts ranked, largest first"
-            ],
-            [
-              "chart shares [account]",
-              "each account's share, as a doughnut"
-            ],
-            [
-              "chart treemap [account]",
+              "treemap",
               "the account tree, area by balance"
             ],
             [
-              "chart sankey",
+              "sankey",
               "income flowing into spending and savings"
             ],
             [
-              "chart waterfall",
-              "income, a step down per category, then net"
+              "calendar",
+              "a square per day, darker for more spending"
+            ],
+            [
+              "waterfall",
+              "income, a step down per expense category, then net"
+            ],
+            [
+              "multiples",
+              "a small line per account"
             ]
           ]
         },
         {
-          "title": "Anything else",
+          "title": "Chart options",
           "rows": [
             [
-              "chart <account>",
-              "that account, month by month; chart food matches expenses:food"
+              "--log",
+              "a logarithmic value axis: line, bar, multiples"
             ],
             [
-              "chart balance <args>",
-              "any balance report, as written; also bs, is and cf"
+              "--percent",
+              "each period as shares of its total: line, bar, stacked, multiples"
+            ],
+            [
+              "--cumulative",
+              "a running total across the periods: line, bar, stacked, multiples"
+            ],
+            [
+              "--top N",
+              "the N largest accounts, the rest as other; also pie and sankey"
+            ],
+            [
+              "--sort name|value",
+              "order by name, or by size, which is the default"
+            ],
+            [
+              "--invert",
+              "flip the sign, so income and liabilities read as positive"
             ]
           ]
         },
         {
-          "title": "When, and how often",
+          "title": "Queries",
           "rows": [
             [
-              "2024, 2024-03, 2024q1",
-              "a year, a month, a quarter"
+              "-p 2026",
+              "a period, as hledger reads it: 2026q1, \"last year\", 2025..2026"
             ],
             [
-              "this month, last year",
-              "also week and quarter; today, yesterday"
+              "-M, -W, -Q, -Y",
+              "the interval for a chart over time; -M if none is given"
             ],
             [
-              "since 2024-06",
-              "from then on; until 2024-06 for up to then"
+              "--depth 2",
+              "accounts no deeper than two levels"
             ],
             [
-              "2023 to 2024",
-              "a range of dates"
+              "food, ^expenses",
+              "account names and patterns, as balance matches them"
             ],
             [
-              "weekly, monthly",
-              "also daily, quarterly, yearly; months are the default"
+              "-H",
+              "balances held at each period's end, rather than its changes"
             ]
           ]
         },
@@ -180,11 +166,11 @@
             ],
             [
               "click, Enter",
-              "chart that account on its own"
+              "that account over time, in the same period"
             ],
             [
               "Also:",
-              "related charts under each one, a click away"
+              "the same query as the other types, a click away"
             ],
             [
               "Esc",
@@ -215,20 +201,32 @@
       ],
       "examples": [
         [
-          "chart sankey 2024",
-          "where 2024's income went"
+          "chart --log bar -p 2026 coffee",
+          "coffee in 2026, on a log scale"
         ],
         [
-          "chart food weekly",
-          "food spending, week by week"
+          "chart bar -M expenses",
+          "spending in monthly columns"
         ],
         [
-          "chart income last year quarterly",
-          "last year's income, by quarter"
+          "chart --percent stacked --depth 2 expenses",
+          "what spending is made of, month by month"
         ],
         [
-          "chart expenses:food treemap",
-          "inside one category"
+          "chart --cumulative --invert line income",
+          "income so far this period"
+        ],
+        [
+          "chart --top 5 pie -p 2026 expenses",
+          "2026's five largest expenses"
+        ],
+        [
+          "chart line -H assets liabilities",
+          "balances at each month's end"
+        ],
+        [
+          "chart sankey -p 2026",
+          "where 2026's income went"
         ]
       ]
     },
