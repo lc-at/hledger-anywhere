@@ -26,7 +26,7 @@
 
 import { page } from './chart-window.js';
 import { command, line, parse, related, title } from './chart-args.js';
-import { counted, format, money, periodTotal, shape, split, unitOf } from './chart-data.js';
+import { counted, format, inOneCommodity, leftOut, periodTotal, shape, split, trimmed } from './chart-data.js';
 import { beside, bridge, colorsOf, shell } from './window-kit.js';
 import { byDay, flows, headlineFor, isCustom, readRegister, readTree, waterfall } from './chart-d3.js';
 
@@ -82,7 +82,9 @@ export default {
       // Every chart is drawn with D3, so the window loads one library and nothing else.
       scripts: [beside('vendor/d3/d3.min.js')],
     }));
-    host.say(`${host.name}: ${summary(query, report)}, in a new window.`);
+    // Said in the terminal too: a total that left something out should not look complete.
+    const mixed = leftOut(report.others, report.unit, query.command);
+    host.say(`${host.name}: ${summary(query, report)}, in a new window.${mixed ? ` ${mixed}` : ''}`);
   },
 };
 
@@ -126,23 +128,24 @@ export function read(text) {
   const periods = rows[start].slice(1).map((cell) => cell.trim());
   if (periods.length === 0) return null;
 
-  const series = [];
+  const kept = [];
   for (const cells of rows.slice(start + 1)) {
     const label = (cells[0] || '').trim();
     if (!label || /^total:?$/i.test(label)) continue;
     if (cells.length < periods.length + 1) continue;
-    const amounts = periods.map((_, index) => money(cells[index + 1]));
     // A section title such as "Assets" or "Cash flows" has no amounts of its own.
-    if (amounts.every((amount) => amount.raw === '')) continue;
-    series.push({ label, amounts });
+    if (periods.every((_, index) => !String(cells[index + 1] || '').trim())) continue;
+    kept.push({ label, cells: periods.map((_, index) => cells[index + 1]) });
   }
-  if (series.length === 0) return null;
+  if (kept.length === 0) return null;
 
-  return {
-    periods,
-    series,
-    unit: unitOf(series.flatMap((entry) => entry.amounts)),
-  };
+  // Every cell is read in the report's main commodity, and the rest is named, not added in.
+  const { amounts, unit, others } = inOneCommodity(kept.flatMap((row) => row.cells));
+  const series = kept.map((row, index) => ({
+    label: row.label,
+    amounts: amounts.slice(index * periods.length, (index + 1) * periods.length),
+  }));
+  return { periods, series, unit, others };
 }
 
 /**
@@ -203,7 +206,7 @@ function summary(query, report) {
   if (isCustom(query.kind) && query.kind !== 'multiples') return `${query.kind}, ${headlineFor(query.kind, report)}`;
   // Said of the numbers as the chart shows them: an inverted running total is summed up as
   // one, not as the raw report the window reshaped.
-  const shown = shape(report, query.options);
+  const shown = shape(trimmed(report), query.options);
   const unit = shown.unit;
   const accounts = counted(shown.series.length, 'account');
   if (shown.periods.length > 1) {

@@ -26,7 +26,7 @@
  *     unit: { prefix: '$', suffix: '' } }
  */
 
-import { chosen, chosenSeries, counted, format, palette, percent, periodTotal, seriesTotal, shape } from './chart-data.js';
+import { chosen, chosenSeries, counted, format, leftOut, palette, percent, periodTotal, seriesTotal, shape, trimmed } from './chart-data.js';
 import { escape, isLight } from './window-kit.js';
 import { foldFlows, headlineFor, heightFor, isCustom, multiples, render, tableFor } from './chart-d3.js';
 import { drill, parse } from './chart-args.js';
@@ -60,7 +60,8 @@ export function headline(report, type) {
   }
   const first = report.periods[0];
   const last = report.periods[report.periods.length - 1];
-  return `${report.periods.length} periods, ${first} to ${last}`;
+  const dropped = report.dropped ? `; ${counted(report.dropped, 'empty period')} at the ends not drawn` : '';
+  return `${report.periods.length} periods, ${first} to ${last}${dropped}`;
 }
 
 /**
@@ -130,8 +131,15 @@ export function modelFor({ report, colors, title, kind, options = {} }) {
  * data, which legend, and the words and table around it. Both the first page and every redraw
  * after a drill-down come from here.
  */
-export function viewOf(state) {
+export function viewOf(original) {
+  // Balance reports are drawn without empty periods at either end; the table under the chart
+  // and the subtitle say how many there were, so nothing disappears without a word.
+  const state = original.report && original.report.periods && original.report.series
+    ? { ...original, report: trimmed(original.report) }
+    : original;
   const options = state.options || {};
+  // Commodities the report held besides the one drawn are named under the subtitle.
+  const mixed = leftOut(state.report.others, state.report.unit, state.command || '');
   if (state.kind === 'multiples') {
     // Sparklines are a balance chart drawn small: shaped and chosen the same way.
     const data = multiples(shape(state.report, options), options.top || 8);
@@ -139,18 +147,22 @@ export function viewOf(state) {
     data.log = Boolean(options.log);
     return {
       draw: 'multiples', data, items: null,
-      sub: headlineFor('multiples', data), table: tableFor('multiples', data), height: heightFor('multiples', data),
+      sub: headlineFor('multiples', data), table: tableFor('multiples', data), height: heightFor('multiples', data), mixed,
     };
   }
   if (isCustom(state.kind)) {
-    const data = state.kind === 'sankey' && options.top ? foldFlows(state.report, options.top) : state.report;
+    // A Sankey of every category is a fringe of hairlines: twelve is as many as stay readable,
+    // and --top asks for fewer or more.
+    const data = state.kind === 'sankey' ? foldFlows(state.report, options.top || 12) : state.report;
     return {
       draw: state.kind,
       data,
       items: null,
-      sub: headlineFor(state.kind, data),
+      // Said of everything the report held, not of what fit: a folded "other (9)" is nine.
+      sub: headlineFor(state.kind, state.report),
       table: tableFor(state.kind, data),
       height: heightFor(state.kind, data),
+      mixed,
     };
   }
   const model = modelFor(state);
@@ -166,6 +178,7 @@ export function viewOf(state) {
     sub: headline(state.report, model.type),
     table: tableView(state.report),
     height: heightFor(model.type, model),
+    mixed,
   };
 }
 
@@ -231,12 +244,14 @@ export function page({ report, colors, title, command, token, kind, options = {}
   .also a:focus-visible { outline:2px solid ${colors.foreground}; outline-offset:2px; border-radius:2px; }
   .keys { margin-top:4px; }
   .warn { color:${colors.foreground}; margin:0 0 12px; font-size:13px; }
+  .mixed { color:${colors.foreground}; margin:-8px 0 12px; font-size:12px; border-left:2px solid ${colors.accent}; padding-left:8px; }
   code { color:${colors.foreground}; }
 </style></head>
 <body>
 <main>
   <h1 id="heading">${escape(title)}</h1>
   <p class="sub" id="sub">${escape(view.sub)}</p>
+  <p class="mixed" id="mixed"${view.mixed ? '' : ' hidden'}>${escape(view.mixed || '')}</p>
   <p class="warn" id="warn" hidden></p>
   <div id="legend" hidden></div>
   <div class="frame"><svg class="chart" id="chart" role="img" aria-label="${escape(title)}"></svg></div>
@@ -294,6 +309,7 @@ export function mount(root = document) {
   const command = root.getElementById('command');
   const legendBox = root.getElementById('legend');
   const also = root.getElementById('also');
+  const mixed = root.getElementById('mixed');
 
   if (!window.d3) {
     show(warn, 'The chart library did not load, so this is the numbers alone.');
@@ -370,6 +386,7 @@ export function mount(root = document) {
     sub.textContent = shown.sub;
     command.textContent = state.command;
     table.innerHTML = shown.table;
+    show(mixed, shown.mixed);
     also.innerHTML = alsoLine(state.related || []);
     also.hidden = !(state.related || []).length;
     holder.style.height = `${shown.height}px`;

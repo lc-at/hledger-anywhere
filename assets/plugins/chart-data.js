@@ -21,7 +21,13 @@ export function group(number, decimals = 2) {
 /** An amount as a person writes it: -$1,286.40. */
 export function format(amount, decimals = 2) {
   const sign = amount.value < 0 ? '-' : '';
-  return `${sign}${amount.prefix}${group(amount.value, decimals)}${amount.suffix}`;
+  // A commodity written as letters is a word, and is set apart from the number the way hledger
+  // writes it: 27,500.00 IDR and IDR 27,500.00, but $12.50 and 12.5%.
+  const prefix = amount.prefix || '';
+  const suffix = amount.suffix || '';
+  const before = /[a-z]/i.test(prefix) ? `${prefix} ` : prefix;
+  const after = /[a-z]/i.test(suffix) ? ` ${suffix}` : suffix;
+  return `${sign}${before}${group(amount.value, decimals)}${after}`;
 }
 
 // --------------------------------------------------------------------------- CSV
@@ -95,10 +101,87 @@ export function money(text) {
   };
 }
 
-/** The commodity to label an axis with: the first one hledger actually wrote. */
-export function unitOf(amounts) {
-  const found = amounts.find((amount) => amount.prefix || amount.suffix);
-  return { prefix: found ? found.prefix : '', suffix: found ? found.suffix : '' };
+/**
+ * Every amount in one cell. hledger writes a balance held in several commodities as one cell,
+ * "3500 CNY, 2530801.73 IDR, 300 USD"; a comma followed by a space separates them, which a
+ * thousands separator never is.
+ */
+export function amountsIn(text) {
+  const raw = String(text == null ? '' : text).trim();
+  if (!raw) return [];
+  return raw.split(/,\s+/).map(money).filter((amount) => amount.raw !== '');
+}
+
+/** A commodity's name, as a person would say it: IDR, $, BBCA. */
+export function commodityName(amount) {
+  return (amount.suffix || amount.prefix || '').trim();
+}
+
+/**
+ * A column of cells, read in one commodity: the one most of the cells are written in.
+ *
+ * Amounts in different commodities cannot be added up, and a chart adds up everything: its
+ * totals, its stacks, its shares. So each cell is read as its amount in the main commodity, and
+ * what was left out is named in `others`, for the window and the terminal to say, with how to
+ * convert it. The first version read the first number in a cell as the whole of it, which drew
+ * an account holding 2.5 million IDR and some yuan as 3,500 of a unit called "CNY, 260 EUR...".
+ * A bare 0, which is how hledger writes an empty cell, belongs to every commodity.
+ */
+export function inOneCommodity(cells) {
+  const parsed = cells.map(amountsIn);
+  const counts = new Map();
+  for (const parts of parsed) {
+    for (const amount of parts) {
+      if (!commodityName(amount)) continue;
+      const key = `${amount.prefix}\u0000${amount.suffix}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+  }
+  let main = null;
+  for (const [key, count] of counts) if (!main || count > main.count) main = { key, count };
+  const [prefix, suffix] = main ? main.key.split('\u0000') : ['', ''];
+  const others = new Set();
+  const amounts = parsed.map((parts, index) => {
+    let value = 0;
+    const left = [];
+    for (const amount of parts) {
+      const plain = !commodityName(amount);
+      if (plain || (amount.prefix === prefix && amount.suffix === suffix)) value += amount.value;
+      else if (amount.value !== 0) left.push(commodityName(amount));
+    }
+    left.forEach((name) => others.add(name));
+    return { value, prefix, suffix, raw: String(cells[index] == null ? '' : cells[index]).trim(), left };
+  });
+  return { amounts, unit: { prefix, suffix }, others: [...others].sort() };
+}
+
+/**
+ * The commodities left out of the amounts a chart actually draws. A calendar of spending reads
+ * the whole register, stock trades and all, but draws only the expenses; naming the stocks as
+ * left out of it would be a warning about nothing.
+ */
+export function leftOutOf(amounts) {
+  const names = new Set();
+  for (const amount of amounts) for (const name of amount.left || []) names.add(name);
+  return [...names].sort();
+}
+
+/**
+ * What a chart says about commodities it left out, or nothing when there were none.
+ *
+ * The advice depends on the command: without a conversion, -X converts at market prices; with
+ * one already asked for, what is left had no price to convert with, and a P directive is what
+ * gives it one.
+ */
+export function leftOut(others, unit, command = '') {
+  if (!others || !others.length) return '';
+  const name = (unit && (unit.suffix || unit.prefix)) || 'one commodity';
+  const listed = others.length > 6 ? `${others.slice(0, 6).join(', ')} and ${others.length - 6} more` : others.join(', ');
+  const converting = /(^|\s)(-X|--exchange|-V|--market|--value)(\s|=|$)/.test(command);
+  const advice = converting
+    ? `hledger had no market price in ${name} for ${others.length === 1 ? 'it' : 'them'}; a P directive gives one.`
+    : `Add -X ${name} to the query to convert them at market prices.`;
+  return `Drawn in ${name}; amounts in ${listed} are left out. ${advice}`;
 }
 
 // --------------------------------------------------------------------------- series
@@ -122,6 +205,28 @@ export function periodTotal(report, index) {
 /** The total of one series across every period. */
 export function seriesTotal(series) {
   return add(series.amounts);
+}
+
+/**
+ * The report without the empty periods at either end, and how many there were.
+ *
+ * `-p 2026` asks hledger for the whole year, months that have not happened included, and a
+ * line that falls to zero in November reads as spending that stopped, not a month that has not
+ * come. An empty period between two others is kept: there, nothing is an answer.
+ */
+export function trimmed(report) {
+  const empty = (index) => report.series.every((entry) => !entry.amounts[index] || entry.amounts[index].value === 0);
+  let first = 0;
+  let last = report.periods.length - 1;
+  while (first < last && empty(first)) first += 1;
+  while (last > first && empty(last)) last -= 1;
+  if (first === 0 && last === report.periods.length - 1) return { ...report, dropped: 0 };
+  return {
+    ...report,
+    periods: report.periods.slice(first, last + 1),
+    series: report.series.map((entry) => ({ ...entry, amounts: entry.amounts.slice(first, last + 1) })),
+    dropped: report.periods.length - (last - first + 1),
+  };
 }
 
 /**

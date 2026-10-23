@@ -48,6 +48,23 @@ depth) and the options that still mean something for one account (`--log`, `--cu
 `--invert`). The "Also" line under each chart is the same query drawn as the other types of its
 family, each written as the line it is.
 
+## Real journals
+
+Checked against a personal journal of 10,500 transactions over four years, in 34 commodities
+with capitalised top-level accounts. Four things held for the demo journal and not for that one:
+
+- **Several commodities.** hledger writes a balance held in several commodities as one cell,
+  `3500 CNY, 2530801.73 IDR, 300 USD`. Every cell is read in the report's main commodity, the
+  one most of its cells are in, and the window and the terminal name what was left out and how
+  to convert it (`-X IDR`), or, when the query already converts, that there was no market price.
+- **Capitalised accounts.** `Expenses` and `Income` are matched whatever their case; matching
+  only `expenses` drew an empty calendar and an empty waterfall.
+- **A year asked for early.** `-p 2026` includes the months still to come, so empty periods at
+  either end are not drawn, and the subtitle says how many were left off.
+- **Many categories.** A waterfall keeps as many steps as fit and folds the rest into
+  "other (n)"; a Sankey keeps twelve categories unless `--top` says otherwise. The table under
+  each still lists every one.
+
 ## How it is built
 
 ```

@@ -36,7 +36,7 @@ import {
 
 import Chart, { build, parseReport, read } from '../assets/plugins/chart.js';
 import { OPTIONS, TYPES, closestType, command, drill, line, parse, quote, related, title, tokenize, typeOf } from '../assets/plugins/chart-args.js';
-import { chosen, shape } from '../assets/plugins/chart-data.js';
+import { amountsIn, chosen, inOneCommodity, leftOut, shape, trimmed } from '../assets/plugins/chart-data.js';
 import Edit from '../assets/plugins/edit.js';
 import { page as editPage } from '../assets/plugins/edit-window.js';
 import { alsoLine } from '../assets/plugins/chart-window.js';
@@ -468,10 +468,10 @@ function stub(overrides = {}) {
 }
 
 {
-  const { host, log } = stub({ hledger: async () => '"account","2024-01","2024-02"\n"income:salary","$-3200.00","0"\n' });
+  const { host, log } = stub({ hledger: async () => '"account","2024-01","2024-02"\n"income:salary","$-3200.00","$-100.00"\n' });
   await Chart.run('--cumulative --invert line income', host);
   check('the terminal sums up the numbers as the chart shows them, and counts one account as one',
-    log.said[0] === 'chart: line of 1 account over 2 periods, the last $3,200.00, up $0.00, in a new window.', log.said[0]);
+    log.said[0] === 'chart: line of 1 account over 2 periods, the last $3,300.00, up $100.00, in a new window.', log.said[0]);
 }
 
 {
@@ -522,6 +522,72 @@ function stub(overrides = {}) {
   const { host, last } = stub({ colors: undefined });
   await Chart.run('line expenses', host);
   check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<svg class="chart"'), '');
+}
+
+// ------------------------------------------------------------------ a real journal's shapes
+
+// The shapes below are from a real personal journal: accounts capitalised, balances held in
+// several commodities in one cell, stock trades in the register, and a year asked for before
+// it is over. Each one broke a chart before it was checked here.
+{
+  check('a cell in several commodities is every amount in it',
+    amountsIn('3500 CNY, 2530801.73 IDR, 300.0000 USD').map((amount) => `${amount.value} ${amount.suffix}`).join('|') === '3500 CNY|2530801.73 IDR|300 USD'
+    && amountsIn('$1,234.56').length === 1 && amountsIn('').length === 0, '');
+  const column = inOneCommodity(['3500 CNY, 2530801.73 IDR', '390868.00 IDR', '0', '1.5456 PGDN_GOLD', '-12.00 IDR']);
+  check('a column is read in the commodity most of it is in, a bare 0 included',
+    column.unit.suffix === 'IDR' && column.amounts.map((amount) => amount.value).join() === '2530801.73,390868,0,0,-12', column.amounts.map((amount) => amount.value).join());
+  check('and what was left out is named', column.others.join() === 'CNY,PGDN_GOLD', column.others.join());
+  check('a commodity in letters is set apart from its number, as hledger writes it',
+    format({ value: 27500, prefix: '', suffix: 'IDR' }) === '27,500.00 IDR' && format({ value: -3, prefix: 'EUR', suffix: '' }) === '-EUR 3.00'
+    && format({ value: 12.5, prefix: '$', suffix: '' }) === '$12.50' && format({ value: 45, prefix: '', suffix: '%' }) === '45.00%', '');
+
+  const assets = read('"account","balance"\n"Assets:BCADigital","3500 CNY, 2530801.73 IDR, 300.0000 USD"\n"Assets:BNI","390868.00 IDR"\n"Total:","3500 CNY, 2921669.73 IDR, 300 USD"\n');
+  check('a balance report in several commodities is drawn in its main one, not its first',
+    assets.unit.suffix === 'IDR' && assets.series[0].amounts[0].value === 2530801.73 && assets.others.join() === 'CNY,USD', JSON.stringify(assets.series[0].amounts[0]));
+  check('and the chart says what it left out, and how to convert it',
+    leftOut(assets.others, assets.unit) === 'Drawn in IDR; amounts in CNY, USD are left out. Add -X IDR to the query to convert them at market prices.', leftOut(assets.others, assets.unit));
+  check('or, when it was already converting, that there was no price to convert with',
+    /hledger had no market price in IDR for them; a P directive gives one\./.test(leftOut(['NVDA', 'SPCX'], { suffix: 'IDR' }, 'balance -X IDR -O csv'))
+    && leftOut([], { suffix: 'IDR' }) === '', '');
+
+  const register = readRegister([
+    '"txnidx","date","code","description","account","amount","total"',
+    '"1","2026-06-03","","Sell ADRO","Assets:Mansek:Stocks:ADRO","-2000 ADRO","-2000 ADRO"',
+    '"1","2026-06-03","","Sell ADRO","Assets:Mansek:Cash","4367736.00 IDR","-2000 ADRO, 4367736.00 IDR"',
+    '"2","2026-09-01","","GrabBike","Expenses:Transport:E-Hailing","15800.00 IDR","15800.00 IDR"',
+    '"3","2026-09-02","","Gift","Expenses:Gifts","300 SAR","300 SAR"',
+    '"4","2026-09-25","","Salary","Income:Salary","-9000000.00 IDR","-9000000.00 IDR"',
+  ].join('\n'));
+  const days = byDay(register);
+  check('a capitalised Expenses is still expenses: the calendar is not empty',
+    days.days.length === 1 && days.days[0].value === 15800 && days.unit.suffix === 'IDR', JSON.stringify(days.days));
+  check('and it names only what it left out of the spending, not the stocks traded beside it',
+    days.others.join() === 'SAR', days.others.join());
+  const falls = waterfall(register);
+  check('so is a capitalised Income: the waterfall walks from it',
+    falls.income === 9000000 && falls.spent === 15800 && falls.others.join() === 'SAR', JSON.stringify({ income: falls.income, spent: falls.spent }));
+
+  const year = read('"account","2026-01","2026-02","2026-03","2026-04"\n"Expenses:Food","0","5000 IDR","0","0"\n"Expenses:Rent","0","9000 IDR","0","1 IDR"\n');
+  const cut = trimmed(year);
+  check('empty periods at the ends are not drawn, and one between is kept',
+    cut.periods.join() === '2026-02,2026-03,2026-04' && cut.dropped === 1 && cut.series[1].amounts.length === 3, cut.periods.join());
+  check('and the subtitle says how many were left off', headline(cut, 'line') === '3 periods, 2026-02 to 2026-04; 1 empty period at the ends not drawn', headline(cut, 'line'));
+  check('a report with nothing empty is left as it is', trimmed(report).periods.length === 3 && trimmed(report).dropped === 0, '');
+  check('the window draws the trimmed report', viewOf({ report: year, colors: COLORS, title: 't', kind: 'line', options: {} }).data.periods.join() === '2026-02,2026-03,2026-04', '');
+
+  const many = flows(read(`"account","balance"\n${Array.from({ length: 20 }, (_, index) => `"Expenses:C${index}","${100 - index} IDR"`).join('\n')}\n"Income:Salary","-5000 IDR"\n`));
+  const shown = viewOf({ report: many, colors: COLORS, title: 't', kind: 'sankey', options: {} });
+  check('a Sankey of many categories keeps twelve and folds the rest',
+    shown.data.sinks.filter((node) => node.kind === 'expense').length === 13 && shown.data.sinks.some((node) => node.label === 'other (8)'), String(shown.data.sinks.length));
+  check('and its headline still counts every category', /into 20 categories/.test(shown.sub), shown.sub);
+}
+
+{
+  const { host, log } = stub({ hledger: async () => '"account","balance"\n"Assets:BCADigital","3500 CNY, 2530801.73 IDR"\n"Assets:BNI","390868.00 IDR"\n' });
+  await Chart.run('bar Assets', host);
+  check('the terminal says what a chart left out, too',
+    log.said[0].endsWith('Drawn in IDR; amounts in CNY are left out. Add -X IDR to the query to convert them at market prices.')
+    && log.said[0].includes('2,530,801.73 IDR in Assets:BCADigital'), log.said[0]);
 }
 
 // ------------------------------------------------------------------ the edit plugin

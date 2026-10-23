@@ -21,7 +21,7 @@
  * Enter to chart that account on its own.
  */
 
-import { format, group, money, palette, percent, seriesTotal, split, unitOf } from './chart-data.js';
+import { counted, format, group, inOneCommodity, leftOutOf, palette, percent, seriesTotal, split } from './chart-data.js';
 import { escape, mix } from './window-kit.js';
 
 /** The kinds that read a report of their own rather than a balance report. */
@@ -33,9 +33,15 @@ export function isCustom(kind) {
 
 // --------------------------------------------------------------------------- parsing
 
-/** Whether an account is the root or under it. */
+/**
+ * Whether an account is the root or under it, whatever the case: a journal may say `Expenses`
+ * where the demo says `expenses`, and both mean the same top-level account. Matching only
+ * lowercase drew an empty calendar and an empty waterfall from a real journal full of spending.
+ */
 function under(account, root) {
-  return account === root || account.startsWith(`${root}:`);
+  const name = String(account).toLowerCase();
+  const top = root.toLowerCase();
+  return name === top || name.startsWith(`${top}:`);
 }
 
 /** `2024-01-05` as a local date, with no timezone in the middle. */
@@ -67,22 +73,18 @@ export function readRegister(text) {
   };
   if (at.date < 0 || at.account < 0 || at.amount < 0) return null;
 
-  const postings = [];
+  const kept = [];
   for (const cells of rows.slice(start + 1)) {
     if (cells.length <= Math.max(at.date, at.account, at.amount)) continue;
     const date = (cells[at.date] || '').trim();
     const account = (cells[at.account] || '').trim();
-    const amount = money(cells[at.amount]);
-    if (!dateOf(date) || !account || !amount.raw) continue;
-    postings.push({
-      date,
-      account,
-      amount,
-      description: at.description >= 0 ? (cells[at.description] || '').trim() : '',
-    });
+    if (!dateOf(date) || !account || !String(cells[at.amount] || '').trim()) continue;
+    kept.push({ date, account, cell: cells[at.amount], description: at.description >= 0 ? (cells[at.description] || '').trim() : '' });
   }
-  if (postings.length === 0) return null;
-  return { postings, unit: unitOf(postings.map((posting) => posting.amount)) };
+  if (kept.length === 0) return null;
+  const { amounts, unit, others } = inOneCommodity(kept.map((row) => row.cell));
+  const postings = kept.map((row, index) => ({ date: row.date, account: row.account, amount: amounts[index], description: row.description }));
+  return { postings, unit, others };
 }
 
 /**
@@ -112,18 +114,23 @@ export function readTree(text) {
     const raw = (cells[0] || '').replace(/\r$/, '');
     const label = raw.trim();
     if (!label || /^total:?$/i.test(label)) continue;
-    const amount = money(cells[1]);
-    if (!amount.raw) continue;
+    if (!String(cells[1] || '').trim()) continue;
     // Two no-break spaces (or spaces) a level; a tab is a level on its own.
     const lead = (raw.match(/^[ \t\u00a0]+/) || [''])[0];
     const tabs = (lead.match(/\t/g) || []).length;
     const depth = tabs + Math.floor((lead.length - tabs) / 2);
-    entries.push({ depth, label, amount });
+    entries.push({ depth, label, cell: cells[1] });
   }
   if (entries.length === 0) return null;
+  const { amounts, unit, others } = inOneCommodity(entries.map((entry) => entry.cell));
+  entries.forEach((entry, index) => {
+    entry.amount = amounts[index];
+    delete entry.cell;
+  });
   return {
     rows: entries,
-    unit: unitOf(entries.map((entry) => entry.amount)),
+    unit,
+    others,
     total: entries
       .filter((entry, index) => {
         const next = entries[index + 1];
@@ -149,6 +156,7 @@ export function byDay(report) {
   return {
     days,
     unit: report.unit,
+    others: leftOutOf(report.postings.filter((posting) => under(posting.account, 'expenses')).map((posting) => posting.amount)),
     total: days.reduce((sum, day) => sum + day.value, 0),
   };
 }
@@ -181,7 +189,8 @@ export function waterfall(report) {
     ...expenses.map((category) => ({ label: category.label, value: -category.value, kind: 'expense' })),
     { label: 'net', value: income - spent, kind: 'net' },
   ];
-  return { steps, unit: report.unit, income, spent, net: income - spent };
+  const drawn = report.postings.filter((posting) => under(posting.account, 'income') || under(posting.account, 'expenses'));
+  return { steps, unit: report.unit, others: leftOutOf(drawn.map((posting) => posting.amount)), income, spent, net: income - spent };
 }
 
 /** The accounts worth a sparkline, largest first. */
@@ -194,7 +203,7 @@ export function multiples(report, limit = 8) {
     }))
     .sort((left, right) => Math.abs(right.total) - Math.abs(left.total))
     .slice(0, limit);
-  return { periods: report.periods, rows, unit: report.unit };
+  return { periods: report.periods, rows, unit: report.unit, others: report.others || [] };
 }
 
 // --------------------------------------------------------------------------- flows
@@ -243,6 +252,9 @@ export function flows(report) {
     net: income - spent,
     total: Math.max(income, spent),
     unit: report.unit || { prefix: '', suffix: '' },
+    others: leftOutOf(report.series
+      .filter((series) => /^(income|revenues?|expenses?)(:|$)/i.test(series.label))
+      .flatMap((series) => series.amounts)),
   };
 }
 
@@ -351,7 +363,7 @@ export function headlineFor(kind, data) {
       : `${amountOf(-data.net, data.unit)} more spent than came in`;
     return `income ${amountOf(data.income, data.unit)} into ${categories} ${categories === 1 ? 'category' : 'categories'}, ${left}`;
   }
-  return `${data.rows.length} accounts, ${data.periods.length} periods`;
+  return `${counted(data.rows.length, 'account')}, ${counted(data.periods.length, 'period')}`;
 }
 
 /** The same data as a table, which is what a screen reader gets. */
@@ -425,7 +437,17 @@ function valueScale(d3, log, low, high, range, count) {
     const domain = [decade(Math.min(low, 0)), decade(Math.max(high, 0))];
     if (domain[0] === domain[1]) domain[1] = 10;
     const scale = d3.scaleSymlog().constant(1).domain(domain).range(range);
-    return { scale, ticks: logTicks(domain[0], domain[1]) };
+    // Near zero a symmetric log scale puts 0, 1 and 10 almost on top of each other, so a tick
+    // is kept only where it clears the last one kept by a label's width.
+    const room = Math.abs(range[1] - range[0]) / Math.max(count, 2) * 0.6;
+    let reached = null;
+    const ticks = logTicks(domain[0], domain[1]).filter((value) => {
+      const at = scale(value);
+      if (reached !== null && Math.abs(at - reached) < Math.max(room, 16)) return false;
+      reached = at;
+      return true;
+    });
+    return { scale, ticks };
   }
   const scale = d3.scaleLinear().domain([low, high]).nice(count).range(range);
   return { scale, ticks: scale.ticks(count) };
@@ -581,7 +603,11 @@ function drawSeries(svg, model, colors, hooks, state) {
   let high = -Infinity;
   if (stacked) {
     const rows = model.periods.map((_, index) => Object.fromEntries(visible.map((series, key) => [key, series.values[index] || 0])));
-    layers = d3.stack().keys(visible.map((_, key) => key)).offset(d3.stackOffsetDiverging)(rows);
+    // Diverging only when there is something below zero. d3's diverging offset puts an account
+    // that is zero in a period at the baseline, so its band fell through every layer above it and
+    // left a black hole where a month had no medical bills.
+    const negative = visible.some((series) => series.values.some((value) => value < 0));
+    layers = d3.stack().keys(visible.map((_, key) => key)).offset(negative ? d3.stackOffsetDiverging : d3.stackOffsetNone)(rows);
     for (const layer of layers) for (const [a, b] of layer) { low = Math.min(low, a, b); high = Math.max(high, a, b); }
     low = Math.min(low, 0);
     high = Math.max(high, 0);
@@ -593,6 +619,8 @@ function drawSeries(svg, model, colors, hooks, state) {
     if (high <= 0 && high >= low * 0.35) high = 0;
   }
   if (low === high) { low -= 1; high += 1; }
+  // Shares add up to 100% give or take a rounding error, which would put the axis at 110%.
+  if (unit && unit.suffix === '%' && high > 99.999 && high < 100.001) high = 100;
 
   const margin = { top: 12, right: 18, bottom: 28, left: 12 };
   // One count for both: a domain made nice for ten ticks and labelled with eight leaves its
@@ -670,12 +698,22 @@ function drawSeries(svg, model, colors, hooks, state) {
     const last = Math.min(count - 1, Math.floor(to));
     const widest = Math.max(...model.periods.map((period) => period.length)) * 6.6 + 14;
     const every = Math.max(1, Math.ceil((last - first + 1) / Math.max(1, Math.floor((width - margin.left - margin.right) / widest))));
+    // The first and last labels are anchored to stay inside the plot, which moves them; a label
+    // is drawn only where it clears the one before, so an anchored first label and its
+    // neighbour never print over each other.
+    let reached = -Infinity;
     for (let index = first; index <= last; index += every) {
+      const text = model.periods[index];
+      const size = text.length * 6.6;
+      const anchor = count === 1 ? 'middle' : index === 0 && x(index) < margin.left + widest / 2 ? 'start' : index === count - 1 && x(index) > width - margin.right - widest / 2 ? 'end' : 'middle';
+      const start = anchor === 'start' ? x(index) : anchor === 'end' ? x(index) - size : x(index) - size / 2;
+      if (start < reached + 8) continue;
+      reached = start + size;
       axis.append('text')
         .attr('x', x(index)).attr('y', height - margin.bottom + 18)
-        .attr('text-anchor', count === 1 ? 'middle' : index === 0 && x(index) < margin.left + widest / 2 ? 'start' : index === count - 1 && x(index) > width - margin.right - widest / 2 ? 'end' : 'middle')
+        .attr('text-anchor', anchor)
         .attr('fill', colors.dim).attr('font-size', 11)
-        .text(model.periods[index]);
+        .text(text);
     }
     if (state.at !== undefined && state.at !== null) mark(state.at);
   }
@@ -956,7 +994,8 @@ function drawDoughnut(svg, model, colors, hooks, state) {
     label: (slice) => `${slice.data.label}, ${amountOf(slice.data.value, unit)}, ${percent(slice.data.value, total)}`,
   });
   centre.append('text').attr('text-anchor', 'middle').attr('dy', '-0.2em')
-    .attr('fill', colors.foreground).attr('font-size', Math.max(13, Math.min(22, radius / 6)))
+    // Sized to fit the hole: an amount in the hundreds of millions is twenty characters long.
+    .attr('fill', colors.foreground).attr('font-size', Math.max(10, Math.min(22, radius / 6, (radius * 0.58 * 1.7) / (amountOf(total, unit).length * 0.6))))
     .attr('font-weight', 600).style('pointer-events', 'none')
     .text(amountOf(total, unit));
   centre.append('text').attr('text-anchor', 'middle').attr('dy', '1.3em')
@@ -1137,7 +1176,17 @@ function drawCalendar(svg, data, colors, hooks) {
 /** Income down to net, as a waterfall: each category a step down from what came in. */
 function drawWaterfall(svg, data, colors, hooks) {
   const { d3, width, height, root } = frame(svg);
-  const steps = data.steps;
+  // As many steps as fit at a readable width; the smallest categories beyond that are one
+  // "other (n)" step, which the table under the chart still lists one by one.
+  const fits = Math.max(4, Math.floor((width - 80) / 64));
+  const expenses = data.steps.filter((step) => step.kind === 'expense');
+  let steps = data.steps;
+  if (expenses.length + 2 > fits) {
+    const keep = expenses.slice(0, fits - 3);
+    const rest = expenses.slice(fits - 3);
+    const other = { label: `other (${rest.length})`, value: rest.reduce((sum, step) => sum + step.value, 0), kind: 'expense', other: true };
+    steps = [data.steps[0], ...keep, other, data.steps[data.steps.length - 1]];
+  }
   if (steps.length === 0 || (data.income === 0 && data.spent === 0)) { nothing(root, colors); return {}; }
   const margin = { top: 20, right: 12, bottom: 34, left: 12 };
 
@@ -1186,7 +1235,7 @@ function drawWaterfall(svg, data, colors, hooks) {
         ...(bar.kind === 'expense' && data.income > 0 ? [{ label: `${percent(-bar.value, data.income)} of income` }] : []),
       ],
     }),
-    account: (bar) => (bar.kind === 'income' ? 'income' : bar.kind === 'expense' ? `expenses:${bar.label}` : null),
+    account: (bar) => (bar.other ? null : bar.kind === 'income' ? 'income' : bar.kind === 'expense' ? `expenses:${bar.label}` : null),
     label: (bar) => `${bar.label}, ${amountOf(bar.value, data.unit)}`,
   });
 
@@ -1194,7 +1243,8 @@ function drawWaterfall(svg, data, colors, hooks) {
     root.append('text')
       .attr('x', x(bar.label) + x.bandwidth() / 2).attr('y', y(Math.max(bar.start, bar.end)) - 5)
       .attr('text-anchor', 'middle').attr('fill', colors.foreground).attr('font-size', 11)
-      .style('pointer-events', 'none').text(amountOf(bar.value, data.unit));
+      // The full amount where it fits, the short one where it does not: -14.4M IDR.
+      .style('pointer-events', 'none').text(amountOf(bar.value, data.unit).length * 6.2 < x.step() ? amountOf(bar.value, data.unit) : tick(bar.value, data.unit));
     root.append('text')
       .attr('x', x(bar.label) + x.bandwidth() / 2).attr('y', height - margin.bottom + 16)
       .attr('text-anchor', 'middle').attr('fill', colors.dim).attr('font-size', 11)
@@ -1320,8 +1370,16 @@ function drawSankey(svg, data, colors, hooks) {
   });
 
   const labels = root.append('g').style('pointer-events', 'none');
+  // A label is drawn only where it clears the one above it in its column; a node too thin to
+  // be labelled still has its tooltip, and the table under the chart lists every flow.
+  const lowest = [-Infinity, -Infinity, -Infinity];
   for (const node of layout.nodes) {
     const middle = node.y + node.h / 2;
+    const tall = node.column !== 1 && node.h > 26 ? 26 : 13;
+    if (node.column !== 1) {
+      if (middle - tall / 2 < lowest[node.column]) continue;
+      lowest[node.column] = middle + tall / 2;
+    }
     if (node.column === 1) {
       labels.append('text').attr('x', node.x + node.w / 2).attr('y', node.y - 4).attr('text-anchor', 'middle')
         .attr('fill', colors.dim).attr('font-size', 11).text(`income ${amountOf(data.income, unit)}`);
