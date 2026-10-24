@@ -29,24 +29,40 @@ export const TYPES = {
     says: 'one line per account, over time',
   },
   bar: {
-    report: 'balance', split: false, options: ['log', 'percent', 'cumulative', 'top', 'sort', 'invert'],
-    says: 'accounts ranked; with an interval, columns per period',
+    report: 'balance', split: false, options: ['log', 'percent', 'cumulative', 'top', 'sort', 'invert', 'animate'],
+    says: 'accounts ranked; with an interval, columns per period; animated, a bar race',
   },
   stacked: {
     report: 'balance', split: true, options: ['percent', 'cumulative', 'top', 'sort', 'invert'],
     says: 'accounts stacked over time',
   },
+  stream: {
+    report: 'balance', split: true, options: ['cumulative', 'top', 'sort', 'invert'],
+    says: 'a streamgraph: accounts flowing around a centre, over time',
+  },
   pie: {
-    report: 'balance', split: false, options: ['top', 'sort', 'invert'],
+    report: 'balance', split: false, options: ['top', 'sort', 'invert', 'cumulative', 'animate'],
     says: 'each account as a share of the whole',
   },
   treemap: {
-    report: 'balance --tree', split: false, options: [],
+    report: 'balance --tree', split: false, options: ['cumulative', 'animate'],
     says: 'the account tree, area by balance',
   },
+  sunburst: {
+    report: 'balance --tree', split: false, options: ['cumulative', 'animate'],
+    says: 'the account tree in rings, angle by balance',
+  },
   sankey: {
-    report: 'balance', split: false, options: ['top'],
+    report: 'balance', split: false, options: ['top', 'cumulative', 'animate'],
     says: 'income flowing into spending and savings',
+  },
+  heatmap: {
+    report: 'balance', split: true, options: ['log', 'percent', 'cumulative', 'top', 'sort', 'invert'],
+    says: 'accounts by period, a square each, darker for more',
+  },
+  bump: {
+    report: 'balance', split: true, options: ['cumulative', 'top', 'invert'],
+    says: 'the rank of each account, period by period',
   },
   calendar: {
     report: 'register', split: false, options: [],
@@ -62,8 +78,18 @@ export const TYPES = {
   },
 };
 
+/**
+ * The types that draw one period and can be played through every period with --animate, and
+ * which of their options only mean something then: a running total needs periods to run over.
+ */
+export const ANIMATED = ['bar', 'pie', 'treemap', 'sunburst', 'sankey'];
+const NEEDS_ANIMATE = { cumulative: ['pie', 'treemap', 'sunburst', 'sankey'] };
+
 /** Other names a type answers to. */
-const ALIASES = { doughnut: 'pie', donut: 'pie', area: 'stacked', column: 'bar', columns: 'bar', sparklines: 'multiples', flows: 'sankey' };
+const ALIASES = {
+  doughnut: 'pie', donut: 'pie', area: 'stacked', column: 'bar', columns: 'bar', sparklines: 'multiples', flows: 'sankey',
+  streamgraph: 'stream', heat: 'heatmap', rank: 'bump', ranks: 'bump', rings: 'sunburst', race: 'bar',
+};
 
 /** The chart options, what each one does, and whether it takes a value. */
 export const OPTIONS = {
@@ -73,6 +99,7 @@ export const OPTIONS = {
   top: { takes: 'N', says: 'the N largest accounts, and the rest as other' },
   sort: { takes: 'name|value', says: 'order by name, or by size, which is the default' },
   invert: { takes: null, says: 'flip the sign, so income and liabilities read as positive' },
+  animate: { takes: null, says: 'play the chart period by period: Space plays and pauses, the arrows step' },
 };
 
 /** hledger's interval flags: a chart over time adds -M only when none of these is there. */
@@ -170,7 +197,14 @@ export function parse(args) {
   const unfit = Object.keys(options).filter((name) => !TYPES[type].options.includes(name));
   if (unfit.length) {
     const fits = TYPES[type].options.length ? `; it takes ${TYPES[type].options.map((name) => `--${name}`).join(', ')}` : '; it takes no chart options';
-    return { error: `${unfit.map((name) => `--${name}`).join(' and ')} ${unfit.length > 1 ? 'do' : 'does'} not apply to ${article(type)} ${type}${fits}.` };
+    const animatable = !ANIMATED.includes(type) && unfit.includes('animate')
+      ? ` A ${type} already shows every period; --animate plays ${ANIMATED.join(', ')}.` : '';
+    return { error: `${unfit.map((name) => `--${name}`).join(' and ')} ${unfit.length > 1 ? 'do' : 'does'} not apply to ${article(type)} ${type}${fits}.${animatable}` };
+  }
+  for (const [name, types] of Object.entries(NEEDS_ANIMATE)) {
+    if (options[name] && !options.animate && types.includes(type)) {
+      return { error: `--${name} on ${article(type)} ${type} needs periods to run over, so it goes with --animate: chart --animate --${name} ${type} ...` };
+    }
   }
   return { options, type, query };
 }
@@ -182,10 +216,11 @@ export function parse(args) {
  * its own; a Sankey gets `--depth 2` when the query sets no depth, so it draws categories rather
  * than every leaf; a calendar and a waterfall read the register.
  */
-export function command({ type, query }) {
+export function command({ type, query, options = {} }) {
   const spec = TYPES[type];
   const parts = [spec.report, ...query.map(quote)];
-  if (spec.split && !query.some((word) => INTERVAL_FLAGS.includes(word))) parts.push('-M');
+  // An animated chart plays period by period, so it is split like a chart over time.
+  if ((spec.split || options.animate) && !query.some((word) => INTERVAL_FLAGS.includes(word))) parts.push('-M');
   if (type === 'sankey' && !query.some((word) => word === '--depth' || /^--depth=|^-\d+$/.test(word))) parts.push('--depth 2');
   if (!query.includes('-O') && !query.includes('--output-format')) parts.push('-O csv');
   return parts.join(' ');
@@ -217,6 +252,7 @@ export function title({ type, query, options }) {
   const shaped = [
     options.log && 'log scale', options.percent && 'percent', options.cumulative && 'cumulative',
     options.top && `top ${options.top}`, options.sort === 'name' && 'by name', options.invert && 'inverted',
+    options.animate && 'animated',
   ].filter(Boolean);
   const of = terms.length ? terms.join(' ') : 'all accounts';
   return `${type}: ${of}${flags.length ? `, ${flags.join(' ')}` : ''}${shaped.length ? ` (${shaped.join(', ')})` : ''}`;
@@ -248,12 +284,23 @@ export function drill(parsed, account) {
  * takes, so following one shows how to type it next time.
  */
 export function related(parsed) {
-  const families = [['line', 'bar', 'stacked', 'pie', 'treemap', 'multiples'], ['sankey', 'waterfall', 'calendar']];
-  const family = families.find((types) => types.includes(parsed.type)) || [];
+  // Three families, each with one door into the next: the same numbers over time, as parts
+  // of a whole, and as flows. Five links at most, nearest first.
+  const families = [
+    ['line', 'stacked', 'stream', 'heatmap', 'bump', 'multiples', 'bar'],
+    ['bar', 'pie', 'treemap', 'sunburst', 'line'],
+    ['sankey', 'waterfall', 'calendar'],
+  ];
+  const family = families.find((types) => types[0] === parsed.type) || families.find((types) => types.includes(parsed.type)) || [];
   return family
     .filter((type) => type !== parsed.type)
+    .slice(0, 5)
     .map((type) => {
       const options = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => TYPES[type].options.includes(name)));
+      // An option that needs --animate goes when --animate does.
+      for (const [name, types] of Object.entries(NEEDS_ANIMATE)) {
+        if (options[name] && !options.animate && types.includes(type)) delete options[name];
+      }
       const args = line({ type, query: parsed.query, options });
       return { label: `chart ${args}`, args };
     });

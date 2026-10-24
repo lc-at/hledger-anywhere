@@ -29,7 +29,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { COLORS, DARK, FLOWS_CSV, MONTHLY_CSV, RANKING_CSV, REGISTER_CSV, TREE_CSV, dailyCsv } from './chart-fixtures.mjs';
+import { COLORS, DARK, FLOWS_CSV, FLOWS_MONTHS_CSV, MONTHLY_CSV, RANKING_CSV, REGISTER_CSV, TREE_CSV, TREE_MONTHS_CSV, dailyCsv } from './chart-fixtures.mjs';
 
 // This process writes every page, so its own coverage counts: it is measured from before the
 // plugin's modules are loaded, which is why they are imported here and not above.
@@ -42,7 +42,7 @@ const { build, parseReport } = await import('../assets/plugins/chart.js');
 const { page: editPage } = await import('../assets/plugins/edit-window.js');
 
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
-const MEASURED = ['chart.js', 'chart-d3.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
+const MEASURED = ['chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
 /** The least each measured file's code may be executed, as a share of its source. */
 const FLOOR = 0.9;
 
@@ -69,14 +69,23 @@ const CASES = {
   calendar: { line: 'calendar', csv: REGISTER_CSV },
   waterfall: { line: 'waterfall', csv: REGISTER_CSV },
   multiples: { line: '--log --sort name multiples', csv: MONTHLY_CSV },
-  sankey: { line: '--top 2 sankey', csv: FLOWS_CSV },
+  sankey: { line: '--top 1 sankey', csv: FLOWS_CSV },
+  heatmap: { line: '--log heatmap expenses', csv: MONTHLY_CSV },
+  bump: { line: 'bump expenses', csv: MONTHLY_CSV },
+  stream: { line: 'stream expenses', csv: MONTHLY_CSV },
+  sunburst: { line: 'sunburst expenses', csv: TREE_CSV },
+  race: { line: '--animate --cumulative --top 2 bar expenses', csv: MONTHLY_CSV },
+  playtree: { line: '--animate treemap expenses', csv: TREE_MONTHS_CSV },
+  playburst: { line: '--animate --cumulative sunburst expenses', csv: TREE_MONTHS_CSV },
+  playflows: { line: '--animate sankey', csv: FLOWS_MONTHS_CSV },
+  playpie: { line: '--animate pie expenses', csv: MONTHLY_CSV },
 };
 
 function windowFor(name, theme, { library = true } = {}) {
   const entry = CASES[name];
   const query = build(entry.line);
   return page({
-    report: parseReport(query.kind, entry.csv),
+    report: parseReport(query.kind, entry.csv, query.options),
     colors: theme === 'dark' ? DARK : COLORS,
     title: query.title,
     command: query.command,
@@ -482,6 +491,9 @@ async function everyChartDraws(tab) {
     line: 'path.line', daily: 'path.line', single: 'path.line', loglines: 'path.line', stacked: 'path', bar: 'rect[role=button]',
     columns: 'rect[role=button]', doughnut: 'path[role=button]', treemap: 'rect[role=button]', calendar: 'rect',
     waterfall: 'rect[role=button]', multiples: 'path', sankey: 'rect[role=button]',
+    heatmap: 'rect[role=button]', bump: 'circle[role=button]', stream: 'path', sunburst: 'path[role=button]',
+    race: 'rect[role=button]', playtree: 'rect[role=button]', playburst: 'path[role=button]', playflows: 'rect[role=button]',
+    playpie: 'path[role=button]',
   };
   for (const theme of ['light', 'dark']) {
     for (const name of Object.keys(CASES)) {
@@ -516,8 +528,8 @@ async function everyChartDraws(tab) {
     (await tab.eval("document.querySelectorAll('#chart path[aria-label]').length")) === 3
     && (await tab.eval("document.querySelectorAll('#chart path[role=button]').length")) === 2, '');
   await tab.show('sankey');
-  check('--top 2 on a Sankey keeps two categories, an other, and what was saved',
-    (await tab.eval("[...document.querySelectorAll('#chart rect[aria-label]')].map((node) => node.getAttribute('aria-label').split(',')[0]).join()")) === 'income:salary,income,expenses:housing,expenses:food,other (1),saved',
+  check('--top 1 on a Sankey keeps one category, an other, and what was saved',
+    (await tab.eval("[...document.querySelectorAll('#chart rect[aria-label]')].map((node) => node.getAttribute('aria-label').split(',')[0]).join()")) === 'income:salary,income,expenses:housing,other (2),saved',
     await tab.eval("[...document.querySelectorAll('#chart rect[aria-label]')].map((node) => node.getAttribute('aria-label').split(',')[0]).join()"));
   await tab.show('multiples');
   check('--sort name orders the sparklines by name', (await tab.eval("[...document.querySelectorAll('#table td:first-child')].map((td) => td.textContent).join()"))
@@ -690,26 +702,105 @@ async function saving(tab, downloads) {
   })());
 }
 
+async function moreCharts(tab) {
+  const texts = () => tab.eval("[...document.querySelectorAll('#chart text')].map((node) => node.textContent)");
+  await tab.show('heatmap');
+  check('a heatmap has a square per account per period, and names its rows',
+    (await tab.eval("document.querySelectorAll('#chart rect').length")) === 9 && (await texts()).includes('expenses:housing:rent')
+    && (await tab.eval("document.getElementById('legend').hidden || !document.querySelector('.legend li')")), String(await tab.eval("document.querySelectorAll('#chart rect').length")));
+  check('and says how dark is how much, on a log scale', (await texts()).some((text) => /darkest is \$1,286\.40, on a log scale/.test(text)), (await texts()).slice(-1)[0]);
+  await tab.show('bump');
+  check('a bump chart ranks each account in each period', ['#1', '#2', '#3'].every(async () => true) && (await texts()).includes('#3')
+    && (await tab.eval("document.querySelectorAll('#chart circle').length")) === 9, (await texts()).join(','));
+  const dot = await tab.centre('#chart circle');
+  await tab.mouse('mouseMoved', dot[0], dot[1]);
+  check('and its tooltip says the rank and the amount', /#\d expenses/.test(await tab.tip()), await tab.tip());
+  await tab.show('stream');
+  check('a streamgraph has a band per account and no value axis', (await tab.eval("document.querySelectorAll('#chart path').length")) >= 3
+    && !(await texts()).some((text) => text.startsWith('$')), (await texts()).join(','));
+  await tab.show('sunburst');
+  check('a sunburst draws the tree in rings, the lone top account as its centre',
+    (await tab.eval("document.querySelectorAll('#chart path[role=button]').length")) === 5 && (await texts()).includes('$698.90')
+    && (await tab.eval("[...document.querySelectorAll('#chart path')].every((path) => path.getAttribute('fill') && path.getAttribute('fill') !== 'rgb(0, 0, 0)')")),
+    String(await tab.eval("document.querySelectorAll('#chart path[role=button]').length")));
+  const arc = await tab.centre('#chart path[role=button]');
+  await tab.click(arc[0], arc[1]);
+  await tab.until('window.__asked.length > 0');
+  check('and a click on a ring charts that account over time', /^line expenses:/.test(await tab.eval('window.__asked[window.__asked.length - 1]')),
+    await tab.eval('window.__asked[window.__asked.length - 1]'));
+}
+
+async function playing(tab) {
+  const badge = () => tab.eval("document.querySelector('.period') && document.querySelector('.period').textContent");
+  const label = () => tab.eval("document.getElementById('timeline').getAttribute('aria-valuetext')");
+  await tab.show('playtree');
+  check('an animation has a timeline and a period badge, and plays by itself',
+    !(await tab.eval("document.getElementById('timeline').hidden")) && (await badge()) === '2024-01' && /playing/.test(await label()), await label());
+  check('and its keys say Space plays', /^Space play, pause/.test(await tab.eval("document.getElementById('keys').textContent")), '');
+  await tab.until("document.querySelector('.period').textContent === '2024-03' && !/playing/.test(document.getElementById('timeline').getAttribute('aria-valuetext'))", 9000);
+  check('it plays to the last period and stops there', (await badge()) === '2024-03' && /\$600\.00 at the leaves/.test(await tab.eval("document.getElementById('sub').textContent")),
+    await tab.eval("document.getElementById('sub').textContent"));
+  check('and the table is that period\'s, without what it did not hold', !(await tab.eval("document.getElementById('table').textContent")).includes('books'), '');
+  await tab.key('ArrowLeft', { keyCode: 37 });
+  check('the arrows step a period', (await badge()) === '2024-02' && /\$47\.49 at the leaves/.test(await tab.eval("document.getElementById('sub').textContent")), await badge());
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  check('Space plays from there', /playing/.test(await label()), await label());
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  check('and pauses on a whole period', !/playing/.test(await label()) && ['2024-02', '2024-03'].includes(await badge()), await label());
+  const [x, y] = await tab.eval("(() => { const b = document.querySelector('#timeline .track').getBoundingClientRect(); return [b.left + 2, b.top + 2]; })()");
+  await tab.click(x, y);
+  check('a click on the timeline goes to that period', (await badge()) === '2024-01', await badge());
+  await tab.key('0', { keyCode: 48, text: '0' });
+  check('0 goes back to the first', (await badge()) === '2024-01', await badge());
+  const cell = await tab.centre('#chart rect[role=button]');
+  await tab.click(cell[0], cell[1]);
+  await tab.until("document.getElementById('heading').textContent.startsWith('line')");
+  check('a click on a mark opens that account, and the animation stops', (await tab.eval('document.querySelector(".period")')) === null
+    && (await tab.eval("document.getElementById('timeline').hidden")), '');
+  await tab.key('Escape', { keyCode: 27 });
+  await tab.until("document.querySelector('.period')");
+  check('Escape comes back to the animation', (await tab.eval("document.getElementById('heading').textContent")) === 'treemap: expenses (animated)', '');
+
+  await tab.show('race');
+  await tab.until("!/playing/.test(document.getElementById('timeline').getAttribute('aria-valuetext'))", 9000);
+  check('a bar race keeps its places and writes its period where the bars are shortest',
+    (await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")) === 2 && (await tab.eval("document.querySelector('.period').className")) === 'period bottom'
+    && /2 places of 3 accounts; leading: expenses:housing:rent, \$3,723\.90/.test(await tab.eval("document.getElementById('sub').textContent")),
+    await tab.eval("document.getElementById('sub').textContent"));
+  await tab.show('playflows');
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  await tab.key('ArrowRight', { keyCode: 39 });
+  check('an animated Sankey steps to a period with no income, drawn from savings',
+    (await badge()) === '2024-02' && /more spent than came in/.test(await tab.eval("document.getElementById('sub').textContent")), await tab.eval("document.getElementById('sub').textContent"));
+  await tab.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await tab.show('playpie');
+  check('with reduced motion an animation waits to be played', !/playing/.test(await label()) && (await badge()) === '2024-01', await label());
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  await tab.until("document.querySelector('.period').textContent === '2024-03'", 9000);
+  check('and then steps through its periods', (await badge()) === '2024-03', await badge());
+  await tab.send('Emulation.setEmulatedMedia', { features: [] });
+}
+
 async function relatedCharts(tab) {
   await tab.show('bar');
   const links = await tab.eval("[...document.querySelectorAll('#also a')].map(a => a.textContent).join(' | ')");
   check('a chart lists the same query as the other types, by the line each one is',
-    links === 'chart line expenses | chart stacked expenses | chart pie expenses | chart treemap expenses | chart multiples expenses'
+    links === 'chart pie expenses | chart treemap expenses | chart sunburst expenses | chart line expenses'
     && !(await tab.eval("document.getElementById('also').hidden")), links);
   const link = await tab.centre('#also a', 'last');
   await tab.click(link[0], link[1]);
-  await tab.until("document.getElementById('heading').textContent === 'multiples expenses'");
-  check('clicking one charts it, through the app', (await tab.heading()) === 'multiples expenses'
-    && (await tab.eval('window.__asked[window.__asked.length - 1]')) === 'multiples expenses', await tab.heading());
+  await tab.until("document.getElementById('heading').textContent === 'line expenses'");
+  check('clicking one charts it, through the app', (await tab.heading()) === 'line expenses'
+    && (await tab.eval('window.__asked[window.__asked.length - 1]')) === 'line expenses', await tab.heading());
   check('and a chart with nothing related has no line for it', await tab.eval("document.getElementById('also').hidden"));
   await tab.key('Escape', { keyCode: 27 });
   check('Escape comes back, with the links where they were', (await tab.heading()) === 'bar: expenses'
-    && (await tab.eval("document.querySelectorAll('#also a').length")) === 5, await tab.heading());
+    && (await tab.eval("document.querySelectorAll('#also a').length")) === 4, await tab.heading());
   // A link is reached by Tab and followed with Enter, like the rest of the window.
   await tab.eval("document.querySelector('#also a').focus()");
   await tab.key('Enter', { keyCode: 13, text: '\r' });
-  await tab.until("document.getElementById('heading').textContent === 'line expenses'");
-  check('Enter on a focused link follows it', (await tab.heading()) === 'line expenses', await tab.heading());
+  await tab.until("document.getElementById('heading').textContent === 'pie expenses'");
+  check('Enter on a focused link follows it', (await tab.heading()) === 'pie expenses', await tab.heading());
 }
 
 async function whenThingsGoWrong(tab) {
@@ -800,6 +891,8 @@ try {
   await byKeyboard(tab);
   await saving(tab, downloads);
   await relatedCharts(tab);
+  await moreCharts(tab);
+  await playing(tab);
   await whenThingsGoWrong(tab);
   await theEditor(tab);
   await coverage.collect(tab);

@@ -42,12 +42,17 @@
         "line",
         "bar",
         "stacked",
+        "stream",
+        "heatmap",
+        "bump",
         "pie",
         "treemap",
+        "sunburst",
         "sankey",
         "calendar",
         "waterfall",
         "multiples",
+        "--animate",
         "--log",
         "--percent",
         "--cumulative",
@@ -60,7 +65,7 @@
       ],
       "module": "./chart.js",
       "usage": "chart [chart options] <type> [hledger arguments]",
-      "help": "Opens a chart of hledger's own numbers in a window of its own. Chart options come first and shape the picture; then the type; then the query, which goes to hledger as you write it, so anything balance takes works there. A chart over time is monthly unless the query names an interval. The window shows the command it ran, related charts to follow, and the numbers as a table.",
+      "help": "Opens a chart of hledger's own numbers in a window of its own. Chart options come first and shape the picture; then the type; then the query, which goes to hledger as you write it, so anything balance takes works there. A chart over time is monthly unless the query names an interval. A one-period chart can be played through every period with --animate. The window shows the command it ran, related charts to follow, and the numbers as a table.",
       "sections": [
         {
           "title": "Types",
@@ -71,11 +76,23 @@
             ],
             [
               "bar",
-              "accounts ranked; with -M or another interval, columns per period"
+              "accounts ranked; with -M, columns per period; with --animate, a bar race"
             ],
             [
               "stacked",
               "accounts stacked over time"
+            ],
+            [
+              "stream",
+              "a streamgraph: accounts flowing around a centre"
+            ],
+            [
+              "heatmap",
+              "accounts by period, a square each, darker for more"
+            ],
+            [
+              "bump",
+              "each account's rank, period by period"
             ],
             [
               "pie",
@@ -84,6 +101,10 @@
             [
               "treemap",
               "the account tree, area by balance"
+            ],
+            [
+              "sunburst",
+              "the account tree in rings, angle by balance"
             ],
             [
               "sankey",
@@ -107,20 +128,24 @@
           "title": "Chart options",
           "rows": [
             [
+              "--animate",
+              "play bar, pie, treemap, sunburst or sankey period by period"
+            ],
+            [
               "--log",
-              "a logarithmic value axis: line, bar, multiples"
+              "a logarithmic value axis: line, bar, heatmap, multiples"
             ],
             [
               "--percent",
-              "each period as shares of its total: line, bar, stacked, multiples"
+              "each period as shares of its total"
             ],
             [
               "--cumulative",
-              "a running total across the periods: line, bar, stacked, multiples"
+              "a running total across the periods; with --animate, totals so far"
             ],
             [
               "--top N",
-              "the N largest accounts, the rest as other; also pie and sankey"
+              "the N largest accounts, the rest as other"
             ],
             [
               "--sort name|value",
@@ -160,6 +185,14 @@
         {
           "title": "In the window",
           "rows": [
+            [
+              "Space",
+              "play or pause an animation; left, right step a period"
+            ],
+            [
+              "timeline",
+              "click under an animation to go to that period"
+            ],
             [
               "hover, Tab",
               "a mark's numbers"
@@ -201,32 +234,32 @@
       ],
       "examples": [
         [
-          "chart --log bar -p 2026 coffee",
-          "coffee in 2026, on a log scale"
+          "chart --animate treemap -p 2026 expenses",
+          "where the money went, month by month"
         ],
         [
-          "chart bar -M expenses",
-          "spending in monthly columns"
+          "chart --animate --cumulative sankey -p 2026",
+          "income into spending, building up over the year"
+        ],
+        [
+          "chart --animate --cumulative bar --depth 2 expenses",
+          "a bar race of spending so far, by category"
+        ],
+        [
+          "chart heatmap --depth 2 expenses",
+          "every category in every month at a glance"
+        ],
+        [
+          "chart --log bar -p 2026 coffee",
+          "coffee in 2026, on a log scale"
         ],
         [
           "chart --percent stacked --depth 2 expenses",
           "what spending is made of, month by month"
         ],
         [
-          "chart --cumulative --invert line income",
-          "income so far this period"
-        ],
-        [
-          "chart --top 5 pie -p 2026 expenses",
-          "2026's five largest expenses"
-        ],
-        [
           "chart line -H assets liabilities",
           "balances at each month's end"
-        ],
-        [
-          "chart sankey -p 2026",
-          "where 2026's income went"
         ]
       ]
     },

@@ -28,7 +28,7 @@ import { page } from './chart-window.js';
 import { command, line, parse, related, title } from './chart-args.js';
 import { counted, format, inOneCommodity, leftOut, periodTotal, shape, split, trimmed } from './chart-data.js';
 import { beside, bridge, colorsOf, shell } from './window-kit.js';
-import { byDay, flows, headlineFor, isCustom, readRegister, readTree, waterfall } from './chart-d3.js';
+import { byDay, flows, headlineFor, isCustom, readRegister, readTree, readTreeSeries, waterfall } from './chart-d3.js';
 
 export default {
   async run(args, host) {
@@ -53,7 +53,7 @@ export default {
     try {
       // -O csv is the only hledger output that keeps periods, accounts and amounts apart
       // without parsing a table whose columns move.
-      report = parseReport(query.kind, await host.hledger(query.command));
+      report = parseReport(query.kind, await host.hledger(query.command), query.options);
     } catch (error) {
       const why = error && error.message ? error.message : String(error);
       view.write(shell(colors, query.title, why));
@@ -156,8 +156,12 @@ export function read(text) {
  * the waterfall the register, and the Sankey reduces a balance report to flows; aggregating
  * here means the window, the headline and the table all receive the same finished data.
  */
-export function parseReport(kind, text) {
-  if (kind === 'treemap') return readTree(text);
+export function parseReport(kind, text, options = {}) {
+  // Played period by period, a chart keeps every period: the tree with a column each for a
+  // treemap or a sunburst, the balance report itself for the rest, which the window turns into
+  // frames.
+  if (options.animate) return kind === 'treemap' || kind === 'sunburst' ? readTreeSeries(text) : read(text);
+  if (kind === 'treemap' || kind === 'sunburst') return readTree(text);
   if (kind === 'calendar' || kind === 'waterfall') {
     const register = readRegister(text);
     if (!register) return null;
@@ -183,7 +187,7 @@ function listen(host) {
     async requery(args) {
       const query = build(args);
       if (query.refusal) throw new Error(query.refusal);
-      const report = parseReport(query.kind, await host.hledger(query.command));
+      const report = parseReport(query.kind, await host.hledger(query.command), query.options);
       if (!report) throw new Error(`hledger had nothing to chart for ${query.title}`);
       return {
         report,
@@ -202,6 +206,9 @@ function listen(host) {
 function summary(query, report) {
   // The shaped charts already have a sentence for their data; using it keeps the terminal and
   // the window saying the same thing.
+  if (query.options.animate) {
+    return `${query.kind}, played over ${counted(report.periods.length, 'period')}, ${report.periods[0]} to ${report.periods[report.periods.length - 1]}`;
+  }
   // Sparklines read a balance report, which the window shapes, so they are summed up as one.
   if (isCustom(query.kind) && query.kind !== 'multiples') return `${query.kind}, ${headlineFor(query.kind, report)}`;
   // Said of the numbers as the chart shows them: an inverted running total is summed up as

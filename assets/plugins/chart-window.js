@@ -29,7 +29,9 @@
 import { chosen, chosenSeries, counted, format, leftOut, palette, percent, periodTotal, seriesTotal, shape, trimmed } from './chart-data.js';
 import { escape, isLight } from './window-kit.js';
 import { foldFlows, headlineFor, heightFor, isCustom, multiples, render, tableFor } from './chart-d3.js';
-import { drill, parse } from './chart-args.js';
+import { MORE, renderMore } from './chart-more.js';
+import { player, timeline } from './chart-play.js';
+import { ANIMATED, drill, parse } from './chart-args.js';
 import { KEYS, keyFor, legend, save, tooltip } from './chart-ui.js';
 
 // --------------------------------------------------------------------------- the report
@@ -47,7 +49,7 @@ export function typeFor(report, kind) {
   if (kind === 'pie') return 'doughnut';
   if (kind === 'bar') return many ? 'columns' : 'bar';
   if (!many) return 'bar';
-  return kind === 'stacked' ? 'stacked' : 'line';
+  return ['stacked', 'stream', 'heatmap', 'bump'].includes(kind) ? kind : 'line';
 }
 
 /** What the page says under the heading. */
@@ -107,7 +109,9 @@ export function modelFor({ report, colors, title, kind, options = {} }) {
     };
   }
 
-  const series = chosenSeries(shaped, options, type === 'stacked' ? 8 : 7);
+  // A heatmap has a row per account and room for many; a stream or a stack has a band each.
+  const fits = { heatmap: 24, stacked: 8, stream: 10, bump: 8 }[type] || 7;
+  const series = chosenSeries(shaped, options, fits);
   const colours = palette(colors, series.length);
   return {
     type,
@@ -140,6 +144,17 @@ export function viewOf(original) {
   const options = state.options || {};
   // Commodities the report held besides the one drawn are named under the subtitle.
   const mixed = leftOut(state.report.others, state.report.unit, state.command || '');
+  if (options.animate && ANIMATED.includes(state.kind) && state.report && state.report.periods && state.report.periods.length > 1) {
+    const play = timeline(state.kind, state.report, options, state.colors);
+    const first = play.words(0);
+    return {
+      draw: 'animate', play, items: null,
+      mixed: play.others ? leftOut(play.others, state.report.unit, state.command || '') : mixed,
+      sub: `${counted(play.periods.length, 'period')}, ${play.periods[0]} to ${play.periods[play.periods.length - 1]}; ${first.sub}`,
+      table: first.table,
+      height: play.height || heightFor(state.kind === 'pie' ? 'doughnut' : state.kind === 'sunburst' ? 'sunburst' : 'treemap', {}),
+    };
+  }
   if (state.kind === 'multiples') {
     // Sparklines are a balance chart drawn small: shaped and chosen the same way.
     const data = multiples(shape(state.report, options), options.top || 8);
@@ -166,7 +181,8 @@ export function viewOf(original) {
     };
   }
   const model = modelFor(state);
-  const items = model.series
+  // The heatmap and the bump chart name their accounts where they are drawn, so need no legend.
+  const items = model.series && !['heatmap', 'bump'].includes(model.type)
     ? model.series.map((series) => ({ label: series.label, colour: series.colour }))
     : model.type === 'doughnut'
       ? model.rows.map((row) => ({ label: row.label, colour: row.colour }))
@@ -185,8 +201,9 @@ export function viewOf(original) {
 // --------------------------------------------------------------------------- the page
 
 /** The keys, as the window's footer says them. */
-export function keysLine() {
-  return KEYS.map(([key, action]) => `${key} ${action}`).join(' · ');
+export function keysLine(animated = false) {
+  const keys = animated ? [['Space', 'play, pause'], ...KEYS.map(([key, action]) => (key === '← →' ? [key, 'step a period'] : [key, action]))] : KEYS;
+  return keys.map(([key, action]) => `${key} ${action}`).join(' · ');
 }
 
 /**
@@ -246,6 +263,19 @@ export function page({ report, colors, title, command, token, kind, options = {}
   .warn { color:${colors.foreground}; margin:0 0 12px; font-size:13px; }
   .mixed { color:${colors.foreground}; margin:-8px 0 12px; font-size:12px; border-left:2px solid ${colors.accent}; padding-left:8px; }
   code { color:${colors.foreground}; }
+  .period { position:absolute; top:2px; right:6px; font-size:30px; font-weight:600; color:${colors.foreground};
+    opacity:.4; pointer-events:none; font-variant-numeric:tabular-nums; }
+  .period.bottom { top:auto; bottom:30px; right:14px; }
+  .timeline { position:relative; margin:10px 0 4px; padding:6px 0 0; cursor:pointer; user-select:none; }
+  .timeline .track { position:relative; height:4px; border-radius:2px; background:${colors.dim}44; }
+  .timeline .done { height:100%; border-radius:2px; background:${colors.accent}; }
+  .timeline .knob { position:absolute; top:-5px; width:14px; height:14px; border-radius:50%; background:${colors.accent};
+    transform:translateX(-50%); box-shadow:0 0 0 2px ${colors.background}; }
+  .timeline[data-playing="yes"] .knob { box-shadow:0 0 0 2px ${colors.background}, 0 0 0 4px ${colors.accent}55; }
+  .timeline .labels { position:relative; height:18px; font-size:11px; color:${colors.dim}; }
+  .timeline .labels span { position:absolute; top:5px; transform:translateX(-50%); white-space:nowrap; }
+  .timeline .labels span:first-child { transform:none; }
+  .timeline .labels span:last-child { transform:translateX(-100%); }
 </style></head>
 <body>
 <main>
@@ -255,10 +285,11 @@ export function page({ report, colors, title, command, token, kind, options = {}
   <p class="warn" id="warn" hidden></p>
   <div id="legend" hidden></div>
   <div class="frame"><svg class="chart" id="chart" role="img" aria-label="${escape(title)}"></svg></div>
+  <div class="timeline" id="timeline" hidden></div>
   <p class="also" id="also"${related.length ? '' : ' hidden'}>${alsoLine(related)}</p>
   <div id="table">${view.table}</div>
   <p class="note">from hledger's own numbers: <code id="command">${escape(command)}</code></p>
-  <p class="keys">${escape(keysLine())}</p>
+  <p class="keys" id="keys">${escape(keysLine(view.draw === 'animate'))}</p>
 </main>
 <script type="application/json" id="chart-data">${data}</script>
 ${scripts.map((src) => `<script src="${escape(src)}"></script>`).join('\n')}
@@ -310,6 +341,10 @@ export function mount(root = document) {
   const legendBox = root.getElementById('legend');
   const also = root.getElementById('also');
   const mixed = root.getElementById('mixed');
+  const line = root.getElementById('timeline');
+  const keysNote = root.getElementById('keys');
+  const reduced = Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  let playing = null;
 
   if (!window.d3) {
     show(warn, 'The chart library did not load, so this is the numbers alone.');
@@ -356,15 +391,50 @@ export function mount(root = document) {
     follow(link.dataset.args);
   });
 
-  function paint() {
-    const shown = viewOf(state);
+  // Draw one picture: a renderer from chart-d3.js, or one from chart-more.js.
+  function drawOne(kind, data) {
+    return (MORE.includes(kind) ? renderMore : render)(kind, svg, data, state.colors, hooks, view) || {};
+  }
+
+  function paint(shown = viewOf(state)) {
     try {
-      controls = render(shown.draw, svg, shown.data, state.colors, hooks, view) || {};
+      if (shown.draw === 'animate') {
+        if (playing) playing.redraw();
+        return;
+      }
+      controls = drawOne(shown.draw, shown.data);
       show(warn, '');
     } catch (error) {
       controls = {};
       show(warn, error && error.message ? error.message : String(error));
     }
+  }
+
+  // An animation: the player owns the clock, and each frame is drawn by the still renderer.
+  function animate(shown) {
+    tip.hide();
+    playing = player({
+      holder,
+      line,
+      play: shown.play,
+      reduced,
+      paint(frame) {
+        try {
+          drawOne(frame.draw, frame.data);
+        } catch (error) {
+          show(warn, error && error.message ? error.message : String(error));
+        }
+      },
+      onPeriod(_, words) {
+        sub.textContent = `${shown.sub.split('; ')[0]}; ${words.sub}`;
+        table.innerHTML = words.table;
+      },
+    });
+    controls = {
+      step: (direction) => playing.step(direction),
+      reset: () => playing.reset(),
+      play: () => playing.toggle(),
+    };
   }
 
   function drawLegend(items) {
@@ -380,7 +450,12 @@ export function mount(root = document) {
   }
 
   function draw() {
+    if (playing) {
+      playing.stop();
+      playing = null;
+    }
     const shown = viewOf(state);
+    keysNote.textContent = keysLine(shown.draw === 'animate');
     heading.textContent = state.title;
     document.title = `hledger: ${state.title}`;
     sub.textContent = shown.sub;
@@ -392,12 +467,16 @@ export function mount(root = document) {
     holder.style.height = `${shown.height}px`;
     svg.setAttribute('aria-label', state.title);
     drawLegend(shown.items);
-    paint();
+    if (shown.draw === 'animate') animate(shown);
+    else paint(shown);
   }
 
   window.addEventListener('keydown', (event) => {
     const action = keyFor(event);
     if (!action) return;
+    // Space plays an animation; anywhere else, and on a mark that took it to open its account,
+    // it is left alone.
+    if (action === 'play' && (event.defaultPrevented || !controls.play)) return;
     // A key typed into something editable is not a command, should the page ever have one.
     if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
     event.preventDefault();
@@ -417,12 +496,13 @@ export function mount(root = document) {
     if (action === 'zoom-in' && controls.zoomBy) controls.zoomBy(1.6);
     if (action === 'zoom-out' && controls.zoomBy) controls.zoomBy(1 / 1.6);
     if (action === 'reset' && controls.reset) controls.reset();
+    if (action === 'play' && controls.play) controls.play();
     if (action === 'save-svg' || action === 'save-png') {
       // The picture says what the page around it said: the subtitle, and the legend for
       // what is still shown.
       const shown = viewOf(state);
       const items = (shown.items || []).filter((item) => !view.hidden.has(item.label));
-      save(svg, state.colors, state.title, action === 'save-svg' ? 'svg' : 'png', { subtitle: shown.sub, items })
+      save(svg, state.colors, state.title, action === 'save-svg' ? 'svg' : 'png', { subtitle: sub.textContent || shown.sub, items })
         .catch((error) => show(warn, error && error.message ? error.message : String(error)));
     }
   });
@@ -431,7 +511,7 @@ export function mount(root = document) {
   let timer = null;
   window.addEventListener('resize', () => {
     clearTimeout(timer);
-    timer = setTimeout(paint, 120);
+    timer = setTimeout(() => paint(), 120);
   });
 
   draw();

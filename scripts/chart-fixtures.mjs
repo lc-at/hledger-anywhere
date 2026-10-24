@@ -79,6 +79,28 @@ export const FLOWS_CSV = [
   '"Total:","$-1866.11"',
 ].join('\n');
 
+// hledger balance --tree -M expenses -O csv: the tree with a column per month.
+export const TREE_MONTHS_CSV = [
+  '"account","2024-01","2024-02","2024-03"',
+  '"expenses","$1286.40","$47.49","$600.00"',
+  `"${NBSP.repeat(2)}food","$86.40","$12.50","$100.00"`,
+  `"${NBSP.repeat(4)}coffee","0","$12.50","$20.00"`,
+  `"${NBSP.repeat(4)}groceries","$86.40","0","$80.00"`,
+  `"${NBSP.repeat(2)}housing:rent","$1200.00","0","$500.00"`,
+  `"${NBSP.repeat(2)}reading:books","0","$34.99","0"`,
+  '"Total:","$1286.40","$47.49","$600.00"',
+].join('\n');
+
+// hledger balance -M --depth 2 -O csv: flows month by month.
+export const FLOWS_MONTHS_CSV = [
+  '"account","2024-01","2024-02","2024-03"',
+  '"expenses:food","$86.40","$12.50","$100.00"',
+  '"expenses:housing","$1200.00","0","$500.00"',
+  '"expenses:reading","0","$34.99","$40.00"',
+  '"income:salary","$-3200.00","0","$-3200.00"',
+  '"Total:","$-1913.60","$47.49","$-2560.00"',
+].join('\n');
+
 /** The dark theme the app starts in, for the browser check's second pass. */
 export const DARK = {
   background: '#000000',

@@ -227,8 +227,12 @@ hledger as you write it, so anything `balance` takes works there: `-p 2026`, `-M
 | `line` | one line per account, over time | `balance … -M` |
 | `bar` | accounts ranked; with an interval such as `-M`, columns per period | `balance …` |
 | `stacked` | accounts stacked over time | `balance … -M` |
+| `stream` | a streamgraph: accounts flowing around a centre | `balance … -M` |
+| `heatmap` | accounts by period, a square each, darker for more | `balance … -M` |
+| `bump` | each account's rank, period by period | `balance … -M` |
 | `pie` | each account's share of the whole | `balance …` |
 | `treemap` | the account tree, area by balance | `balance --tree …` |
+| `sunburst` | the account tree in rings, angle by balance | `balance --tree …` |
 | `sankey` | income flowing into spending, and what was saved | `balance … --depth 2` |
 | `calendar` | a square per day, darker for more spending | `register …` |
 | `waterfall` | income, a step down per expense category, then net | `register …` |
@@ -239,7 +243,8 @@ Sankey is two levels deep unless the query sets `--depth`. Nothing else is added
 
 | option | does | for |
 | --- | --- | --- |
-| `--log` | a logarithmic value axis, for amounts of very different sizes | line, bar, multiples |
+| `--animate` | play the chart period by period | bar (a bar race), pie, treemap, sunburst, sankey |
+| `--log` | a logarithmic value axis, for amounts of very different sizes | line, bar, heatmap, multiples |
 | `--percent` | each period as shares of its total | line, bar, stacked, multiples |
 | `--cumulative` | a running total across the periods | line, bar, stacked, multiples |
 | `--top N` | the N largest accounts, and the rest as "other" | those, pie, sankey |
@@ -247,6 +252,10 @@ Sankey is two levels deep unless the query sets `--depth`. Nothing else is added
 | `--invert` | flip the sign, so income and liabilities read as positive | line, bar, stacked, pie, multiples |
 
 ```
+chart --animate treemap -p 2026 expenses       where the money went, month by month
+chart --animate --cumulative sankey -p 2026    income into spending, building up over the year
+chart --animate --cumulative bar --depth 2 expenses   a bar race of spending so far
+chart heatmap --depth 2 expenses               every category in every month at a glance
 chart --log bar -p 2026 coffee                 coffee in 2026, on a log scale
 chart bar -M expenses                          spending in monthly columns
 chart --percent stacked --depth 2 expenses     what spending is made of, month by month
@@ -255,6 +264,16 @@ chart --top 5 pie -p 2026 expenses             2026's five largest expenses
 chart line -H assets liabilities               balances at each month's end
 chart sankey -p 2026                           where 2026's income went
 ```
+
+**Animated charts.** `--animate` asks hledger for every period once (`-M` unless the query
+names an interval) and plays them in the window, easing each account from one period's amount
+to the next. It starts by itself, unless the system asks for reduced motion; Space plays and
+pauses, ← → step a period, 0 goes back to the first, and a click on the timeline under the chart
+goes to that period. Things stay where the eye left them: a Sankey's nodes and a pie's slices
+keep one order, a treemap's colours belong to their branch, and every frame is drawn to one
+scale, so a month with half the spending is half the area. A bar race lets bars overtake, which
+is the point of one. With `--cumulative` each frame is the running total so far. Click a mark at
+any moment to chart that account over time; Escape comes back to the animation.
 
 A line that cannot be charted is answered in the terminal, with no window opened, and the
 answer says what to type: a missing type lists the types, a misspelt one (`lien`) is offered

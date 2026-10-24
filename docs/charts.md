@@ -20,6 +20,10 @@ without, and the command under the chart shows it.
 | `line` | `balance <query> -M` | a line per account over time |
 | `bar` | `balance <query>` | a ranking; columns per period when the query has an interval |
 | `stacked` | `balance <query> -M` | accounts stacked over time |
+| `stream` | `balance <query> -M` | a streamgraph: d3's wiggle offset, inside-out order, no value axis |
+| `heatmap` | `balance <query> -M` | accounts by period; `--log` colours by magnitude |
+| `bump` | `balance <query> -M` | each account's rank per period, joined with `curveBumpX` |
+| `sunburst` | `balance --tree <query>` | `d3.partition` of the tree; a lone top account is the centre |
 | `pie` | `balance <query>` | a doughnut of the positive balances |
 | `treemap` | `balance --tree <query>` | the account tree, area by balance |
 | `sankey` | `balance <query> --depth 2` | income flowing into spending and savings |
@@ -32,7 +36,8 @@ depth. The options, and the types each applies to:
 
 | option | does | types |
 |---|---|---|
-| `--log` | symmetric log value axis, so zero and negatives still draw | line, bar, multiples |
+| `--animate` | play period by period | bar, pie, treemap, sunburst, sankey |
+| `--log` | symmetric log value axis, so zero and negatives still draw | line, bar, heatmap, multiples |
 | `--percent` | each period as shares of its total | line, bar, stacked, multiples |
 | `--cumulative` | running totals across periods | line, bar, stacked, multiples |
 | `--top N` | the N largest, the rest as "other (n)" | line, bar, stacked, pie, multiples, sankey |
@@ -47,6 +52,23 @@ Clicking a mark charts that account as a line, keeping the query's flags (its pe
 depth) and the options that still mean something for one account (`--log`, `--cumulative`,
 `--invert`). The "Also" line under each chart is the same query drawn as the other types of its
 family, each written as the line it is.
+
+## Animation
+
+`chart-play.js` is the whole of it. `timeline(kind, report, options)` is pure: it returns the
+periods and `frame(position)`, where a whole number is a period and 2.5 is halfway from the third
+to the fourth. Every amount is interpolated linearly between periods and the clock eases between
+them (`positionAt`: hold 500 ms, then a cubic ease over 900 ms), so the same still renderer draws
+every frame and a frame at a whole period is exactly the static chart of that period. What is
+held steady is decided once from the whole range: the Sankey's node order and its scale
+(`fixed`), the pie's slices and colours, the treemap's and sunburst's branch colours and their
+area or radius against the largest period. A race gives each account a fractional place, eased
+between its ranks in two periods. `player()` is the DOM half: requestAnimationFrame, the badge,
+the timeline (a slider to assistive technology) and the controls the window's keys call.
+`prefers-reduced-motion` stops autoplay and the easing; Space then steps period by period.
+
+`--cumulative` on a one-period chart only means something with periods to run over, so it is
+refused there without `--animate`, and the refusal says so.
 
 ## Real journals
 
@@ -72,6 +94,8 @@ chart-args.js     the grammar: parse, command, title, drill, related            
 chart.js          run(); build(args); parseReport(kind, csv)                      pure but run
 chart-data.js     CSV, amounts, formatting, series arithmetic, the palette        pure
 chart-window.js   modelFor(report) -> model; viewOf(state); page(); mount()      pure but mount
+chart-more.js     the heatmap, the bump chart and the sunburst                   DOM; intensity, ranks pure
+chart-play.js     timeline(): frames between periods (pure); player(): the clock   pure but player
 chart-d3.js       parsers and aggregations for the shaped charts, the Sankey
                   layout, the words and tables (pure), and render(kind, svg, ...)
 chart-ui.js       tooltip, legend, keys, saving                                  DOM, keyFor pure

@@ -25,7 +25,7 @@ import { counted, format, group, inOneCommodity, leftOutOf, palette, percent, se
 import { escape, mix } from './window-kit.js';
 
 /** The kinds that read a report of their own rather than a balance report. */
-export const CUSTOM = ['treemap', 'calendar', 'waterfall', 'multiples', 'sankey'];
+export const CUSTOM = ['treemap', 'sunburst', 'calendar', 'waterfall', 'multiples', 'sankey'];
 
 export function isCustom(kind) {
   return CUSTOM.includes(kind);
@@ -105,39 +105,126 @@ export function readRegister(text) {
  * through something that normalised them.
  */
 export function readTree(text) {
+  const series = readTreeSeries(text);
+  return series ? treeAt(series, 0) : null;
+}
+
+/**
+ * The tree with every period it has: `balance --tree -M` is the same indented rows, one column
+ * per period. Each row keeps an amount per period, in the report's main commodity.
+ */
+export function readTreeSeries(text) {
   const rows = String(text == null ? '' : text).trim().split('\n').map(split);
   const start = rows.findIndex((cells) => (cells[0] || '').trim().toLowerCase() === 'account');
   if (start < 0) return null;
+  const periods = rows[start].slice(1).map((cell) => cell.trim());
+  if (periods.length === 0) return null;
 
   const entries = [];
   for (const cells of rows.slice(start + 1)) {
     const raw = (cells[0] || '').replace(/\r$/, '');
     const label = raw.trim();
     if (!label || /^total:?$/i.test(label)) continue;
-    if (!String(cells[1] || '').trim()) continue;
+    if (periods.every((_, index) => !String(cells[index + 1] || '').trim())) continue;
     // Two no-break spaces (or spaces) a level; a tab is a level on its own.
     const lead = (raw.match(/^[ \t\u00a0]+/) || [''])[0];
     const tabs = (lead.match(/\t/g) || []).length;
     const depth = tabs + Math.floor((lead.length - tabs) / 2);
-    entries.push({ depth, label, cell: cells[1] });
+    entries.push({ depth, label, cells: periods.map((_, index) => cells[index + 1]) });
   }
   if (entries.length === 0) return null;
-  const { amounts, unit, others } = inOneCommodity(entries.map((entry) => entry.cell));
-  entries.forEach((entry, index) => {
-    entry.amount = amounts[index];
-    delete entry.cell;
-  });
+  const { amounts, unit, others } = inOneCommodity(entries.flatMap((entry) => entry.cells));
+  const width = periods.length;
   return {
-    rows: entries,
+    periods,
+    rows: entries.map((entry, index) => ({ depth: entry.depth, label: entry.label, amounts: amounts.slice(index * width, (index + 1) * width) })),
     unit,
     others,
-    total: entries
-      .filter((entry, index) => {
-        const next = entries[index + 1];
-        return !next || next.depth <= entry.depth;
-      })
-      .reduce((sum, entry) => sum + Math.abs(entry.amount.value), 0),
   };
+}
+
+/** A value part of the way from one period to the next, for a frame between them. */
+function between(amounts, position) {
+  const low = Math.max(0, Math.min(amounts.length - 1, Math.floor(position)));
+  const high = Math.min(amounts.length - 1, low + 1);
+  const t = Math.max(0, Math.min(1, position - low));
+  const a = amounts[low] ? amounts[low].value : 0;
+  const b = amounts[high] ? amounts[high].value : 0;
+  return a + (b - a) * t;
+}
+
+/**
+ * The tree at one period, or part of the way between two: the single-period shape the treemap
+ * and the sunburst draw. A whole number is a period; 2.5 is halfway from the third to the fourth.
+ */
+export function treeAt(series, position) {
+  const rows = series.rows.map((row) => {
+    const value = between(row.amounts, position);
+    const sample = row.amounts[0] || {};
+    return { depth: row.depth, label: row.label, amount: { value, prefix: sample.prefix || '', suffix: sample.suffix || '', raw: String(value) } };
+  });
+  return {
+    rows,
+    unit: series.unit,
+    others: series.others,
+    total: leafTotal(rows),
+  };
+}
+
+/** The sum of the leaves of an indented tree: the rows with nothing indented below them. */
+export function leafTotal(rows) {
+  return rows
+    .filter((row, index) => {
+      const next = rows[index + 1];
+      return !next || next.depth <= row.depth;
+    })
+    .reduce((sum, row) => sum + Math.abs(row.amount.value), 0);
+}
+
+/**
+ * An indented tree as nested nodes for d3.hierarchy: the CSV has one row per node, parents
+ * included; the leaves are the rows with nothing indented below them, and summing from the
+ * leaves is what stops a parent counting twice. Shared by the treemap and the sunburst.
+ */
+export function nestTree(rows) {
+  const leaves = rows.map((row, index) => {
+    const next = rows[index + 1];
+    return !next || next.depth <= row.depth;
+  });
+  const tree = { name: '', children: [] };
+  const parents = [tree];
+  rows.forEach((row, index) => {
+    const parent = parents[row.depth] || tree;
+    let node = parent;
+    for (const part of row.label.split(':').filter(Boolean)) {
+      let child = node.children.find((entry) => entry.name === part);
+      if (!child) {
+        child = { name: part, children: [] };
+        node.children.push(child);
+      }
+      node = child;
+    }
+    if (leaves[index]) {
+      delete node.children;
+      node.value = Math.abs(row.amount.value);
+    }
+    parents[row.depth + 1] = node;
+  });
+  return tree;
+}
+
+/** The colour group of a node: the branch under the root, one deeper when the root has one child. */
+export function groupsOf(hierarchy) {
+  const depth = (hierarchy.children || []).length === 1 ? 2 : 1;
+  const groupOf = (node) => {
+    const ancestors = node.ancestors();
+    const found = ancestors.find((entry) => entry.depth === depth) || ancestors[ancestors.length - 2] || node;
+    return found.ancestors().reverse().map((entry) => entry.data.name).filter(Boolean).join(':');
+  };
+  // Every leaf, empty or not, so a group keeps its colour in every frame of an animation.
+  const order = new Map();
+  for (const leaf of hierarchy.leaves()) if (!order.has(groupOf(leaf))) order.set(groupOf(leaf), order.size);
+  return { groupOf, order };
 }
 
 // --------------------------------------------------------------------------- aggregations
@@ -226,7 +313,7 @@ function shortName(account) {
  * above income is drawn from a "from savings" source, so every pixel of every link is money
  * that actually moved.
  */
-export function flows(report) {
+export function flows(report, order = null) {
   const sources = [];
   const sinks = [];
   for (const series of report.series) {
@@ -238,8 +325,12 @@ export function flows(report) {
       if (value > 0.005) sinks.push({ account, label: shortName(account), value, kind: 'expense' });
     }
   }
-  sources.sort((left, right) => right.value - left.value);
-  sinks.sort((left, right) => right.value - left.value);
+  // Largest first, or in a given order, which is how an animation keeps every node where it
+  // was from one period to the next instead of shuffling them as they grow.
+  const rank = (list) => (node) => (order && list.includes(node.account) ? list.indexOf(node.account) : Infinity);
+  const sorter = (list) => (left, right) => (order ? rank(list)(left) - rank(list)(right) || right.value - left.value : right.value - left.value);
+  sources.sort(sorter(order ? order.sources : []));
+  sinks.sort(sorter(order ? order.sinks : []));
   const income = sources.reduce((sum, node) => sum + node.value, 0);
   const spent = sinks.reduce((sum, node) => sum + node.value, 0);
   if (income - spent > 0.005) sinks.push({ account: null, label: 'saved', value: income - spent, kind: 'saved' });
@@ -264,7 +355,8 @@ export function flows(report) {
  */
 export function foldFlows(data, n) {
   const spending = data.sinks.filter((node) => node.kind === 'expense');
-  if (spending.length <= n) return data;
+  // One category is never folded on its own: "other (1)" would hide it to save nothing.
+  if (spending.length <= n + 1) return data;
   const kept = spending.slice(0, n);
   const rest = spending.slice(n);
   const other = { account: null, label: `other (${rest.length})`, value: rest.reduce((sum, node) => sum + node.value, 0), kind: 'expense' };
@@ -283,7 +375,13 @@ export function sankeyLayout(data, width, height, { nodeWidth = 14, gap = 12, le
   const hub = { account: null, label: 'income', value: data.total, kind: 'hub' };
   const columns = [data.sources, data.total > 0 ? [hub] : [], data.sinks];
   const usable = Math.max(1, height - top - bottom);
+  // `fixed` is the largest total and the most nodes in a column across an animation's periods:
+  // one scale for all of them, so a month with half the income is half as tall.
+  const fitted = data.fixed
+    ? (usable - gap * Math.max(0, data.fixed.count - 1)) / (data.fixed.total || 1)
+    : Infinity;
   const scale = Math.min(
+    fitted,
     ...columns
       .filter((column) => column.length > 0)
       .map((column) => (usable - gap * (column.length - 1)) / (column.reduce((sum, node) => sum + node.value, 0) || 1)),
@@ -337,10 +435,11 @@ function band(from, to, y0, y1, thickness) {
 
 // --------------------------------------------------------------------------- the words
 
-const amountOf = (value, unit) => format({ value, ...(unit || { prefix: '', suffix: '' }) });
+export const amountOf = (value, unit) => format({ value, ...(unit || { prefix: '', suffix: '' }) });
 
 /** The line under the heading. */
 export function headlineFor(kind, data) {
+  if (kind === 'sunburst') return headlineFor('treemap', data);
   if (kind === 'treemap') {
     const leaves = data.rows.filter((row, index) => {
       const next = data.rows[index + 1];
@@ -368,6 +467,7 @@ export function headlineFor(kind, data) {
 
 /** The same data as a table, which is what a screen reader gets. */
 export function tableFor(kind, data) {
+  if (kind === 'sunburst') return tableFor('treemap', data);
   const table = (head, rows) => `<table><thead><tr><th>${head[0]}</th><th class="n">${head[1]}</th></tr></thead><tbody>${rows
     .map(([label, value]) => `<tr><td>${label}</td><td class="n">${escape(value)}</td></tr>`)
     .join('')}</tbody></table>`;
@@ -382,7 +482,7 @@ export function tableFor(kind, data) {
   }
   if (kind === 'sankey') {
     return table(['Flow', 'Amount'], [
-      ...data.sources.map((node) => [`from ${escape(node.label)}`, amountOf(node.value, data.unit)]),
+      ...data.sources.map((node) => [node.kind === 'drawn' ? escape(node.label) : `from ${escape(node.label)}`, amountOf(node.value, data.unit)]),
       ...data.sinks.map((node) => [node.kind === 'saved' ? 'saved' : `to ${escape(node.label)}`, amountOf(node.value, data.unit)]),
     ]);
   }
@@ -432,7 +532,7 @@ function decade(value) {
  * Logarithmic is d3's symmetric log, which is a log scale that also has a zero and negatives:
  * balances cross zero, and a plain log scale cannot draw one that does.
  */
-function valueScale(d3, log, low, high, range, count) {
+export function valueScale(d3, log, low, high, range, count) {
   if (log) {
     const domain = [decade(Math.min(low, 0)), decade(Math.max(high, 0))];
     if (domain[0] === domain[1]) domain[1] = 10;
@@ -462,6 +562,7 @@ export function heightFor(kind, data) {
     return Math.min(900, Math.max(300, column * 46 + 40));
   }
   if (kind === 'calendar') return 220;
+  if (kind === 'sunburst') return 520;
   return 420;
 }
 
@@ -473,7 +574,7 @@ export function heightFor(kind, data) {
  * The svg fills its frame, and the frame's height is the chart's to choose: `want` is the
  * height this chart needs for its width, when that is not what the page guessed.
  */
-function frame(svg, want) {
+export function frame(svg, want) {
   const d3 = window.d3;
   if (!d3) throw new Error('the chart library did not load');
   const holder = svg.parentElement;
@@ -501,7 +602,7 @@ function centreOf(node, svg) {
  * it stands for one. A focused mark gets a ring in the foreground colour, since an SVG shape
  * has no focus outline of its own.
  */
-function interactive(selection, { d3, svg, hooks, colors, tip, account, label }) {
+export function interactive(selection, { d3, svg, hooks, colors, tip, account, label }) {
   selection
     .attr('tabindex', 0)
     .attr('focusable', 'true')
@@ -547,12 +648,12 @@ function interactive(selection, { d3, svg, hooks, colors, tip, account, label })
 const DOUBLE_CLICK = 260;
 
 /** A label cut to fit, with an ellipsis, at the 11px the charts use. */
-function fit(text, pixels) {
+export function fit(text, pixels) {
   const room = Math.max(3, Math.floor(pixels / 6.4));
   return text.length > room ? `${text.slice(0, room - 1)}…` : text;
 }
 
-function nothing(root, colors, message = 'Nothing to draw.') {
+export function nothing(root, colors, message = 'Nothing to draw.') {
   root.append('text').attr('x', 8).attr('y', 24).attr('fill', colors.dim).text(message);
 }
 
@@ -565,7 +666,7 @@ function nothing(root, colors, message = 'Nothing to draw.') {
  */
 export function render(kind, svg, data, colors, hooks, state = {}) {
   state.hidden = state.hidden || new Set();
-  if (kind === 'line' || kind === 'stacked') return drawSeries(svg, data, colors, hooks, state);
+  if (kind === 'line' || kind === 'stacked' || kind === 'stream') return drawSeries(svg, data, colors, hooks, state);
   if (kind === 'bar') return drawBar(svg, data, colors, hooks);
   if (kind === 'columns') return drawColumns(svg, data, colors, hooks, state);
   if (kind === 'doughnut') return drawDoughnut(svg, data, colors, hooks, state);
@@ -589,7 +690,10 @@ export function render(kind, svg, data, colors, hooks, state = {}) {
  */
 function drawSeries(svg, model, colors, hooks, state) {
   const { d3, width, height, root } = frame(svg);
-  const stacked = model.type === 'stacked';
+  // A streamgraph is a stack around a moving centre rather than on zero: the shape of each
+  // band is what it shows, so the value axis, which would only measure the wiggle, is left off.
+  const stream = model.type === 'stream';
+  const stacked = model.type === 'stacked' || stream;
   const visible = model.series.filter((series) => !state.hidden.has(series.label));
   const count = model.periods.length;
   const unit = model.unit;
@@ -602,15 +706,20 @@ function drawSeries(svg, model, colors, hooks, state) {
   let low = Infinity;
   let high = -Infinity;
   if (stacked) {
-    const rows = model.periods.map((_, index) => Object.fromEntries(visible.map((series, key) => [key, series.values[index] || 0])));
+    const rows = model.periods.map((_, index) => Object.fromEntries(visible.map((series, key) => [key, stream ? Math.max(0, series.values[index] || 0) : series.values[index] || 0])));
     // Diverging only when there is something below zero. d3's diverging offset puts an account
     // that is zero in a period at the baseline, so its band fell through every layer above it and
     // left a black hole where a month had no medical bills.
     const negative = visible.some((series) => series.values.some((value) => value < 0));
-    layers = d3.stack().keys(visible.map((_, key) => key)).offset(negative ? d3.stackOffsetDiverging : d3.stackOffsetNone)(rows);
+    const stack = d3.stack().keys(visible.map((_, key) => key));
+    if (stream) stack.offset(d3.stackOffsetWiggle).order(d3.stackOrderInsideOut);
+    else stack.offset(negative ? d3.stackOffsetDiverging : d3.stackOffsetNone);
+    layers = stack(rows);
     for (const layer of layers) for (const [a, b] of layer) { low = Math.min(low, a, b); high = Math.max(high, a, b); }
-    low = Math.min(low, 0);
-    high = Math.max(high, 0);
+    if (!stream) {
+      low = Math.min(low, 0);
+      high = Math.max(high, 0);
+    }
   } else {
     for (const series of visible) for (const value of series.values) { low = Math.min(low, value); high = Math.max(high, value); }
     // Zero is on the axis when it is near the data; a balance that hovers around 9,000 is
@@ -627,14 +736,14 @@ function drawSeries(svg, model, colors, hooks, state) {
   // top unlabelled, and the highest value floating above the last gridline.
   const tickCount = Math.max(2, Math.floor((height - margin.top - margin.bottom) / 46));
   const { scale: y, ticks: ticksY } = valueScale(d3, model.log, low, high, [height - margin.bottom, margin.top], tickCount);
-  margin.left = 12 + Math.max(...ticksY.map((value) => tick(value, unit).length)) * 6.6;
+  margin.left = stream ? 16 : 12 + Math.max(...ticksY.map((value) => tick(value, unit).length)) * 6.6;
   const x0 = d3.scaleLinear()
     .domain(count > 1 ? [0, count - 1] : [-0.5, 0.5])
     .range([margin.left, width - margin.right]);
   let x = x0;
 
   const grid = root.append('g');
-  for (const value of ticksY) {
+  for (const value of stream ? [] : ticksY) {
     grid.append('line')
       .attr('x1', margin.left).attr('x2', width - margin.right)
       .attr('y1', y(value)).attr('y2', y(value))
@@ -850,7 +959,10 @@ function drawSeries(svg, model, colors, hooks, state) {
 /** One bar per account, largest first, labelled on the left and valued on the right. */
 function drawBar(svg, model, colors, hooks) {
   const { d3, width, height, root } = frame(svg);
-  const rows = model.rows;
+  // In a race every account has a place, `at`, part of the way between its ranks in two
+  // periods, and only the first `slots` places are on screen.
+  const race = model.race;
+  const rows = race ? model.rows.filter((row) => row.at < race.slots - 0.02) : model.rows;
   if (rows.length === 0) { nothing(root, colors); return {}; }
   const unit = model.unit;
   const longest = Math.max(...rows.map((row) => row.label.length));
@@ -860,8 +972,10 @@ function drawBar(svg, model, colors, hooks) {
   const values = rows.map((row) => row.value);
   const { scale: x, ticks } = valueScale(d3, model.log, Math.min(0, ...values), Math.max(0, ...values),
     [left, width - right], Math.max(2, Math.floor((width - left - right) / 90)));
-  const y = d3.scaleBand().domain(rows.map((_, index) => index))
+  const band = d3.scaleBand().domain(d3.range(race ? race.slots : rows.length))
     .range([margin.top, height - margin.bottom]).paddingInner(0.24).paddingOuter(0.12);
+  const place = (row, index) => (race ? band(0) + row.at * band.step() : band(index));
+  const y = Object.assign((index) => band(index), { bandwidth: () => band.bandwidth() });
 
   for (const value of ticks) {
     root.append('line')
@@ -874,7 +988,7 @@ function drawBar(svg, model, colors, hooks) {
 
   const bars = root.append('g').selectAll('rect').data(rows).join('rect')
     .attr('x', (row) => x(Math.min(0, row.value)))
-    .attr('y', (_, index) => y(index))
+    .attr('y', (row, index) => place(row, index))
     .attr('width', (row) => Math.max(1, Math.abs(x(row.value) - x(0))))
     .attr('height', y.bandwidth())
     .attr('rx', 2)
@@ -886,13 +1000,24 @@ function drawBar(svg, model, colors, hooks) {
     label: (row) => `${row.label}, ${amountOf(row.value, unit)}, ${row.shareText}`,
   });
 
-  root.append('g').selectAll('text').data(rows).join('text')
-    .attr('x', left - 8).attr('y', (_, index) => y(index) + y.bandwidth() / 2).attr('dy', '0.32em')
+  // In a race, a bar overtaking another passes over it, and so would its label: a label is
+  // written only where it clears the one written above it.
+  let clear = -Infinity;
+  const labelled = race
+    ? rows.filter((row, index) => {
+      const at = place(row, index);
+      if (at < clear) return false;
+      clear = at + Math.max(12, y.bandwidth() * 0.8);
+      return true;
+    })
+    : rows;
+  root.append('g').selectAll('text').data(labelled).join('text')
+    .attr('x', left - 8).attr('y', (row) => place(row, rows.indexOf(row)) + y.bandwidth() / 2).attr('dy', '0.32em')
     .attr('text-anchor', 'end').attr('fill', colors.foreground).attr('font-size', 11)
     .style('pointer-events', 'none')
     .text((row) => fit(row.label, left - 12));
-  root.append('g').selectAll('text').data(rows).join('text')
-    .attr('x', (row) => x(Math.max(0, row.value)) + 6).attr('y', (_, index) => y(index) + y.bandwidth() / 2).attr('dy', '0.32em')
+  root.append('g').selectAll('text').data(labelled).join('text')
+    .attr('x', (row) => x(Math.max(0, row.value)) + 6).attr('y', (row) => place(row, rows.indexOf(row)) + y.bandwidth() / 2).attr('dy', '0.32em')
     .attr('fill', colors.dim).attr('font-size', 11)
     .style('pointer-events', 'none')
     .text((row) => amountOf(row.value, unit));
@@ -1009,61 +1134,31 @@ function drawDoughnut(svg, model, colors, hooks, state) {
 /** A treemap of the account tree, area proportional to the leaf balances. */
 function drawTreemap(svg, data, colors, hooks) {
   const { d3, width, height, root } = frame(svg);
-
-  // The CSV has one row per node, parents included; the leaves are the rows with nothing
-  // indented below them, and summing from the leaves is what stops a parent counting twice.
-  const leaves = data.rows.map((row, index) => {
-    const next = data.rows[index + 1];
-    return !next || next.depth <= row.depth;
-  });
-  const tree = { name: '', children: [] };
-  const parents = [tree];
-  data.rows.forEach((row, index) => {
-    const parent = parents[row.depth] || tree;
-    let node = parent;
-    for (const part of row.label.split(':').filter(Boolean)) {
-      let child = node.children.find((entry) => entry.name === part);
-      if (!child) {
-        child = { name: part, children: [] };
-        node.children.push(child);
-      }
-      node = child;
-    }
-    if (leaves[index]) {
-      delete node.children;
-      node.value = Math.abs(row.amount.value);
-    }
-    parents[row.depth + 1] = node;
-  });
-
+  // In an animation `fill` is this period's total over the largest: the map is drawn at that
+  // share of the area, centred, so a smaller month is a smaller map rather than the same one.
+  const fill = data.fill === undefined ? 1 : Math.max(0.02, Math.min(1, data.fill));
+  const side = Math.sqrt(fill);
+  const size = [width * side, Math.max(height - 8, 120) * side];
   const hierarchy = d3
     .treemap()
-    .size([width, Math.max(height - 8, 120)])
+    .size(size)
     .paddingInner(2)
-    .round(true)(d3.hierarchy(tree).sum((node) => node.value || 0));
+    .round(true)(d3.hierarchy(nestTree(data.rows)).sum((node) => node.value || 0));
+  const offset = [(width - size[0]) / 2, (Math.max(height - 8, 120) - size[1]) / 2];
 
-  // Colour by the branches under the root. A report asked for one account has a single child
-  // at the top ("expenses"), so the colouring starts one level deeper: food, housing, reading.
-  const groupDepth = (hierarchy.children || []).length === 1 ? 2 : 1;
-  const groupOf = (node) => {
-    const ancestors = node.ancestors();
-    return ancestors.find((entry) => entry.depth === groupDepth) || ancestors[ancestors.length - 2] || node;
-  };
-  const groups = new Map();
-  for (const leaf of hierarchy.leaves()) {
-    if (leaf.value > 0 && !groups.has(groupOf(leaf))) groups.set(groupOf(leaf), groups.size);
-  }
-  const colours = palette(colors, Math.max(groups.size, 1));
+  const { groupOf, order } = groupsOf(hierarchy);
+  const colours = palette(colors, Math.max(order.size, 1));
   const total = hierarchy.value || 1;
   const path = (leaf) => leaf.ancestors().reverse().map((node) => node.data.name).filter(Boolean).join(':');
   const shown = hierarchy.leaves().filter((leaf) => leaf.value > 0);
 
-  const cells = root.append('g').selectAll('rect').data(shown).join('rect')
+  const map = root.append('g').attr('transform', `translate(${offset[0]},${offset[1]})`);
+  const cells = map.append('g').selectAll('rect').data(shown).join('rect')
     .attr('x', (leaf) => leaf.x0)
     .attr('y', (leaf) => leaf.y0)
     .attr('width', (leaf) => Math.max(0, leaf.x1 - leaf.x0))
     .attr('height', (leaf) => Math.max(0, leaf.y1 - leaf.y0))
-    .attr('fill', (leaf) => colours[groups.get(groupOf(leaf)) % colours.length])
+    .attr('fill', (leaf) => colours[order.get(groupOf(leaf)) % colours.length])
     .attr('stroke', colors.background)
     .attr('stroke-width', 1);
   interactive(cells, {
@@ -1072,7 +1167,7 @@ function drawTreemap(svg, data, colors, hooks) {
     account: (leaf) => path(leaf),
     label: (leaf) => `${path(leaf)}, ${amountOf(leaf.value, data.unit)}, ${percent(leaf.value, total)}`,
   });
-  root.append('g').style('pointer-events', 'none').selectAll('text')
+  map.append('g').style('pointer-events', 'none').selectAll('text')
     .data(shown.filter((leaf) => leaf.x1 - leaf.x0 > 62 && leaf.y1 - leaf.y0 > 20)).join('text')
     .attr('x', (leaf) => leaf.x0 + 4)
     .attr('y', (leaf) => leaf.y0 + 14)

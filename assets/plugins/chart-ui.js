@@ -28,6 +28,7 @@ export function keyFor(event) {
   if (event.ctrlKey || event.metaKey || event.altKey) return null;
   switch (event.key) {
     case 'Escape': return 'back';
+    case ' ': return 'play';
     case 'ArrowLeft': return 'previous';
     case 'ArrowRight': return 'next';
     case '+': case '=': return 'zoom-in';

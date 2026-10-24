@@ -37,6 +37,9 @@ import {
 import Chart, { build, parseReport, read } from '../assets/plugins/chart.js';
 import { OPTIONS, TYPES, closestType, command, drill, line, parse, quote, related, title, tokenize, typeOf } from '../assets/plugins/chart-args.js';
 import { amountsIn, chosen, inOneCommodity, leftOut, shape, trimmed } from '../assets/plugins/chart-data.js';
+import { intensity, ranks } from '../assets/plugins/chart-more.js';
+import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plugins/chart-play.js';
+import { leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import { page as editPage } from '../assets/plugins/edit-window.js';
 import { alsoLine } from '../assets/plugins/chart-window.js';
@@ -119,8 +122,8 @@ const ranking = read(RANKING_CSV);
   check('a chart option after the type is moved, not handed to hledger',
     refused('bar --log coffee') === '--log is a chart option, so it goes before the type: chart --log bar ...', refused('bar --log coffee'));
   check('an option that does not apply to a type is refused, with the ones that do',
-    refused('--log pie expenses') === '--log does not apply to a pie; it takes --top, --sort, --invert.'
-    && refused('--log --percent treemap') === '--log and --percent do not apply to a treemap; it takes no chart options.'
+    refused('--log pie expenses') === '--log does not apply to a pie; it takes --top, --sort, --invert, --cumulative, --animate.'
+    && refused('--log --percent treemap') === '--log and --percent do not apply to a treemap; it takes --cumulative, --animate.'
     && refused('--top 2 calendar') === '--top does not apply to a calendar; it takes no chart options.', refused('--log --percent treemap'));
   check('a value an option needs is asked for',
     refused('--top bar') === '--top takes a number of accounts, such as --top 5, not bar.' && refused('--sort') === '--sort needs a value: --sort name|value.'
@@ -138,7 +141,7 @@ const ranking = read(RANKING_CSV);
     && drill(parse('treemap --tree expenses'), 'expenses:food') === 'line expenses:food', drill(parsed, 'expenses:food:coffee'));
   const links = related(parse('--log --top 3 bar -p 2026 coffee'));
   check('related charts are the same query as the other types of its family, each with the options it takes',
-    links.map((link) => link.label).join(' | ') === 'chart --log --top 3 line -p 2026 coffee | chart --top 3 stacked -p 2026 coffee | chart --top 3 pie -p 2026 coffee | chart treemap -p 2026 coffee | chart --log --top 3 multiples -p 2026 coffee',
+    links.map((link) => link.label).join(' | ') === 'chart --top 3 pie -p 2026 coffee | chart treemap -p 2026 coffee | chart sunburst -p 2026 coffee | chart --log --top 3 line -p 2026 coffee',
     links.map((link) => link.label).join(' | '));
   check('a flow suggests the other flows', related(parse('sankey -p 2026')).map((link) => link.args).join() === 'waterfall -p 2026,calendar -p 2026',
     related(parse('sankey -p 2026')).map((link) => link.args).join());
@@ -429,7 +432,7 @@ function stub(overrides = {}) {
   check('the page it wrote is the chart', last().includes('<svg class="chart"') && !last().includes('<button'), '');
   check('and it loads D3 from beside the plugin', last().includes('vendor/d3/d3.min.js') && !last().includes('chart.umd'), '');
   check('the page carries the line, for following marks from, and its related charts',
-    last().includes('"args":"line expenses"') && last().includes('Also: <a href="#" data-args="bar expenses">chart bar expenses</a>'), '');
+    last().includes('"args":"line expenses"') && last().includes('Also: <a href="#" data-args="stacked expenses">chart stacked expenses</a>'), '');
 }
 
 {
@@ -588,6 +591,109 @@ function stub(overrides = {}) {
   check('the terminal says what a chart left out, too',
     log.said[0].endsWith('Drawn in IDR; amounts in CNY are left out. Add -X IDR to the query to convert them at market prices.')
     && log.said[0].includes('2,530,801.73 IDR in Assets:BCADigital'), log.said[0]);
+}
+
+// ------------------------------------------------------------------ more charts, and playing them
+
+{
+  const asked = (args) => build(args).command;
+  check('the new types ask hledger for what they draw',
+    asked('heatmap expenses') === 'balance expenses -M -O csv' && asked('bump expenses') === 'balance expenses -M -O csv'
+    && asked('stream -W expenses') === 'balance -W expenses -O csv' && asked('sunburst expenses') === 'balance --tree expenses -O csv',
+    [asked('heatmap expenses'), asked('sunburst expenses')].join(' | '));
+  check('an animation asks for every period, monthly unless the query says',
+    asked('--animate treemap -p 2026 expenses') === 'balance --tree -p 2026 expenses -M -O csv'
+    && asked('--animate sankey -Q') === 'balance -Q --depth 2 -O csv' && asked('--animate bar expenses') === 'balance expenses -M -O csv',
+    asked('--animate treemap -p 2026 expenses'));
+  check('and is titled as one', build('--animate treemap expenses').title === 'treemap: expenses (animated)', build('--animate treemap expenses').title);
+  check('the new names are aliases too', typeOf('streamgraph') === 'stream' && typeOf('race') === 'bar' && typeOf('rings') === 'sunburst' && typeOf('rank') === 'bump', '');
+  const refused = (args) => build(args).refusal || '';
+  check('--animate on a chart that already shows every period says which ones it plays',
+    /--animate does not apply to a line; .* A line already shows every period; --animate plays bar, pie, treemap, sunburst, sankey\./.test(refused('--animate line expenses')),
+    refused('--animate line expenses'));
+  check('a running total of a one-period chart needs periods, so it says to animate',
+    refused('--cumulative treemap') === '--cumulative on a treemap needs periods to run over, so it goes with --animate: chart --animate --cumulative treemap ...'
+    && !build('--animate --cumulative treemap').refusal, refused('--cumulative treemap'));
+  check('a related chart that cannot take an option is offered without it',
+    related(parse('--cumulative line expenses')).every((link) => !build(link.args).refusal), related(parse('--cumulative line expenses')).map((link) => link.args).join(' ; '));
+}
+
+{
+  check('a heatmap colours by size, and by magnitude with --log',
+    intensity(50, 100) === 0.5 && intensity(0, 100) === 0 && intensity(-100, 100) === 1 && intensity(10, 1e6, true) > 0.15 && intensity(10, 1e6) < 0.001, '');
+  const table = ranks([{ values: [5, 1, 3] }, { values: [9, 0, 3] }, { values: [1, 4, 3] }], ['a', 'b', 'c']);
+  check('a bump chart ranks every period, a tie kept in order',
+    JSON.stringify(table) === JSON.stringify([[2, 2, 1], [1, 3, 2], [3, 1, 3]]), JSON.stringify(table));
+  const heat = modelFor({ report, colors: COLORS, title: 't', kind: 'heatmap' });
+  check('a heatmap is a series per account, without a legend', heat.type === 'heatmap' && heat.series.length === 3
+    && viewOf({ report, colors: COLORS, title: 't', kind: 'heatmap', options: {} }).items === null, heat.type);
+  check('a stream and a bump chart are their own pictures', typeFor(report, 'stream') === 'stream' && typeFor(report, 'bump') === 'bump'
+    && typeFor(ranking, 'stream') === 'bar', '');
+  const nested = nestTree(read('"account","x"\n"a","1"\n').series.length ? readTree(TREE_CSV).rows : []);
+  check('the treemap and the sunburst nest the same tree, parents not counted twice',
+    nested.children.length > 0 && JSON.stringify(nested).includes('"coffee"'), '');
+  check('a sunburst is a shaped chart of the tree', viewOf({ report: readTree(TREE_CSV), colors: COLORS, title: 't', kind: 'sunburst', options: {} }).draw === 'sunburst', '');
+}
+
+const TREE_MONTHS = [
+  '"account","2024-01","2024-02","2024-03"',
+  '"expenses","$100.00","$300.00","$0"',
+  '"\u00a0\u00a0food","$100.00","$100.00","0"',
+  '"\u00a0\u00a0rent","0","$200.00","0"',
+].join('\n');
+
+{
+  check('the clock holds each period, then eases into the next',
+    positionAt(0, 0, 3) === 0 && positionAt(HOLD - 1, 0, 3) === 0 && positionAt(HOLD + MOVE / 2, 0, 3) === 0.5
+    && positionAt(HOLD + MOVE, 0, 3) === 1 && positionAt(1e9, 0, 3) === 3 && ease(0) === 0 && ease(1) === 1, String(positionAt(HOLD + MOVE / 2, 0, 3)));
+  check('with reduced motion it only steps', positionAt(HOLD * 1.5, 0, 3, { reduced: true }) === 1, String(positionAt(HOLD * 1.5, 0, 3, { reduced: true })));
+  const tree = readTreeSeries(TREE_MONTHS);
+  check('a tree is read with every period', tree.periods.length === 3 && tree.rows[2].amounts.map((amount) => amount.value).join() === '0,200,0', '');
+  check('and is the right tree at a period, or between two', leafTotal(treeAt(tree, 1).rows) === 300 && leafTotal(treeAt(tree, 0.5).rows) === 200, String(leafTotal(treeAt(tree, 0.5).rows)));
+  const map = timeline('treemap', tree, {}, COLORS);
+  check('an animated treemap is drawn to one scale: a month with a third of the spending is a third of the area',
+    Math.abs(map.frame(0).data.fill - 1 / 3) < 1e-9 && map.frame(1).data.fill === 1, String(map.frame(0).data.fill));
+  check('empty periods at the ends are not played', timeline('treemap', tree, {}, COLORS).periods.join() === '2024-01,2024-02'
+    && timeline('bar', read('"account","a","b","c"\n"x","0","$1","0"\n"y","0","$2","0"\n'), {}, COLORS).periods.join() === 'b', '');
+  check('and running totals with --cumulative', timeline('sunburst', tree, { cumulative: true }, COLORS).frame(1).data.total === 400, '');
+  check('each period has its own words and table', /\$300\.00 at the leaves/.test(map.words(1).sub) && map.words(1).table.includes('rent'), map.words(1).sub);
+
+  const monthly = read(MONTHLY_CSV);
+  check('a balance report at one period is that period, or a mix of two',
+    periodOf(monthly, 1).series[1].amounts[0].value === 1237.5 && periodOf(monthly, 0.5).series[1].amounts[0].value === 1218.75, '');
+  const race = timeline('bar', monthly, { top: 2 }, COLORS);
+  const first = race.frame(0).data;
+  check('a bar race ranks every account and shows the top places',
+    first.race.slots === 2 && first.rows[0].label === 'expenses:housing:rent' && first.rows[0].at === 0 && /2 places of 3 accounts/.test(race.words(0).sub), race.words(0).sub);
+  const swap = timeline('bar', read('"account","a","b"\n"x","$10","$1"\n"y","$5","$20"\n'), {}, COLORS);
+  check('and between two periods an overtaking bar glides between ranks',
+    swap.frame(0).data.rows[0].label === 'x' && swap.frame(1).data.rows[0].label === 'y'
+    && swap.frame(0.5).data.rows.every((row) => row.at > 0 && row.at < 1), JSON.stringify(swap.frame(0.5).data.rows.map((row) => row.at)));
+  check('and each account keeps its colour', swap.frame(0).data.rows.find((row) => row.label === 'x').colour === swap.frame(1).data.rows.find((row) => row.label === 'x').colour, '');
+  const pie = timeline('pie', monthly, { top: 1 }, COLORS);
+  check('an animated pie keeps its slices in one order, with the rest as other',
+    pie.frame(0).data.rows.map((row) => row.label).join() === pie.frame(2).data.rows.map((row) => row.label).join()
+    && pie.frame(0).data.rows[1].label === 'other (2)', pie.frame(0).data.rows.map((row) => row.label).join());
+  const flowsByMonth = read('"account","a","b"\n"expenses:food","$10","$40"\n"expenses:rent","$50","$5"\n"income:salary","$-100","$-100"\n');
+  const sankey = timeline('sankey', flowsByMonth, {}, COLORS);
+  check('an animated Sankey keeps its nodes in one order, so they do not swap as they grow',
+    sankey.frame(0).data.sinks.map((node) => node.label).join() === 'rent,food,saved' && sankey.frame(1).data.sinks.map((node) => node.label).join() === 'rent,food,saved',
+    sankey.frame(1).data.sinks.map((node) => node.label).join());
+  check('and to one scale across its periods', sankey.frame(0).data.fixed.total === 100 && sankey.frame(1).data.fixed.total === 100, '');
+  const played = viewOf({ report: monthly, colors: COLORS, title: 't', kind: 'pie', options: { animate: true } });
+  check('the window plays a report with periods, and says so',
+    played.draw === 'animate' && /^3 periods, 2024-01 to 2024-03; /.test(played.sub) && played.play.periods.length === 3, played.sub);
+  check('one period has nothing to play, so it is drawn still', viewOf({ report: ranking, colors: COLORS, title: 't', kind: 'pie', options: { animate: true } }).draw === 'doughnut', '');
+  check('the keys say Space plays', keysLine(true).startsWith('Space play, pause') && !keysLine().includes('Space'), keysLine(true));
+  check('parsing an animated treemap keeps every period', parseReport('treemap', TREE_MONTHS, { animate: true }).periods.length === 3
+    && parseReport('treemap', TREE_MONTHS).rows.length === 3, '');
+}
+
+{
+  const { host, log } = stub();
+  await Chart.run('--animate --top 2 bar expenses', host);
+  check('the terminal says an animation is one',
+    log.said[0] === 'chart: bar, played over 3 periods, 2024-01 to 2024-03, in a new window.' && log.pages[log.pages.length - 1].includes('id="timeline"'), log.said[0]);
 }
 
 // ------------------------------------------------------------------ the edit plugin
@@ -784,8 +890,8 @@ check('a kind picks its parser',
   && parseReport('calendar', REGISTER_CSV).days.length === 3
   && parseReport('line', MONTHLY_CSV).periods.length === 3);
 
-check('five charts read a report of their own, and every other is a balance chart',
-  CUSTOM.length === 5 && isCustom('sankey') && isCustom('treemap') && !isCustom('stacked') && !isCustom(null),
+check('six charts read a report of their own, and every other is a balance chart',
+  CUSTOM.length === 6 && isCustom('sunburst') && isCustom('sankey') && isCustom('treemap') && !isCustom('stacked') && !isCustom(null),
   CUSTOM.join(','));
 
 const d3Page = page({
@@ -867,6 +973,9 @@ for (const file of [
   '../assets/plugins/chart-data.js',
   '../assets/plugins/chart-d3.js',
   '../assets/plugins/chart-ui.js',
+  '../assets/plugins/chart-args.js',
+  '../assets/plugins/chart-more.js',
+  '../assets/plugins/chart-play.js',
   '../assets/plugins/window-kit.js',
   '../assets/plugins/vendor/d3/d3.min.js',
   '../assets/plugins/vendor/d3/LICENSE',
