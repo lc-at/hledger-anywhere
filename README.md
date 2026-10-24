@@ -287,8 +287,8 @@ drawn as the other types, each written as the line it is (`chart pie -p 2026 cof
 following one shows how to ask for it next time. Everything else is done to the chart itself,
 which is what a chart is for: hover a mark for its numbers, click a legend entry to take a
 series out and put it back, scroll to zoom through time, drag to pan, double-click to reset,
-and click a mark to chart that account over time, in the same period. Escape goes back to the
-chart you came from.
+and click a mark to chart that account over time, in the same period. To go back to the chart
+you came from, click "← back to …" above the title, press Escape, or use the browser's Back.
 
 Everything the pointer does, the keyboard does too, and the keys are written under the chart:
 

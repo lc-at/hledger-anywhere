@@ -7,7 +7,8 @@
  * Sankey) bring their own data from chart-d3.js.
  *
  * There are no buttons, no fields and no disclosures. What is drawn comes from the command that
- * was run, and under it a line of related charts, each a link that says its own command;
+ * was run, and under it a line of related charts, each a link that says its own command; after
+ * following one, a link above the title goes back, as do Escape and the browser's Back;
  * everything else you can do is done to the chart itself, which is what a chart is for:
  * hover or Tab to a mark for its numbers, click a legend entry to hide a series, scroll to zoom
  * and drag to pan through time, double-click to reset, click or Enter on a mark to chart that
@@ -253,6 +254,9 @@ export function page({ report, colors, title, command, token, kind, options = {}
   th.n, td.n { text-align:right; font-variant-numeric:tabular-nums; }
   td { padding:1px 0; }
   .note, .keys { color:${colors.dim}; margin:18px 0 0; font-size:12px; }
+  .back { display:inline-block; margin:0 0 6px; font-size:13px; color:${colors.dim}; text-decoration:none; }
+  .back:hover, .back:focus-visible { color:${colors.foreground}; text-decoration:underline; }
+  .back:focus-visible { outline:2px solid ${colors.foreground}; outline-offset:2px; border-radius:2px; }
   .also { color:${colors.dim}; margin:8px 0 10px; font-size:12px; }
   .also { line-height:1.9; }
   /* A link is a command, so it is never broken across lines in the middle of an option. */
@@ -279,6 +283,7 @@ export function page({ report, colors, title, command, token, kind, options = {}
 </style></head>
 <body>
 <main>
+  <a href="#" class="back" id="back" hidden></a>
   <h1 id="heading">${escape(title)}</h1>
   <p class="sub" id="sub">${escape(view.sub)}</p>
   <p class="mixed" id="mixed"${view.mixed ? '' : ' hidden'}>${escape(view.mixed || '')}</p>
@@ -353,6 +358,43 @@ export function mount(root = document) {
 
   const state = { ...data };
   const stack = [];
+  const backLink = root.getElementById('back');
+  // Each chart followed is an entry in the window's history, so the browser's Back button, a
+  // mouse's back button and a swipe back all come back the way Escape does.
+  let history = true;
+
+  /** The link back, which names the chart it goes back to. */
+  function showBack() {
+    const previous = stack[stack.length - 1];
+    backLink.hidden = !previous;
+    backLink.textContent = previous ? `← back to ${previous.state.title}` : '';
+  }
+
+  /** Undo the last drill-down. */
+  function goBack() {
+    const previous = stack.pop();
+    if (!previous) return;
+    for (const key of Object.keys(state)) delete state[key];
+    Object.assign(state, previous.state);
+    view = previous.view;
+    draw();
+    showBack();
+  }
+
+  /** Go back as the history does, so the two never disagree; without a history, directly. */
+  function back() {
+    if (!stack.length) return;
+    if (history) window.history.back();
+    else goBack();
+  }
+
+  window.addEventListener('popstate', () => {
+    if (stack.length) goBack();
+  });
+  backLink.addEventListener('click', (event) => {
+    event.preventDefault();
+    back();
+  });
   const tip = tooltip(holder, data.colors);
   let view = { hidden: new Set() };
   let controls = {};
@@ -371,7 +413,14 @@ export function mount(root = document) {
     stack.push({ state: { ...state }, view });
     Object.assign(state, answer, { options: answer.options || {}, related: answer.related || [] });
     view = { hidden: new Set() };
+    try {
+      window.history.pushState({ depth: stack.length }, '');
+    } catch {
+      // A document that cannot keep a history still goes back, by the link and Escape.
+      history = false;
+    }
     draw();
+    showBack();
   }
 
   const hooks = {
@@ -481,14 +530,8 @@ export function mount(root = document) {
     if (event.target && /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
     event.preventDefault();
     if (action === 'back') {
-      // Escape undoes the last drill-down. A key rather than a button, because the window has
-      // no buttons, and a drill-down that could not be undone would be a dead end.
-      const previous = stack.pop();
-      if (!previous) return;
-      for (const key of Object.keys(state)) delete state[key];
-      Object.assign(state, previous.state);
-      view = previous.view;
-      draw();
+      // Escape undoes the last drill-down, as the link above the title and the browser's Back do.
+      back();
       return;
     }
     if (action === 'previous' && controls.step) controls.step(-1);

@@ -781,6 +781,45 @@ async function playing(tab) {
   await tab.send('Emulation.setEmulatedMedia', { features: [] });
 }
 
+async function goingBack(tab) {
+  const back = () => tab.eval("document.getElementById('back').hidden ? '' : document.getElementById('back').textContent");
+  const heading = () => tab.eval("document.getElementById('heading').textContent");
+  await tab.show('treemap');
+  check('a chart nothing was followed to has no way back to offer', (await back()) === '', await back());
+  const open = async () => {
+    const cell = await tab.centre('#chart rect[role=button]');
+    await tab.click(cell[0], cell[1]);
+    await tab.until("document.getElementById('heading').textContent.startsWith('line ')");
+  };
+  await open();
+  check('after a click on the treemap, a link above the title says where back goes', (await back()) === '← back to treemap: expenses', await back());
+  const link = await tab.centre('#back');
+  await tab.click(link[0], link[1]);
+  await tab.until("document.getElementById('heading').textContent === 'treemap: expenses'");
+  check('and a click on it goes back, and then it is gone', (await heading()) === 'treemap: expenses' && (await back()) === '', await heading());
+  await open();
+  await tab.eval('history.back()');
+  await tab.until("document.getElementById('heading').textContent === 'treemap: expenses'");
+  check('the browser\'s Back goes back too', (await heading()) === 'treemap: expenses' && (await back()) === '', await heading());
+  await open();
+  await tab.key('Escape', { keyCode: 27 });
+  await tab.until("document.getElementById('heading').textContent === 'treemap: expenses'");
+  check('and so does Escape, from the treemap', (await heading()) === 'treemap: expenses', await heading());
+  // Two deep: back goes one step at a time, naming each.
+  await open();
+  const before = await heading();
+  const [left, top, width, height] = await tab.eval("(() => { const b = document.getElementById('chart').getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; })()");
+  await tab.mouse('mouseMoved', left + width - 30, top + height / 2);
+  await tab.click(left + width - 30, top + height / 2);
+  await tab.until(`document.getElementById('heading').textContent !== ${JSON.stringify(before)}`);
+  check('two charts deep, back names the one before', (await back()).startsWith('← back to line '), await back());
+  await tab.eval('history.back()');
+  await tab.until("document.getElementById('heading').textContent.startsWith('line ')");
+  await tab.key('Escape', { keyCode: 27 });
+  await tab.until("document.getElementById('heading').textContent === 'treemap: expenses'");
+  check('and back twice is where it started', (await heading()) === 'treemap: expenses' && (await back()) === '', await heading());
+}
+
 async function relatedCharts(tab) {
   await tab.show('bar');
   const links = await tab.eval("[...document.querySelectorAll('#also a')].map(a => a.textContent).join(' | ')");
@@ -891,6 +930,7 @@ try {
   await byKeyboard(tab);
   await saving(tab, downloads);
   await relatedCharts(tab);
+  await goingBack(tab);
   await moreCharts(tab);
   await playing(tab);
   await whenThingsGoWrong(tab);
