@@ -41,6 +41,11 @@ import { beeswarm, bins, budgetView, cashflowOf, categoryOf, edge, intensity, ra
 import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plugins/chart-play.js';
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
+import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
+import { assertionText, hints, journalAmount, parseInput, plan, readPrint, readable, remark, summarize, toMinor } from '../assets/plugins/reconcile-data.js';
+import { matching, page as reconcilePage } from '../assets/plugins/reconcile-window.js';
+import { RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
+
 import { page as editPage } from '../assets/plugins/edit-window.js';
 import { alsoLine } from '../assets/plugins/chart-window.js';
 import { FALLBACK_COLORS, beside, bridge, colorsOf, escape, isLight, mix, shell } from '../assets/plugins/window-kit.js';
@@ -849,6 +854,240 @@ const TREE_MONTHS = [
   check('a ranking of many keeps forty and folds the rest, a pie twelve', bars.rows.length === 40 && bars.rows[39].label === 'other (21)'
     && slices.rows.length === 12 && slices.rows[11].label === 'other (49)', `${bars.rows.length} ${slices.rows.length}`);
   check('and --top still asks for more', modelFor({ report: payees, colors: COLORS, title: 't', kind: 'bar', options: { top: 50 } }).rows.length === 51, '');
+}
+
+// ------------------------------------------------------------------ reconcile
+
+{
+  const data = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking');
+  check('reconcile starts at the last balance assertion, and lists only what is after it',
+    data.start.date === '2026-08-31' && data.start.balance === 100000000 && data.rows.length === 6 && data.rows[0].description === 'Coffee', JSON.stringify(data.start));
+  check('it reads amounts exactly, in minor units at the commodity\'s precision',
+    data.style.precision === 2 && data.rows[0].amount === -2100000 && data.rows[1].amount === 500000000, data.rows.map((row) => row.amount).join());
+  check('an inferred amount is read as hledger computed it', data.rows[4].amount === -500000 && data.rows[4].where.occurrence === 1, JSON.stringify(data.rows[4]));
+  check('a posting\'s own mark is read, not its transaction\'s', data.rows[0].status === 'Unmarked' && data.rows[2].status === 'Pending', data.rows.map((row) => row.status).join());
+  check('and where each is written: the file and the transaction\'s lines', data.rows[0].where.file === 'fixture.journal' && data.rows[0].where.first === 7 && data.rows[0].where.last === 10, JSON.stringify(data.rows[0].where));
+  check('quantities convert to any precision', toMinor({ mantissa: 21000, places: 0 }, 2) === 2100000 && toMinor({ mantissa: 1234567, places: 4 }, 2) === 12346 && toMinor({ mantissa: -15, places: 1 }, 0) === -2, '');
+
+  const style = data.style;
+  check('an amount is written for the journal without grouping, and read with it',
+    journalAmount(66409201, style) === '664092.01 IDR' && readable(66409201, style) === '664,092.01 IDR'
+    && journalAmount(-500, { ...style, side: 'L', spaced: false, commodity: '$' }) === '$-5.00' && journalAmount(7, { ...style, commodity: 'PGDN GOLD' }) === '0.07 "PGDN GOLD"', journalAmount(66409201, style));
+  check('a typed balance is read whatever the grouping', parseInput('664,092.01', style) === 66409201 && parseInput('664092', style) === 66409200
+    && parseInput('1.234.567,89 IDR', style) === 123456789 && parseInput('-50', style) === -5000 && parseInput('', style) === null, String(parseInput('1.234.567,89 IDR', style)));
+
+  const ids = (indexes) => new Set(indexes.map((index) => data.rows[index].id));
+  const statement = (ticked, balance, date = '2026-09-30') => summarize({ data, ticked, statementDate: date, statementBalance: balance });
+  const all = statement(ids([0, 1, 2, 3, 4]), 567000000);
+  check('the difference is the statement less the opening and the ticks, and later postings do not count',
+    all.expected === 567000000 && all.difference === 0 && all.later === 1 && all.canFinish, JSON.stringify({ expected: all.expected, difference: all.difference }));
+  const short = statement(ids([0, 1, 3, 4]), 567000000);
+  check('an unticked posting on or before the date stops the finish: an assertion counts every posting',
+    short.difference === -30000000 && !short.canFinish && short.outstanding.length === 1, JSON.stringify(short.outstanding.map((row) => row.id)));
+  const fit = statement(ids([0, 1, 3, 4]), 597000000);
+  check('even at a difference of zero', fit.difference === 0 && !fit.canFinish && fit.outstanding.length === 1, '');
+  check('and a statement before the opening assertion is refused', statement(ids([]), 0, '2026-08-01').tooEarly && !statement(ids([]), 100000000, '2026-08-01').canFinish, '');
+
+  const found = hints(data.rows.slice(0, 5), ids([0, 1, 3, 4]), 30000000 * -1, style);
+  check('a posting that is exactly the difference is pointed at', found.some((hint) => hint.id === data.rows[2].id && /not ticked, and exactly the difference/.test(hint.reason)), JSON.stringify(found));
+  check('so is a ticked one of half the difference, and a difference that divides by nine',
+    hints(data.rows, ids([0]), 4200000, style).some((hint) => /half the difference/.test(hint.reason))
+    && hints(data.rows, ids([]), 1800, style).some((hint) => hint.id === null && /divides by 9/.test(hint.reason)), '');
+  check('and no difference, no hints', hints(data.rows, ids([]), 0, style).length === 0, '');
+
+  check('a mark is set and taken off without moving the amounts',
+    remark('    Assets:Bank    -21000 IDR', '*') === '  * Assets:Bank    -21000 IDR' && remark('  * Assets:Bank    -21000 IDR', '') === '    Assets:Bank    -21000 IDR'
+    && remark('  ! Assets:Bank', '*') === '  * Assets:Bank' && remark('\tAssets:Bank', '*') === '  * Assets:Bank', remark('\tAssets:Bank', '*'));
+  check('the assertion is its own transaction of nothing, asserting',
+    assertionText('2026-09-30', 'Assets:Bank:Checking', 567000000, style) === '2026-09-30 * Reconciled with statement\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\n'
+    && assertionText('2026-09-30', 'Assets:Bank', 0, style, true).includes(' =* '), assertionText('2026-09-30', 'Assets:Bank:Checking', 567000000, style));
+
+  const done = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: ids([0, 1, 2, 3, 4]), finish: { date: '2026-09-30', balance: 567000000 } });
+  const file = done.files[0];
+  check('finishing marks exactly the ticked postings, on their own lines',
+    file.changes.map((change) => change.line).join() === '9,12,17,22,23' && file.changes.every((change) => /^  \* Assets:Bank:Checking/.test(change.after)) && !done.missing.length,
+    JSON.stringify(file.changes.map((change) => [change.line, change.after])));
+  const original = RECONCILE_JOURNAL.split('\n');
+  check('and leaves every other line as it was', original.filter((line, index) => line !== file.after.split('\n')[index]).length === 5, '');
+  check('and appends the assertion at the end', file.after.endsWith('\n2026-09-30 * Reconciled with statement\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\n'), JSON.stringify(file.after.slice(-120)));
+  const progress = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: ids([0]), finish: null });
+  check('saving progress marks the ticks and writes no assertion', progress.files[0].changes.length === 1 && !progress.files[0].appended, '');
+  const marked = readPrint(RECONCILE_PRINT.map((transaction) => (transaction.tindex === 2 ? { ...transaction, tpostings: transaction.tpostings.map((posting) => (posting.paccount === 'Assets:Bank:Checking' ? { ...posting, pstatus: 'Cleared' } : posting)) } : transaction)), 'Assets:Bank:Checking');
+  const undo = plan({ data: marked, texts: { 'fixture.journal': RECONCILE_JOURNAL.replace('\n    Assets:Bank:Checking\n\n2026-09-02', '\n  * Assets:Bank:Checking\n\n2026-09-02') }, ticked: new Set(), finish: null });
+  check('an unticked posting that was marked has its mark taken off, and a pending one stays pending',
+    undo.files[0].changes.length === 1 && undo.files[0].changes[0].after === '    Assets:Bank:Checking', JSON.stringify(undo.files[0].changes));
+  const lost = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL.replace('Assets:Bank:Checking    5000000.00 IDR', 'Assets:Moved    5000000.00 IDR') }, ticked: ids([1]), finish: null });
+  check('a line that is not where hledger said is reported, not guessed', lost.missing.length === 1 && /not found/.test(lost.missing[0].why), JSON.stringify(lost.missing));
+  check('a generated posting is never written', plan({ data: { ...data, rows: [{ ...data.rows[0], generated: true }] }, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: ids([0]) }).missing.length === 1, '');
+
+  check('a search finds by description, account and amount, grouping aside',
+    matching(data.rows, 'coffee', style).length === 1 && matching(data.rows, 'income', style).length === 1 && matching(data.rows, '21000', style).length === 1 && matching(data.rows, '21,000', style).length === 1, '');
+}
+
+{
+  check('reconcile reads an account and its flags', JSON.stringify(parseLine('mandiri --statement 2026-09-30 --balance "664,092.01"'))
+    === JSON.stringify({ account: 'mandiri', statement: '2026-09-30', balance: '664,092.01', commodity: null }), JSON.stringify(parseLine('mandiri --statement 2026-09-30 --balance "664,092.01"')));
+  check('and says what is wrong with a line', /^which account\?/.test(parseLine('').error) && /--wat is not something reconcile takes/.test(parseLine('x --wat').error)
+    && /one account at a time/.test(parseLine('a b').error) && /--statement takes a date/.test(parseLine('a --statement 30/9').error), '');
+  const accounts = ['Assets:Mandiri', 'Assets:Mandiri:Now5782', 'Assets:BCADigital', 'Assets:BCADigital:Saving4139', 'Assets:BNI:Taplus8650', 'Assets:Cash'];
+  check('an account is found by any part of its name, case aside, preferring the top of a branch',
+    resolveAccount('assets:cash', accounts).account === 'Assets:Cash' && resolveAccount('now5782', accounts).account === 'Assets:Mandiri:Now5782'
+    && resolveAccount('mandiri', accounts).account === 'Assets:Mandiri', JSON.stringify(resolveAccount('mandiri', accounts)));
+  check('and several or none is said', /matches 2 accounts: Assets:BCADigital, Assets:BNI:Taplus8650/.test(resolveAccount('b', accounts.filter((name) => !name.includes('Mandiri') && name !== 'Assets:Cash')).error || '')
+    && /no account matches zzz/.test(resolveAccount('zzz', accounts).error), resolveAccount('b', accounts.filter((name) => !name.includes('Mandiri') && name !== 'Assets:Cash')).error);
+}
+
+/**
+ * A host whose files are real text: `save` changes what the next `hledger` sees, and hledger is
+ * stood in for by what the fixture prints, plus an assertion check done the way hledger does it,
+ * over every posting up to the assertion's date.
+ */
+function reconcileHost({ writable = true, failBefore = false, failSave = false } = {}) {
+  const log = { said: [], pages: [], saved: [], asked: [] };
+  const files = { 'fixture.journal': RECONCILE_JOURNAL };
+  const assertionsHold = (text) => {
+    const balance = (until) => 100000000 + [[-2100000, '2026-09-01'], [500000000, '2026-09-02'], [-30000000, '2026-09-03'], [-900000, '2026-09-05'], [-250000, '2026-10-02']]
+      .filter(([, date]) => date <= until).reduce((sum, [amount]) => sum + amount, 0);
+    const asserted = [...text.matchAll(/^(\d{4}-\d{2}-\d{2}) \* Reconciled with statement\n {4}Assets:Bank:Checking {4}0\.00 IDR = ([\d.]+) IDR$/gm)];
+    return asserted.every(([, date, amount]) => Math.round(Number(amount) * 100) === balance(date));
+  };
+  const host = {
+    name: 'reconcile',
+    colors: () => COLORS,
+    say: (text) => log.said.push(text),
+    files: () => [{ path: 'fixture.journal', writable, main: true }],
+    read: (path) => files[path] ?? null,
+    window: () => ({ write: (html) => log.pages.push(html), close() {} }),
+    async save(path, text) {
+      if (failSave) return { error: 'the file changed on disk' };
+      files[path] = text;
+      log.saved.push(path);
+      return { ok: true };
+    },
+    async hledger(command) {
+      log.asked.push(command);
+      if (command === 'accounts') return 'Assets:Bank:Checking\nAssets:Savings\nEquity:Opening\nExpenses:Fees\nExpenses:Food\nIncome:Salary\n';
+      if (command.startsWith('print')) {
+        // What hledger prints for the file as it is now: marks the plugin wrote are read back.
+        const lines = files['fixture.journal'].split('\n');
+        return JSON.stringify(RECONCILE_PRINT.map((transaction) => ({
+          ...transaction,
+          tpostings: transaction.tpostings.map((posting, index) => {
+            // A transaction's posting lines, without its comment lines.
+            const own = lines.slice(transaction.tsourcepos[0].sourceLine, transaction.tsourcepos[1].sourceLine - 1).filter((text) => !text.trim().startsWith(';'));
+            const line = own[index] || '';
+            const mark = /^ {2}([*!]) /.exec(line);
+            return { ...posting, pstatus: mark ? (mark[1] === '*' ? 'Cleared' : 'Pending') : 'Unmarked' };
+          }),
+        })));
+      }
+      if (command.startsWith('balance')) {
+        if (failBefore || !assertionsHold(files['fixture.journal'])) throw new Error('Balance assertion failed in Assets:Bank:Checking');
+        return '"account","balance"\n';
+      }
+      throw new Error(`unexpected ${command}`);
+    },
+  };
+  return { host, log, files };
+}
+
+{
+  const { host, log, files } = reconcileHost();
+  await Reconcile.run('checking --statement 2026-09-30', host);
+  check('reconcile finds the account and reads it with an exact query', log.asked.includes("print \"acct:^Assets:Bank:Checking$\" -O json") || log.asked.includes('print acct:^Assets:Bank:Checking$ -O json'),
+    log.asked.join(' | '));
+  check('and says what it opened', log.said[0] === 'reconcile: 6 postings of Assets:Bank:Checking in IDR since the balance asserted on 2026-08-31, in a new window.', log.said[0]);
+  const html = log.pages[log.pages.length - 1];
+  check('the window carries the postings, the statement date, and its token', html.includes('"statementDate":"2026-09-30"') && html.includes('reconcile-window.js') && /"token":"reconcile-/.test(html), '');
+  const token = /"token":"([^"]+)"/.exec(html)[1];
+  const link = globalThis.__reconcileBridges[token];
+  const shownPrint = /"fingerprint":"([^"]*)"/.exec(html)[1];
+  const rows = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking').rows;
+  const all = rows.slice(0, 5).map((row) => row.id);
+  const preview = await link.preview({ ticked: all, finish: { date: '2026-09-30', balance: 567000000 }, fingerprint: shownPrint });
+  check('a preview carries the assertion on its own too', preview.assertion.endsWith('= 5670000.00 IDR\n'), preview.assertion);
+  check('a preview says what would change, and writes nothing', preview.files[0].changes.length === 5 && preview.files[0].appended.includes('= 5670000.00 IDR') && !log.saved.length, '');
+  const wrong = await link.apply({ ticked: all, finish: { date: '2026-09-30', balance: 567100000 }, fingerprint: shownPrint });
+  check('an assertion hledger refuses is put back: the file is as it was', /hledger refused the result, so the files were put back/.test(wrong.error || '') && files['fixture.journal'] === RECONCILE_JOURNAL,
+    wrong.error);
+  const right = await link.apply({ ticked: all, finish: { date: '2026-09-30', balance: 567000000 }, fingerprint: shownPrint });
+  check('a right one is written, marks and assertion, and checked', right.ok && files['fixture.journal'].includes('  * Assets:Bank:Checking    5000000.00 IDR')
+    && files['fixture.journal'].endsWith('    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\n') && /reconciled to 2026-09-30: 5 postings marked and the balance asserted/.test(log.said[log.said.length - 1]), right.error || '');
+  check('and the window is handed the account as it is now, with a new fingerprint', right.data.rows.filter((row) => row.status === 'Cleared').length === 5 && right.fingerprint !== shownPrint, '');
+  const stale = await link.apply({ ticked: all, finish: null, fingerprint: shownPrint });
+  check('a window drawn from an older journal is refused and read again', /changed since this window was drawn/.test(stale.error || '') && stale.data, stale.error);
+}
+
+{
+  const { host, files } = reconcileHost({ writable: false });
+  await Reconcile.run('checking', host);
+  const link = Object.values(globalThis.__reconcileBridges).pop();
+  const printed = fingerprint(readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking'));
+  const answer = await link.apply({ ticked: [readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking').rows[0].id], finish: null, fingerprint: printed });
+  check('a file not from an opened folder is never written', /cannot be written: it did not come from an opened folder/.test(answer.error || '') && files['fixture.journal'] === RECONCILE_JOURNAL, answer.error);
+}
+
+{
+  const { host, files } = reconcileHost({ failBefore: true });
+  await Reconcile.run('checking', host);
+  const link = Object.values(globalThis.__reconcileBridges).pop();
+  const answer = await link.apply({ ticked: [readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking').rows[0].id], finish: null, fingerprint: fingerprint(readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking')) });
+  check('a journal hledger already rejects is not written to', /already reports a problem, so nothing was written/.test(answer.error || '') && files['fixture.journal'] === RECONCILE_JOURNAL, answer.error);
+}
+
+{
+  const { host, log } = reconcileHost();
+  await Reconcile.run('nothing-like-it', host);
+  check('an account that is not there is said, with no window', log.said[0] === 'reconcile: no account matches nothing-like-it.' && !log.pages.length, log.said[0]);
+  const page = reconcilePage({ data: readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking'), colors: COLORS, token: 't', files: [{ path: 'x', writable: false }], statementDate: '2026-09-30', statementBalance: '</script>', fingerprint: '', module: 'm.js' });
+  check('the page escapes what it is given and says when nothing can be written', !page.includes('</script>"') && page.includes('id="progress" disabled'), '');
+}
+
+{
+  // When things go wrong, reconcile says so in the terminal and writes nothing.
+  const blocked = reconcileHost();
+  await Reconcile.run('checking', { ...blocked.host, window: () => null });
+  check('a blocked window is said', /the browser blocked the window for Assets:Bank:Checking/.test(blocked.log.said[0]), blocked.log.said[0]);
+  const broken = reconcileHost();
+  await Reconcile.run('checking', { ...broken.host, hledger: async () => { throw new Error('no journal is loaded'); } });
+  check('a journal hledger cannot read is said', broken.log.said[0] === 'reconcile: no journal is loaded', broken.log.said[0]);
+  const late = reconcileHost();
+  let calls = 0;
+  await Reconcile.run('checking', { ...late.host, hledger: async (command) => { calls += 1; if (command.startsWith('print')) throw new Error('print failed'); return late.host.hledger(command); } });
+  check('and so is a print that fails, in the window too', late.log.said[0] === 'reconcile: print failed' && late.log.pages.some((html) => html.includes('print failed')), late.log.said[0]);
+  const empty = reconcileHost();
+  await Reconcile.run('savings', { ...empty.host, hledger: async (command) => (command.startsWith('print') ? '[]' : empty.host.hledger(command)) });
+  check('an account with no postings is said', empty.log.said[0] === 'reconcile: Assets:Savings has no postings to reconcile.', empty.log.said[0]);
+  const wrong = reconcileHost();
+  await Reconcile.run('checking --wat', wrong.host);
+  check('and a line it cannot read', /--wat is not something reconcile takes/.test(wrong.log.said[0]), wrong.log.said[0]);
+
+  const failing = reconcileHost({ failSave: true });
+  await Reconcile.run('checking', failing.host);
+  const link = Object.values(globalThis.__reconcileBridges).pop();
+  const rows = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking').rows;
+  const print = fingerprint(readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking'));
+  const refused = await link.apply({ ticked: [rows[0].id], finish: null, fingerprint: print });
+  check('a save the app refuses is said, and nothing is left half-written', /fixture\.journal could not be saved: the file changed on disk/.test(refused.error || '') && failing.files['fixture.journal'] === RECONCILE_JOURNAL, refused.error);
+
+  const moved = reconcileHost();
+  await Reconcile.run('checking', moved.host);
+  moved.files['fixture.journal'] = RECONCILE_JOURNAL.replace('Assets:Bank:Checking    5000000.00 IDR', 'Assets:Moved    5000000.00 IDR');
+  const movedLink = Object.values(globalThis.__reconcileBridges).pop();
+  const missed = await movedLink.apply({ ticked: [rows[1].id], finish: null, fingerprint: print });
+  check('a posting whose line is not where hledger said is not written', /^Not written: its line was not found/.test(missed.error || ''), missed.error);
+  const previewed = movedLink.preview({ ticked: [rows[0].id], finish: null });
+  check('and a preview lists the files and whether each can be written', previewed.writable[0].path === 'fixture.journal' && previewed.writable[0].writable === true, JSON.stringify(previewed.writable));
+
+  check('hledger\'s source path is the loaded file, mounted under /data/ in the app or at / outside it',
+    fileFor('/data/hledger.journal', ['hledger.journal']) === 'hledger.journal' && fileFor('/data/data/transitioning.journal', ['data/transitioning.journal', 'transitioning.journal']) === 'data/transitioning.journal'
+    && fileFor('/fixture.journal', ['fixture.journal']) === 'fixture.journal' && fileFor('/data/x.journal', []) === 'data/x.journal', fileFor('/data/data/transitioning.journal', ['data/transitioning.journal', 'transitioning.journal']));
+  const readOnly = plan({ data: readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking'), texts: {}, ticked: new Set(rows.map((row) => row.id)), finish: { date: '2026-09-30', balance: 1 } });
+  check('a journal that cannot be read still gets its assertion, to copy', readOnly.assertion.startsWith('2026-09-30 * Reconciled with statement') && !readOnly.files.length && readOnly.missing.length > 0, '');
+  const parent = reconcileHost();
+  await Reconcile.run('assets:bank', { ...parent.host, hledger: async (command) => (command === 'accounts' ? 'Assets:Bank\nAssets:Bank:Checking\n' : parent.host.hledger(command)) });
+  check('a parent account is read with its subaccounts, and asserted inclusively',
+    parent.log.asked.some((command) => command.includes('acct:^Assets:Bank(:|$)')) && /postings of Assets:Bank /.test(parent.log.said[0]), parent.log.said[0]);
 }
 
 // ------------------------------------------------------------------ the edit plugin

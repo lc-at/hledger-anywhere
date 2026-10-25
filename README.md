@@ -362,6 +362,42 @@ theme in use, their own settings, and — through `host.files()`, `host.read(pat
 `host.save` is bound by the same rule: only files from an `open`ed folder can be written,
 and a file that changed on disk since it was opened is refused rather than clobbered.
 
+### Reconciling an account
+
+```
+reconcile assets:bank:checking --statement 2026-09-30
+```
+
+`reconcile` opens a window with the account's postings since its last balance assertion, the
+point already proven, and that balance as the opening. Type the statement's closing balance
+and tick what the statement shows (click, or Space; `a` ticks everything shown, `/` searches):
+the difference falls to zero as it matches. When it does not, the window points at the likely
+cause: a posting that is exactly the difference, one of half the difference entered with the
+wrong sign, or a difference divisible by nine, which two swapped digits leave.
+
+Finish shows exactly what it will write and then writes only standard hledger:
+
+```
+2026-09-05 * Dkriuk Mayestik
+    Expenses:Food:EatingOut                                    21000 IDR
+  * Assets:Mandiri:Now5782                                    ← the reconciled posting, cleared
+
+2026-09-30 * Reconciled with statement                        ← appended at the end of the file
+    Assets:Mandiri:Now5782    0.00 IDR = 1329539.01 IDR
+```
+
+The cleared mark goes on the posting, not the transaction, so the other side of a transfer is
+left alone. The amount is written without digit grouping, which hledger reads the same with or
+without a `commodity` directive. hledger is then run on the result; if the assertion does not
+hold, every file is put back as it was. Save progress writes the marks alone, and the next
+`reconcile` picks them up. A balance assertion counts every posting up to its date, so Finish
+waits until every posting on or before the statement date is ticked, and says so. Writing
+needs a file from an `open`ed folder; anywhere else the window still reconciles and offers the
+assertion to copy.
+
+If new transactions are entered without `*`, hledger's own `-U` and `-C` then show what is
+left to reconcile; the plugin does not depend on that.
+
 A repository may be any URL this page can fetch, including on another host, and a plugin
 is code running in this page with the page's own reach: you name it, so you trust it. See
 [docs/plugins.md](docs/plugins.md) for the manifest fields, the API, and a worked example.
@@ -509,7 +545,7 @@ it reads in the help, what it adds to completion, and what to do with the text t
 after it; it never touches the app, which is what keeps it testable. It can also say
 how to present the output it caused, or return nothing and get the ordinary terminal.
 
-Two plugins ship in the bundled repository, `chart` and `edit`, and both are installed at
+Three plugins ship in the bundled repository, `chart`, `edit` and `reconcile`, and all are installed at
 runtime the same way a third-party one is: from a manifest, as JavaScript modules, with no
 rebuild of the app. A picture or an editor belongs in the plugin that wants one, not in the
 core that runs reports.

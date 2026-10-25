@@ -331,6 +331,111 @@
           "another file from the open folder"
         ]
       ]
+    },
+    {
+      "name": "reconcile",
+      "group": "Files",
+      "summary": "check an account against a statement, in a window",
+      "completes": [
+        "--statement",
+        "--balance",
+        "--commodity"
+      ],
+      "module": "./reconcile.js",
+      "usage": "reconcile <account> [--statement DATE] [--balance N]",
+      "help": "Opens a window listing an account's postings since its last balance assertion, which is the point already proven. Type the statement's date and closing balance and tick what the statement shows; the difference falls to zero as it matches. Finish marks each ticked posting cleared and appends a balance assertion at the end of the file, then runs hledger to confirm it holds, putting the file back if it does not. Save progress writes the marks alone. Only standard hledger is written, and only to files from an open folder.",
+      "sections": [
+        {
+          "title": "Options",
+          "rows": [
+            [
+              "--statement YYYY-MM-DD",
+              "the statement date; today if not given"
+            ],
+            [
+              "--balance AMOUNT",
+              "its closing balance, or type it in the window"
+            ],
+            [
+              "--commodity NAME",
+              "which commodity, for an account holding several"
+            ]
+          ]
+        },
+        {
+          "title": "In the window",
+          "rows": [
+            [
+              "click, Space",
+              "tick or untick a posting"
+            ],
+            [
+              "up, down, j, k",
+              "move between postings"
+            ],
+            [
+              "a",
+              "tick every posting shown"
+            ],
+            [
+              "/",
+              "search descriptions, accounts and amounts"
+            ],
+            [
+              "Finish",
+              "at a difference of zero: mark, assert, check"
+            ],
+            [
+              "Save progress",
+              "write the marks so far, nothing else"
+            ]
+          ]
+        },
+        {
+          "title": "What it writes",
+          "rows": [
+            [
+              "  * Assets:Bank",
+              "a cleared mark on the ticked posting itself"
+            ],
+            [
+              "0 IDR = 664092.01 IDR",
+              "an assertion, in its own transaction at the end"
+            ]
+          ]
+        },
+        {
+          "title": "Help with a difference",
+          "rows": [
+            [
+              "exactly the difference",
+              "a posting ticked or missed by mistake"
+            ],
+            [
+              "half the difference",
+              "a posting entered with the wrong sign"
+            ],
+            [
+              "divides by 9",
+              "two digits swapped in typing"
+            ]
+          ]
+        }
+      ],
+      "examples": [
+        [
+          "reconcile assets:bank:checking",
+          "the statement as of today"
+        ],
+        [
+          "reconcile mandiri --statement 2026-09-30",
+          "the account whose name has mandiri"
+        ],
+        [
+          "reconcile bca --balance 2530801.73",
+          "with the closing balance filled in"
+        ]
+      ]
     }
   ]
 }

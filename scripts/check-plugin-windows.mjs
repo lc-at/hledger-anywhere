@@ -40,9 +40,13 @@ await self.post('Profiler.startPreciseCoverage', { callCount: true, detailed: tr
 const { page } = await import('../assets/plugins/chart-window.js');
 const { build, parseReport } = await import('../assets/plugins/chart.js');
 const { page: editPage } = await import('../assets/plugins/edit-window.js');
+const { page: reconcilePage } = await import('../assets/plugins/reconcile-window.js');
+const { readPrint: readReconcile } = await import('../assets/plugins/reconcile-data.js');
+const { RECONCILE_PRINT } = await import('./reconcile-fixtures.mjs');
+const RECONCILE_DATA = readReconcile(RECONCILE_PRINT, 'Assets:Bank:Checking');
 
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
-const MEASURED = ['chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
+const MEASURED = ['reconcile.js', 'reconcile-data.js', 'reconcile-window.js', 'chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
 /** The least each measured file's code may be executed, as a share of its source. */
 const FLOOR = 0.9;
 
@@ -123,6 +127,9 @@ const ANSWER = {
 // what was saved, or refuses the way the app does when the file changed on disk.
 const OPENER = `
   window.__asked = [];
+  window.__previewed = [];
+  window.__applied = [];
+  window.__writable = !/writable=no/.test(location.search);
   window.__saved = [];
   window.__refuse = '';
   Object.defineProperty(window, 'opener', { configurable: true, value: {
@@ -131,6 +138,27 @@ const OPENER = `
         window.__asked.push(args);
         await new Promise((resolve) => setTimeout(resolve, 30));
         return { ...${JSON.stringify(ANSWER)}, title: args, args };
+      },
+    } },
+    __reconcileBridges: { check: {
+      // The plugin's side, stood in for: a preview of the marks and the assertion, and an
+      // apply that answers with the account as it would be read back, ticks marked.
+      preview(request) {
+        window.__previewed.push(request);
+        return {
+          files: [{ path: 'fixture.journal', changes: request.ticked.map((id, index) => ({ line: 9 + index, before: '    Assets:Bank:Checking', after: '  * Assets:Bank:Checking', id })),
+            appended: request.finish ? '2026-09-30 * Reconciled with statement\\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\\n' : '' }],
+          missing: [],
+          writable: [{ path: 'fixture.journal', writable: window.__writable }],
+        };
+      },
+      async apply(request) {
+        window.__applied.push(request);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        if (window.__refuse) return { error: window.__refuse };
+        const data = JSON.parse(document.getElementById('reconcile-data').textContent).data;
+        for (const row of data.rows) row.status = request.ticked.includes(row.id) ? 'Cleared' : row.status;
+        return { ok: true, message: 'Assets:Bank:Checking reconciled to 2026-09-30', data, fingerprint: 'after' };
       },
     } },
     __editBridges: { check: {
@@ -166,6 +194,17 @@ function serve() {
       response.writeHead(200, { 'content-type': types['.html'] });
       response.end(editorFor(url.searchParams.get('writable') === 'yes', url.searchParams.get('theme'), {
         library: url.searchParams.get('library') !== 'no',
+      }));
+      return;
+    }
+    if (url.pathname === '/reconcile') {
+      response.writeHead(200, { 'content-type': types['.html'] });
+      const theme = url.searchParams.get('theme');
+      response.end(reconcilePage({
+        data: RECONCILE_DATA, colors: theme === 'dark' ? DARK : COLORS, token: 'check',
+        files: [{ path: 'fixture.journal', writable: url.searchParams.get('writable') !== 'no' }],
+        statementDate: '2026-09-30', statementBalance: url.searchParams.get('balance') || '', fingerprint: 'before',
+        module: '/plugins/reconcile-window.js',
       }));
       return;
     }
@@ -324,11 +363,12 @@ class Tab {
     });
     loaded.catch(() => {});
     if (process.env.VERBOSE) console.error(`showing ${name} ${theme}${extra}`);
-    const path = name === 'edit' ? `/edit?theme=${theme}${extra}` : `/window?case=${name}&theme=${theme}${extra}`;
+    const path = name === 'edit' ? `/edit?theme=${theme}${extra}` : name === 'reconcile' ? `/reconcile?theme=${theme}${extra}` : `/window?case=${name}&theme=${theme}${extra}`;
     await this.send('Page.navigate', { url: `${this.base}${path}` });
     await loaded;
     await this.until(name === 'edit'
       ? "document.querySelector('.ace_content') || !document.getElementById('warn').hidden"
+      : name === 'reconcile' ? "document.querySelectorAll('#rows tr').length > 0"
       : "document.querySelectorAll('#chart *').length > 0 || !document.getElementById('warn').hidden");
   }
 
@@ -905,6 +945,92 @@ async function whenThingsGoWrong(tab) {
   check('and a failed drill-down shows hledger\'s answer', /no such account/.test(await tab.warning()), await tab.warning());
 }
 
+async function reconciling(tab) {
+  const text = (id) => tab.eval(`document.getElementById('${id}').innerText`);
+  const difference = () => tab.eval("document.querySelector('#sums .difference b').textContent");
+  const type = (id, value) => tab.eval(`(() => { const el = document.getElementById('${id}'); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input')); })()`);
+  const tickRow = async (index) => {
+    const at = await tab.eval(`(() => { const b = document.querySelectorAll('#rows tr')[${index}].getBoundingClientRect(); return [b.left + 40, b.top + b.height / 2]; })()`);
+    await tab.click(at[0], at[1]);
+  };
+  for (const theme of ['light', 'dark']) {
+    await tab.show('reconcile', theme);
+    check(`the reconcile window lists the account's postings since its last assertion (${theme})`,
+      (await tab.eval("document.querySelectorAll('#rows tr').length")) === 6 && /opening balance asserted on 2026-08-31/.test(await text('sub')) && tab.errors.length === 0,
+      `${await text('sub')} ${tab.errors.join(' | ')}`);
+  }
+  check('it opens at the opening balance, asking for the statement', /Opening\s*1,000,000\.00 IDR/i.test(await text('sums')) && /Statement\s*type it above/i.test(await text('sums')), await text('sums'));
+  check('a posting after the statement date is faded, and said', (await tab.eval("document.querySelectorAll('#rows tr.later').length")) === 1 && /1 later posting, after the statement date/.test(await text('notes')), await text('notes'));
+  await type('balance', '5,670,000');
+  check('with the statement balance typed, the difference is there', (await difference()) === '4,670,000.00 IDR', await difference());
+  await tickRow(0);
+  await tickRow(1);
+  await tickRow(3);
+  await tickRow(4);
+  check('a click ticks a posting and the difference follows', (await difference()) === '-300,000.00 IDR' && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 4, await difference());
+  check('a posting that is exactly the difference is pointed out, and lit',
+    /Pending transfer -300,000\.00 IDR: not ticked, and exactly the difference/.test(await text('hints')) && (await tab.eval("document.querySelectorAll('#rows tr.hinted').length")) === 1, await text('hints'));
+  check('Finish waits for a difference of zero', await tab.eval("document.getElementById('finish').disabled"));
+  await tickRow(5);
+  check('a later posting cannot be ticked', (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 4, '');
+  // The keyboard: down to the pending transfer, and Space.
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  for (let step = 0; step < 3; step += 1) await tab.key('j', { code: 'KeyJ', keyCode: 74, text: 'j' });
+  await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  check('j, k and Space tick from the keyboard, and at zero the difference is lit',
+    (await difference()) === '0.00 IDR' && (await tab.eval("document.querySelector('#sums .difference').classList.contains('zero')")) && !(await tab.eval("document.getElementById('finish').disabled")), await difference());
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  await type('balance', '5,970,000');
+  check('at zero with a posting left out, Finish says why it waits',
+    (await difference()) === '0.00 IDR' && (await tab.eval("document.getElementById('finish').disabled")) && /1 posting is dated on or before the statement but not ticked/.test(await text('notes')), await text('notes'));
+  await type('balance', '5,670,000');
+  await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  check('a ticks every posting shown up to the date', (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await difference()) === '0.00 IDR', '');
+  await tab.key('/', { code: 'Slash', keyCode: 191, text: '/' });
+  await tab.send('Input.insertText', { text: 'coffee' });
+  await sleep(100);
+  check('/ searches', (await tab.eval("document.querySelectorAll('#rows tr').length")) === 1 && (await tab.eval('document.activeElement.id')) === 'search', '');
+  await tab.key('Escape', { keyCode: 27 });
+  check('and Escape clears it', (await tab.eval("document.querySelectorAll('#rows tr').length")) === 6, '');
+  await type('date', '2026-08-01');
+  check('a statement before the asserted balance is refused', /before 2026-08-31, where this account's balance is already asserted/.test(await text('notes')), await text('notes'));
+  await type('date', '2026-09-30');
+
+  await tab.eval("document.getElementById('finish').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  check('Finish shows what would be written before writing it',
+    /fixture\.journal: 5 postings would be marked, and at the end:/.test(await text('preview')) && /= 5670000\.00 IDR/.test(await text('preview')) && (await tab.eval('window.__applied.length')) === 0,
+    await text('preview'));
+  check('and asks the plugin with the ticks and the statement', await tab.eval("(() => { const r = window.__previewed.pop(); return r.ticked.length === 5 && r.finish.date === '2026-09-30' && r.finish.balance === 567000000 && r.fingerprint === 'before'; })()"), '');
+  await tab.eval("document.getElementById('apply').click()");
+  await tab.until("/reconciled/.test(document.getElementById('status').textContent)");
+  check('writing goes through the plugin, and the window shows the account as it is now',
+    /Assets:Bank:Checking reconciled to 2026-09-30\./.test(await text('status')) && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await tab.eval('document.getElementById(\'preview\').hidden')), await text('status'));
+  await tab.eval("window.__refuse = 'hledger refused the result, so the files were put back as they were: Balance assertion failed'");
+  await tab.eval("document.getElementById('progress').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  await tab.eval("document.getElementById('apply').click()");
+  await tab.until("document.getElementById('status').classList.contains('error')");
+  check('and a refusal is shown as it came', /put back as they were/.test(await text('status')), await text('status'));
+  await tab.eval("document.getElementById('progress').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  await tab.eval("document.getElementById('cancel').click()");
+  check('Cancel puts the preview away', await tab.eval("document.getElementById('preview').hidden"));
+
+  await tab.show('reconcile', 'light', '&writable=no&balance=5670000');
+  check('in a read-only file, Save progress is off and Finish offers the assertion to copy',
+    (await tab.eval("document.getElementById('progress').disabled")) && /copy the assertion/.test(await tab.eval("document.getElementById('finish').textContent")) && /fixture\.journal \(read-only\)/.test(await text('sub')), await text('sub'));
+  await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  await tab.eval("document.getElementById('finish').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  check('and its preview says why nothing can be written, with no write button',
+    /did not come from an opened folder/.test(await text('preview')) && !(await tab.eval("document.getElementById('apply')")) && (await tab.eval("!!document.getElementById('copy')")), await text('preview'));
+  await tab.eval("document.getElementById('copy').click()");
+  await tab.until("document.getElementById('status').textContent.length > 0");
+  check('and copying says what happened', /Copied|Copying was not allowed/.test(await text('status')), await text('status'));
+}
+
 async function theEditor(tab) {
   const status = () => tab.eval("document.getElementById('status').textContent");
   const save = async () => {
@@ -981,6 +1107,7 @@ try {
   await playing(tab);
   await whenThingsGoWrong(tab);
   await theEditor(tab);
+  await reconciling(tab);
   await coverage.collect(tab);
   coverage.merge((await self.post('Profiler.takePreciseCoverage')).result);
 
