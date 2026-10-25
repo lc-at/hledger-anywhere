@@ -3477,6 +3477,16 @@ mod tests {
         assert_eq!(tokenize("'a\\b'").expect("tokens"), ["a\\b"]);
         // And a backslash that escapes something ordinary keeps both characters.
         assert_eq!(tokenize("\"a\\nb\"").expect("tokens"), ["a\\nb"]);
+        // The chart plugin writes a payee's exact match this way, a regular expression
+        // whose backslashes must reach hledger: its quote() and this have to agree.
+        assert_eq!(
+            tokenize("balance --pivot payee expenses \"payee:^tiket\\\\.com$\" -O csv").expect("tokens"),
+            ["balance", "--pivot", "payee", "expenses", "payee:^tiket\\.com$", "-O", "csv"]
+        );
+        assert_eq!(
+            tokenize("\"payee:^A \\\\| B \\\\(1\\\\)$\"").expect("tokens"),
+            ["payee:^A \\| B \\(1\\)$"]
+        );
 
         // An unclosed quote is an error that says which one it is, rather than a
         // guess that runs something the user did not write.

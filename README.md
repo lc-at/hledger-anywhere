@@ -244,6 +244,13 @@ hledger as you write it, so anything `balance` takes works there: `-p 2026`, `-M
 | `multiples` | a small line per account | `balance … -M` |
 
 A chart over time is monthly unless the query names an interval (`-D`, `-W`, `-Q`, `-Y`); a
+**By payee, or by anything.** hledger's `--pivot payee` makes payees the rows of a report, so
+any balance chart breaks down by payee: `chart bar --pivot payee expenses`, `chart --animate
+--cumulative bar --pivot payee expenses`, `chart treemap --pivot payee expenses`. A click on a
+payee opens that payee's spending month by month (`payee:^Shopee Indonesia$`, matched exactly).
+`--pivot desc` and `--pivot` a tag name work the same way. A ranking keeps the 40 largest and a
+pie the 12 largest, the rest as "other"; `--top N` asks for more or fewer.
+
 Sankey and a cash flow are two levels deep unless the query sets `--depth`; and `budget`, `swarm`
 and `histogram` chart `expenses` when the query names no account. Nothing else is added.
 
@@ -265,6 +272,7 @@ budget in the journal, a periodic transaction such as `~ monthly`; without one i
 
 ```
 chart cashflow -p 2026                         what came in, what went out, what was kept
+chart bar --pivot payee expenses -p 2026       who the money went to, payee by payee
 chart budget -p 2026-04..2026-10               spending against the budget
 chart swarm -p 2026                            every purchase; the big ones stand out
 chart histogram -p 2026                        how big purchases are, and what the big ones add up to

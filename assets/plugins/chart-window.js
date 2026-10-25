@@ -89,6 +89,9 @@ export function modelFor({ report, colors, title, kind, options = {} }) {
     rows = chosen(rows, {
       top: options.top,
       sort: options.sort,
+      // Without --top, as many as stay readable: a ranking of five hundred payees is a smear,
+      // and their tail is one "other". --top asks for more or fewer.
+      fits: type === 'doughnut' ? 12 : 40,
       size: (row) => row.value,
       combine: (rest) => ({ label: `other (${rest.length})`, value: rest.reduce((sum, row) => sum + row.value, 0), other: true }),
     });

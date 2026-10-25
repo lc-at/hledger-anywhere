@@ -66,7 +66,9 @@
         "--invert",
         "expenses",
         "income",
-        "assets"
+        "assets",
+        "--pivot",
+        "payee"
       ],
       "module": "./chart.js",
       "usage": "chart [chart options] <type> [hledger arguments]",
@@ -202,6 +204,10 @@
               "account names and patterns, as balance matches them"
             ],
             [
+              "--pivot payee",
+              "rows by payee instead of account; a click opens that payee"
+            ],
+            [
               "-H",
               "balances held at each period's end, rather than its changes"
             ],
@@ -273,6 +279,10 @@
         [
           "chart swarm -p 2026",
           "every purchase of 2026; the big ones stand out"
+        ],
+        [
+          "chart bar --pivot payee expenses -p 2026",
+          "who the money went to"
         ],
         [
           "chart treemap --depth 3 expenses",

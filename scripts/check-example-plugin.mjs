@@ -35,7 +35,7 @@ import {
 } from './chart-fixtures.mjs';
 
 import Chart, { build, parseReport, read } from '../assets/plugins/chart.js';
-import { OPTIONS, TYPES, closestType, command, drill, line, parse, quote, related, title, tokenize, typeOf } from '../assets/plugins/chart-args.js';
+import { OPTIONS, TYPES, closestType, command, drill, line, matchField, parse, pivotOf, quote, related, title, tokenize, typeOf } from '../assets/plugins/chart-args.js';
 import { amountsIn, chosen, inOneCommodity, leftOut, shape, trimmed } from '../assets/plugins/chart-data.js';
 import { beeswarm, bins, budgetView, cashflowOf, categoryOf, edge, intensity, ranks, readBudget, transactionsOf, viewMore } from '../assets/plugins/chart-more.js';
 import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plugins/chart-play.js';
@@ -820,6 +820,35 @@ const TREE_MONTHS = [
   const flows2 = stub();
   await Chart.run('cashflow', flows2.host);
   check('the terminal says what a cash flow kept', /^chart: cashflow, 3 periods: in /.test(flows2.log.said[0]) || /^chart: cashflow, /.test(flows2.log.said[0]), flows2.log.said[0]);
+}
+
+// ------------------------------------------------------------------ by payee
+
+{
+  check('a payee breakdown is hledger\'s own pivot, passed through', build('bar --pivot payee expenses -p 2026').command === 'balance --pivot payee expenses -p 2026 -O csv', '');
+  check('the field a query pivots on is read either way', pivotOf(['--pivot', 'payee']) === 'payee' && pivotOf(['--pivot=desc']) === 'desc' && pivotOf(['expenses']) === null, '');
+  check('a click on a payee asks for that payee exactly, keeping the accounts the query named',
+    drill(parse('bar --pivot payee expenses -p 2026'), 'Shopee Indonesia') === 'line --pivot payee -p 2026 expenses "payee:^Shopee Indonesia$"',
+    drill(parse('bar --pivot payee expenses -p 2026'), 'Shopee Indonesia'));
+  check('a payee\'s regular-expression characters are taken literally',
+    matchField('payee', 'tiket.com') === 'payee:^tiket\\.com$' && matchField('payee', 'A | B (1)') === 'payee:^A \\| B \\(1\\)$', matchField('payee', 'A | B (1)'));
+  check('description, code and note are their own fields, and anything else is a tag',
+    matchField('description', 'x') === 'desc:^x$' && matchField('code', 'x') === 'code:^x$' && matchField('trip', 'bali') === 'tag:trip=^bali$', '');
+  check('the drilled line is one the plugin builds', !build(drill(parse('bar --pivot payee expenses'), 'tiket.com')).refusal, '');
+  const sent = build(drill(parse('bar --pivot payee expenses'), 'tiket.com')).command;
+  check('and its backslash survives the trip to hledger, quoted as the app\'s terminal reads it',
+    sent === 'balance --pivot payee expenses "payee:^tiket\\\\.com$" -M -O csv' && tokenize(sent)[4] === 'payee:^tiket\\.com$', sent);
+  check('a line is split the way the app\'s terminal splits it',
+    JSON.stringify(tokenize('a\\ b "c \\"d\\"" \'e\\f\' "g\\nh"')) === JSON.stringify(['a b', 'c "d"', 'e\\f', 'g\\nh']),
+    JSON.stringify(tokenize('a\\ b "c \\"d\\"" \'e\\f\' "g\\nh"')));
+  check('and every word quote() writes comes back unchanged',
+    ['payee:^tiket\\.com$', 'payee:^A \\| B \\(1\\)$', 'last year', 'say "hi"', 'plain', 'a\\\\b'].every((word) => { const back = tokenize(quote(word)); return back.length === 1 && back[0] === word; }), '');
+  const payees = read(`"account","balance"\n${Array.from({ length: 60 }, (_, index) => `"payee ${index}","$${60 - index}"`).join('\n')}\n`);
+  const bars = modelFor({ report: payees, colors: COLORS, title: 't', kind: 'bar' });
+  const slices = modelFor({ report: payees, colors: COLORS, title: 't', kind: 'pie' });
+  check('a ranking of many keeps forty and folds the rest, a pie twelve', bars.rows.length === 40 && bars.rows[39].label === 'other (21)'
+    && slices.rows.length === 12 && slices.rows[11].label === 'other (49)', `${bars.rows.length} ${slices.rows.length}`);
+  check('and --top still asks for more', modelFor({ report: payees, colors: COLORS, title: 't', kind: 'bar', options: { top: 50 } }).rows.length === 51, '');
 }
 
 // ------------------------------------------------------------------ the edit plugin

@@ -132,18 +132,35 @@ const VALUED_FLAGS = [
   '-X', '--exchange', '--value', '--format', '--alias',
 ];
 
-/** The words of a line, honouring quotes: `-p "last year" food` is three words. */
+/**
+ * The words of a line, the way the app's terminal splits them, which is the way a shell does:
+ * `-p "last year" food` is three words. Both quote styles are removed. Outside quotes a
+ * backslash escapes the next character; inside double quotes it escapes `"` and `\` and is
+ * otherwise kept; single quotes are literal. The two must agree, because a line the window
+ * writes is split again by the app before hledger sees it.
+ */
 export function tokenize(text) {
   const words = [];
   let word = '';
   let quote = null;
   let started = false;
-  for (const character of String(text == null ? '' : text)) {
-    if (quote) {
-      if (character === quote) quote = null;
+  const characters = [...String(text == null ? '' : text)];
+  for (let index = 0; index < characters.length; index += 1) {
+    const character = characters[index];
+    if (quote === "'") {
+      if (character === "'") quote = null;
       else word += character;
+    } else if (quote === '"') {
+      if (character === '"') quote = null;
+      else if (character === '\\' && index + 1 < characters.length) {
+        const next = characters[(index += 1)];
+        word += next === '"' || next === '\\' ? next : `\\${next}`;
+      } else word += character;
     } else if (character === '"' || character === "'") {
       quote = character;
+      started = true;
+    } else if (character === '\\' && index + 1 < characters.length) {
+      word += characters[(index += 1)];
       started = true;
     } else if (/\s/.test(character)) {
       if (started) words.push(word);
@@ -158,9 +175,13 @@ export function tokenize(text) {
   return words;
 }
 
-/** A word as it must be written on a command line: quoted when it has a space in it. */
+/**
+ * A word as it must be written on a command line so that `tokenize`, and the app's terminal,
+ * give it back unchanged: in double quotes, with `"` and `\` escaped, when it has a space, a
+ * quote or a backslash in it. `payee:^tiket\.com$` written bare would lose its backslash.
+ */
 export function quote(word) {
-  return /[\s"']/.test(word) ? `"${word.replace(/"/g, '\\"')}"` : word;
+  return /[\s"'\\]/.test(word) ? `"${word.replace(/[\\"]/g, '\\$&')}"` : word;
 }
 
 /** The type a word names, aliases included, or null. */
@@ -297,10 +318,36 @@ export function line({ type, query, options }) {
  * everywhere and `--top` and `--sort` have nothing to choose between, so they go.
  */
 export function drill(parsed, account) {
-  const flags = tokenize(partsOf(parsed.query).flags.join(' '));
+  const { terms, flags: written } = partsOf(parsed.query);
+  const flags = tokenize(written.join(' '));
   const kept = {};
   for (const name of ['log', 'cumulative', 'invert']) if (parsed.options[name]) kept[name] = true;
-  return line({ type: 'line', query: [...flags.filter((flag) => !['--tree', '-l', '--flat'].includes(flag)), account], options: kept });
+  const plain = flags.filter((flag) => !['--tree', '-l', '--flat'].includes(flag));
+  // With --pivot, a mark is a payee, a description or a tag's value, not an account: the click
+  // asks for that field exactly and keeps the accounts the query named, so a payee's bar in a
+  // chart of expenses opens that payee's expenses, month by month.
+  const pivot = pivotOf(parsed.query);
+  if (pivot) return line({ type: 'line', query: [...plain, ...terms, matchField(pivot, account)], options: kept });
+  return line({ type: 'line', query: [...plain, account], options: kept });
+}
+
+/** The field a query pivots on, or null: `--pivot payee` is payee. */
+export function pivotOf(query) {
+  const at = query.findIndex((word) => word === '--pivot' || word.startsWith('--pivot='));
+  if (at < 0) return null;
+  return query[at].includes('=') ? query[at].split('=')[1] : query[at + 1] || null;
+}
+
+/**
+ * The query term that matches one value of a pivoted field exactly. hledger's query terms are
+ * regular expressions, so the value is anchored and its special characters escaped: a payee
+ * named "Midtrans | Bayar kos" is not an alternation. Payee, description, code and note are
+ * fields of their own; anything else is a tag.
+ */
+export function matchField(field, value) {
+  const exact = `^${String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+  const own = { payee: 'payee', desc: 'desc', description: 'desc', code: 'code', note: 'note' }[field];
+  return own ? `${own}:${exact}` : `tag:${field}=${exact}`;
 }
 
 /**
