@@ -103,7 +103,7 @@ export function trimmedTree(series) {
 
 export function timeline(kind, given, options = {}, colors) {
   const report = given.rows ? trimmedTree(given) : trimmed(given);
-  if (kind === 'treemap' || kind === 'sunburst') {
+  if (kind === 'treemap' || kind === 'sunburst' || kind === 'pack') {
     const series = options.cumulative ? runningTree(report) : report;
     const totals = series.periods.map((_, at) => leafTotal(treeAt(series, at).rows));
     const largest = Math.max(...totals, 0) || 1;

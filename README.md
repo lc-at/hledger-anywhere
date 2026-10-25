@@ -230,20 +230,32 @@ hledger as you write it, so anything `balance` takes works there: `-p 2026`, `-M
 | `stream` | a streamgraph: accounts flowing around a centre | `balance … -M` |
 | `heatmap` | accounts by period, a square each, darker for more | `balance … -M` |
 | `bump` | each account's rank, period by period | `balance … -M` |
+| `cashflow` | income up, spending down, and the net, period by period | `balance … -M --depth 2` |
+| `budget` | spent against budgeted, account by account (a bullet chart) | `balance --budget …` |
 | `pie` | each account's share of the whole | `balance …` |
-| `treemap` | the account tree, area by balance | `balance --tree …` |
+| `treemap` | the account tree as cascaded cards, area by balance | `balance --tree …` |
+| `pack` | the account tree as circles inside circles | `balance --tree …` |
 | `sunburst` | the account tree in rings, angle by balance | `balance --tree …` |
 | `sankey` | income flowing into spending, and what was saved | `balance … --depth 2` |
+| `swarm` | every purchase as a dot in time, sized by amount | `register …` |
+| `histogram` | how many purchases of each size, in log bins | `register …` |
 | `calendar` | a square per day, darker for more spending | `register …` |
 | `waterfall` | income, a step down per expense category, then net | `register …` |
 | `multiples` | a small line per account | `balance … -M` |
 
 A chart over time is monthly unless the query names an interval (`-D`, `-W`, `-Q`, `-Y`); a
-Sankey is two levels deep unless the query sets `--depth`. Nothing else is added.
+Sankey and a cash flow are two levels deep unless the query sets `--depth`; and `budget`, `swarm`
+and `histogram` chart `expenses` when the query names no account. Nothing else is added.
+
+The treemap is a cascaded treemap, after [d3's example](https://observablehq.com/@d3/cascaded-treemap):
+every account is a card, a parent's headed with its name and total and its children laid inside
+it, each level offset and shadowed so the tree reads as layers. A branch keeps its colour, by
+name, in the treemap, the sunburst and the pack, and through an animation. `budget` needs a
+budget in the journal, a periodic transaction such as `~ monthly`; without one it says so.
 
 | option | does | for |
 | --- | --- | --- |
-| `--animate` | play the chart period by period | bar (a bar race), pie, treemap, sunburst, sankey |
+| `--animate` | play the chart period by period | bar (a bar race), pie, treemap, sunburst, pack, sankey |
 | `--log` | a logarithmic value axis, for amounts of very different sizes | line, bar, heatmap, multiples |
 | `--percent` | each period as shares of its total | line, bar, stacked, multiples |
 | `--cumulative` | a running total across the periods | line, bar, stacked, multiples |
@@ -252,6 +264,10 @@ Sankey is two levels deep unless the query sets `--depth`. Nothing else is added
 | `--invert` | flip the sign, so income and liabilities read as positive | line, bar, stacked, pie, multiples |
 
 ```
+chart cashflow -p 2026                         what came in, what went out, what was kept
+chart budget -p 2026-04..2026-10               spending against the budget
+chart swarm -p 2026                            every purchase; the big ones stand out
+chart histogram -p 2026                        how big purchases are, and what the big ones add up to
 chart --animate treemap -p 2026 expenses       where the money went, month by month
 chart --animate --cumulative sankey -p 2026    income into spending, building up over the year
 chart --animate --cumulative bar --depth 2 expenses   a bar race of spending so far

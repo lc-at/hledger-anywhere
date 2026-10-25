@@ -24,8 +24,13 @@ without, and the command under the chart shows it.
 | `heatmap` | `balance <query> -M` | accounts by period; `--log` colours by magnitude |
 | `bump` | `balance <query> -M` | each account's rank per period, joined with `curveBumpX` |
 | `sunburst` | `balance --tree <query>` | `d3.partition` of the tree; a lone top account is the centre |
+| `pack` | `balance --tree <query>` | `d3.pack` of the tree, parents as rings around their children |
+| `cashflow` | `balance <query> -M --depth 2` | income stacked up, spending down, the net as a line |
+| `budget` | `balance --budget expenses <query>` | a bullet chart: budget track, spent bar, budget tick |
+| `swarm` | `register expenses <query>` | a beeswarm (`beeswarm()`, pure) of purchases, area by amount |
+| `histogram` | `register expenses <query>` | purchases in log bins four to a decade, counts and totals |
 | `pie` | `balance <query>` | a doughnut of the positive balances |
-| `treemap` | `balance --tree <query>` | the account tree, area by balance |
+| `treemap` | `balance --tree <query>` | cascaded cards: every account, parents headed, after d3's cascaded treemap |
 | `sankey` | `balance <query> --depth 2` | income flowing into spending and savings |
 | `calendar` | `register <query>` | a square per day, darker for more spending |
 | `waterfall` | `register <query>` | income, a step down per category, and net |
@@ -52,6 +57,16 @@ Clicking a mark charts that account as a line, keeping the query's flags (its pe
 depth) and the options that still mean something for one account (`--log`, `--cumulative`,
 `--invert`). The "Also" line under each chart is the same query drawn as the other types of its
 family, each written as the line it is.
+
+## The cascaded treemap
+
+`drawTreemap` lays the tree out with `d3.treemap` (outer padding 3, a 19 px top strip for a
+parent's header, inner padding 1), then `cascade()` pulls each parent's right and bottom edges
+in by twice the padding for every child that meets them, as in d3's cascaded treemap after Lü
+and Fogarty. Cards are drawn one layer per height, tallest first, each layer with a drop shadow,
+so the levels read as a stack. `cardColour()` keeps a branch's hue and shades by height. The
+branch colours come from `groupsOf()`, ordered by name, so they agree between the treemap, the
+sunburst and the pack and hold still through an animation, where sizes change every frame.
 
 ## Animation
 
@@ -94,7 +109,8 @@ chart-args.js     the grammar: parse, command, title, drill, related            
 chart.js          run(); build(args); parseReport(kind, csv)                      pure but run
 chart-data.js     CSV, amounts, formatting, series arithmetic, the palette        pure
 chart-window.js   modelFor(report) -> model; viewOf(state); page(); mount()      pure but mount
-chart-more.js     the heatmap, the bump chart and the sunburst                   DOM; intensity, ranks pure
+chart-more.js     heatmap, bump, sunburst, pack, cashflow, budget, swarm,         DOM; readBudget, budgetView,
+                  histogram; viewMore() shapes the last four                     cashflowOf, beeswarm, bins pure
 chart-play.js     timeline(): frames between periods (pure); player(): the clock   pure but player
 chart-d3.js       parsers and aggregations for the shaped charts, the Sankey
                   layout, the words and tables (pure), and render(kind, svg, ...)

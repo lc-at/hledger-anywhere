@@ -45,10 +45,15 @@
         "stream",
         "heatmap",
         "bump",
+        "cashflow",
+        "budget",
         "pie",
         "treemap",
         "sunburst",
+        "pack",
         "sankey",
+        "swarm",
+        "histogram",
         "calendar",
         "waterfall",
         "multiples",
@@ -95,20 +100,40 @@
               "each account's rank, period by period"
             ],
             [
+              "cashflow",
+              "income up, spending down, and the net, period by period"
+            ],
+            [
+              "budget",
+              "spent against budgeted, account by account"
+            ],
+            [
               "pie",
               "each account as a share of the whole"
             ],
             [
               "treemap",
-              "the account tree, area by balance"
+              "the account tree as cascaded cards, area by balance"
             ],
             [
               "sunburst",
               "the account tree in rings, angle by balance"
             ],
             [
+              "pack",
+              "the account tree as circles inside circles"
+            ],
+            [
               "sankey",
               "income flowing into spending and savings"
+            ],
+            [
+              "swarm",
+              "every purchase as a dot in time, sized by amount"
+            ],
+            [
+              "histogram",
+              "how many purchases of each size"
             ],
             [
               "calendar",
@@ -129,7 +154,7 @@
           "rows": [
             [
               "--animate",
-              "play bar, pie, treemap, sunburst or sankey period by period"
+              "play bar, pie, treemap, sunburst, pack or sankey period by period"
             ],
             [
               "--log",
@@ -179,6 +204,10 @@
             [
               "-H",
               "balances held at each period's end, rather than its changes"
+            ],
+            [
+              "(none)",
+              "budget, swarm and histogram chart expenses unless you name accounts"
             ]
           ]
         },
@@ -234,16 +263,24 @@
       ],
       "examples": [
         [
+          "chart cashflow -p 2026",
+          "what came in, what went out, what was kept"
+        ],
+        [
+          "chart budget -p 2026-04..2026-10",
+          "spending against the budget"
+        ],
+        [
+          "chart swarm -p 2026",
+          "every purchase of 2026; the big ones stand out"
+        ],
+        [
+          "chart treemap --depth 3 expenses",
+          "where the money went, as cascaded cards"
+        ],
+        [
           "chart --animate treemap -p 2026 expenses",
-          "where the money went, month by month"
-        ],
-        [
-          "chart --animate --cumulative sankey -p 2026",
-          "income into spending, building up over the year"
-        ],
-        [
-          "chart --animate --cumulative bar --depth 2 expenses",
-          "a bar race of spending so far, by category"
+          "the same, month by month"
         ],
         [
           "chart heatmap --depth 2 expenses",
@@ -252,14 +289,6 @@
         [
           "chart --log bar -p 2026 coffee",
           "coffee in 2026, on a log scale"
-        ],
-        [
-          "chart --percent stacked --depth 2 expenses",
-          "what spending is made of, month by month"
-        ],
-        [
-          "chart line -H assets liabilities",
-          "balances at each month's end"
         ]
       ]
     },

@@ -308,7 +308,7 @@ export function chosenSeries(report, options = {}, fits = 7) {
 
 /** "1 account", "3 accounts". */
 export function counted(count, noun) {
-  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+  return `${group(count, 0)} ${noun}${count === 1 ? '' : 's'}`;
 }
 
 /** "90.8%", or "<0.1%" for a sliver that would otherwise read as nothing. */

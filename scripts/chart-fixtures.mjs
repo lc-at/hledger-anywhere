@@ -101,6 +101,16 @@ export const FLOWS_MONTHS_CSV = [
   '"Total:","$-1913.60","$47.49","$-2560.00"',
 ].join('\n');
 
+// hledger balance --budget expenses -O csv, with a budget for two accounts.
+export const BUDGET_CSV = [
+  '"Account","2024-01","budget","2024-02","budget"',
+  '"expenses","$1286.40","$1300.00","$47.49","$1300.00"',
+  '"expenses:food","$86.40","$100.00","$12.50","$100.00"',
+  '"expenses:housing","$1200.00","$1200.00","0","$1200.00"',
+  '"<unbudgeted>","0","","$34.99",""',
+  '"Total:","$1286.40","$1300.00","$47.49","$1300.00"',
+].join('\n');
+
 /** The dark theme the app starts in, for the browser check's second pass. */
 export const DARK = {
   background: '#000000',

@@ -37,9 +37,9 @@ import {
 import Chart, { build, parseReport, read } from '../assets/plugins/chart.js';
 import { OPTIONS, TYPES, closestType, command, drill, line, parse, quote, related, title, tokenize, typeOf } from '../assets/plugins/chart-args.js';
 import { amountsIn, chosen, inOneCommodity, leftOut, shape, trimmed } from '../assets/plugins/chart-data.js';
-import { intensity, ranks } from '../assets/plugins/chart-more.js';
+import { beeswarm, bins, budgetView, cashflowOf, categoryOf, edge, intensity, ranks, readBudget, transactionsOf, viewMore } from '../assets/plugins/chart-more.js';
 import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plugins/chart-play.js';
-import { leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
+import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import { page as editPage } from '../assets/plugins/edit-window.js';
 import { alsoLine } from '../assets/plugins/chart-window.js';
@@ -141,9 +141,9 @@ const ranking = read(RANKING_CSV);
     && drill(parse('treemap --tree expenses'), 'expenses:food') === 'line expenses:food', drill(parsed, 'expenses:food:coffee'));
   const links = related(parse('--log --top 3 bar -p 2026 coffee'));
   check('related charts are the same query as the other types of its family, each with the options it takes',
-    links.map((link) => link.label).join(' | ') === 'chart --top 3 pie -p 2026 coffee | chart treemap -p 2026 coffee | chart sunburst -p 2026 coffee | chart --log --top 3 line -p 2026 coffee',
+    links.map((link) => link.label).join(' | ') === 'chart --top 3 pie -p 2026 coffee | chart treemap -p 2026 coffee | chart sunburst -p 2026 coffee | chart pack -p 2026 coffee | chart --log --top 3 line -p 2026 coffee',
     links.map((link) => link.label).join(' | '));
-  check('a flow suggests the other flows', related(parse('sankey -p 2026')).map((link) => link.args).join() === 'waterfall -p 2026,calendar -p 2026',
+  check('a flow suggests the other flows', related(parse('sankey -p 2026')).map((link) => link.args).join() === 'cashflow -p 2026,waterfall -p 2026,budget -p 2026,calendar -p 2026',
     related(parse('sankey -p 2026')).map((link) => link.args).join());
   check('every suggestion and every drill is a line the plugin builds',
     ['--log bar coffee', 'sankey', 'calendar', '--top 2 pie', '--percent stacked'].every((args) => build(args).related.every((link) => !build(link.args).refusal)
@@ -609,7 +609,7 @@ function stub(overrides = {}) {
   check('the new names are aliases too', typeOf('streamgraph') === 'stream' && typeOf('race') === 'bar' && typeOf('rings') === 'sunburst' && typeOf('rank') === 'bump', '');
   const refused = (args) => build(args).refusal || '';
   check('--animate on a chart that already shows every period says which ones it plays',
-    /--animate does not apply to a line; .* A line already shows every period; --animate plays bar, pie, treemap, sunburst, sankey\./.test(refused('--animate line expenses')),
+    /--animate does not apply to a line; .* A line already shows every period; --animate plays bar, pie, treemap, sunburst, pack, sankey\./.test(refused('--animate line expenses')),
     refused('--animate line expenses'));
   check('a running total of a one-period chart needs periods, so it says to animate',
     refused('--cumulative treemap') === '--cumulative on a treemap needs periods to run over, so it goes with --animate: chart --animate --cumulative treemap ...'
@@ -630,6 +630,21 @@ function stub(overrides = {}) {
   check('a stream and a bump chart are their own pictures', typeFor(report, 'stream') === 'stream' && typeFor(report, 'bump') === 'bump'
     && typeFor(ranking, 'stream') === 'bar', '');
   const nested = nestTree(read('"account","x"\n"a","1"\n').series.length ? readTree(TREE_CSV).rows : []);
+  const hierarchyOf = (pairs) => {
+    // A stand-in for d3.hierarchy with just what groupsOf reads: leaves() and ancestors().
+    const rootNode = { depth: 0, data: { name: '' }, children: [] };
+    const leaves = pairs.map(([branch, leaf]) => {
+      const parent = { depth: 1, data: { name: branch }, parent: rootNode };
+      const node = { depth: 2, data: { name: leaf }, parent };
+      rootNode.children.push(parent);
+      return node;
+    });
+    const ancestors = (node) => { const list = []; for (let at = node; at; at = at.parent) list.push(at); return list; };
+    for (const node of [...leaves, ...rootNode.children]) node.ancestors = () => ancestors(node);
+    return { children: rootNode.children, leaves: () => leaves };
+  };
+  check('a branch\'s colour is chosen by name, so it stays the same when sizes change',
+    groupsOf(hierarchyOf([['Supplies', 'a'], ['Food', 'b']])).order.get('Food') === groupsOf(hierarchyOf([['Food', 'b'], ['Supplies', 'a']])).order.get('Food'), '');
   check('the treemap and the sunburst nest the same tree, parents not counted twice',
     nested.children.length > 0 && JSON.stringify(nested).includes('"coffee"'), '');
   check('a sunburst is a shaped chart of the tree', viewOf({ report: readTree(TREE_CSV), colors: COLORS, title: 't', kind: 'sunburst', options: {} }).draw === 'sunburst', '');
@@ -694,6 +709,117 @@ const TREE_MONTHS = [
   await Chart.run('--animate --top 2 bar expenses', host);
   check('the terminal says an animation is one',
     log.said[0] === 'chart: bar, played over 3 periods, 2024-01 to 2024-03, in a new window.' && log.pages[log.pages.length - 1].includes('id="timeline"'), log.said[0]);
+}
+
+// ------------------------------------------------------------------ cascaded cards, flows of money, and purchases
+
+{
+  const asked = (args) => build(args).command;
+  check('the new types ask for what they draw, spending unless an account is named',
+    asked('cashflow -p 2026') === 'balance -p 2026 -M --depth 2 -O csv' && asked('budget -p 2026') === 'balance --budget expenses -p 2026 -O csv'
+    && asked('swarm -p 2026') === 'register expenses -p 2026 -O csv' && asked('histogram food') === 'register food -O csv'
+    && asked('pack expenses') === 'balance --tree expenses -O csv' && asked('--animate pack expenses') === 'balance --tree expenses -M -O csv',
+    [asked('cashflow -p 2026'), asked('budget -p 2026'), asked('swarm -p 2026')].join(' | '));
+  check('and their related charts carry that default by name',
+    related(parse('swarm -p 2026')).map((link) => link.args).join(' ; ') === 'histogram expenses -p 2026 ; calendar expenses -p 2026 ; bar expenses -p 2026',
+    related(parse('swarm -p 2026')).map((link) => link.args).join(' ; '));
+  check('the new names have aliases', typeOf('beeswarm') === 'swarm' && typeOf('bubbles') === 'pack' && typeOf('bullet') === 'budget', '');
+}
+
+{
+  // The cascade, on a hand-made layout: a parent whose last child reaches its padded edge is
+  // pulled in by twice the offset, as d3's example does.
+  const leaf = (x1, y1) => ({ x1, y1, children: null });
+  const child = leaf(97, 97);
+  const parent = { x1: 100, y1: 100, children: [child, leaf(50, 50)] };
+  const fake = {
+    eachAfter(visit) { [child, parent.children[1], parent].forEach(visit); return this; },
+    eachBefore(visit) { [parent, child, parent.children[1]].forEach(visit); return this; },
+  };
+  cascade(fake, 3);
+  check('a cascade pulls a parent in where its last child meets its edge', parent.x1 === 94 && parent.y1 === 94 && child.x1 === 97, `${parent.x1} ${parent.y1}`);
+  check('a card is its branch\'s hue, darker the higher it is in a dark theme, lighter in a light one',
+    cardColour('hsl(35 55% 66%)', 0, true) === 'hsl(35 55% 66%)' && cardColour('hsl(35 55% 66%)', 2, true) === 'hsl(35 39% 38%)'
+    && cardColour('hsl(35 55% 66%)', 2, false) === 'hsl(35 39% 84%)' && cardColour('#abcdef', 2, true) === '#abcdef', cardColour('hsl(35 55% 66%)', 2, true));
+}
+
+{
+  const budgetCsv = [
+    '"Account","2026-08","budget","2026-09","budget"',
+    '"Expenses","12053677.00 IDR, 260 SAR","5810000.00 IDR","10701860.84 IDR","5810000.00 IDR"',
+    '"Expenses:Food","2849177.00 IDR","2200000.00 IDR","2444223.00 IDR","2200000.00 IDR"',
+    '"Expenses:Fees","53000.00 IDR","50000.00 IDR","34000.00 IDR","50000.00 IDR"',
+    '"Expenses:Gifts","900000.00 IDR","","0","0"',
+    '"<unbudgeted>","1.00 IDR",""',
+    '"Total:","12053677.00 IDR","5810000.00 IDR","10701860.84 IDR","5810000.00 IDR"',
+  ].join('\n');
+  const budget = readBudget(budgetCsv);
+  check('a budget report is each budgeted account\'s spending and budget, summed over its periods',
+    budget.rows.length === 3 && budget.rows[1].actual === 5293400 && budget.rows[1].budget === 4400000 && budget.period === '2026-08 to 2026-09'
+    && budget.unit.suffix === 'IDR', JSON.stringify(budget.rows.map((row) => [row.label, row.actual, row.budget])));
+  check('and names what it could not add up', budget.others.join() === 'SAR', budget.others.join());
+  check('a journal with no budget is nothing to chart',
+    readBudget('"Account","2024-01-01..2024-02-03","budget"\n"<unbudgeted>","$1333.89",""\n"Total:","$1333.89",""\n') === null, '');
+  const view = budgetView(budget);
+  check('the top account is the total, said rather than drawn; the furthest over comes first',
+    view.rows.map((row) => row.label).join() === 'Expenses:Food,Expenses:Fees' && view.actual === 22755537.84 && view.over === 1, view.rows.map((row) => row.label).join());
+  check('the subtitle says how much of the budget went', /^2026-08 to 2026-09: spent 22,755,537\.84 IDR of 11,620,000\.00 IDR budgeted \(196%\); 1 of 2 accounts over$/.test(viewMore('budget', budget).sub),
+    viewMore('budget', budget).sub);
+}
+
+{
+  const flowsReport = read('"account","2024-01","2024-02"\n"expenses:food","$100","$40"\n"expenses:rent","$500","$500"\n"income:salary","$-1000","$-200"\n"assets:bank","$400","$-340"\n');
+  const flow = cashflowOf(flowsReport);
+  check('cash flow is income turned up, spending, and the net, leaving the other accounts out',
+    flow.in.join() === '1000,200' && flow.out.join() === '600,540' && flow.net.join() === '400,-340' && flow.spending.length === 2, JSON.stringify(flow));
+  check('and --cumulative runs each total', cashflowOf(flowsReport, { cumulative: true }).net.join() === '400,60', '');
+  check('its subtitle says what was kept', /in \$1,200\.00, out \$1,140\.00, net \$60\.00, 5\.0% of income kept/.test(viewMore('cashflow', flowsReport).sub), viewMore('cashflow', flowsReport).sub);
+  const many = read(`"account","a"\n${Array.from({ length: 12 }, (_, index) => `"expenses:c${index}","$${index + 1}"`).join('\n')}\n`);
+  check('a side with many accounts keeps the largest and folds the rest', cashflowOf(many).spending.length === 8 && cashflowOf(many).spending[7].label === 'other (5)', '');
+}
+
+{
+  const register = readRegister([
+    '"txnidx","date","code","description","account","amount","total"',
+    '"1","2026-06-03","","Coffee","Expenses:Food:Coffee","20000.00 IDR","x"',
+    '"2","2026-06-04","","Rent","Expenses:Housing","1600000.00 IDR","x"',
+    '"3","2026-06-04","","Refund","Expenses:Food","-5000.00 IDR","x"',
+    '"4","2026-06-05","","Salary","Income:Salary","-9000000.00 IDR","x"',
+    '"5","2026-06-06","","Snack","Expenses:Food:Snacks","15000.00 IDR","x"',
+  ].join('\n'));
+  const spent = transactionsOf(register);
+  check('a swarm draws spending only, refunds left out', spent.count === 3 && spent.total === 1635000 && spent.points.map((point) => point.description).join() === 'Coffee,Rent,Snack',
+    spent.points.map((point) => point.description).join());
+  check('and keeps only the largest when asked', transactionsOf(register, 2).points.length === 2 && transactionsOf(register, 2).dropped === 1, '');
+  check('a posting\'s category is the second part of its account', categoryOf('Expenses:Food:Coffee') === 'Food' && categoryOf('expenses') === 'expenses', '');
+  const ys = beeswarm([{ x: 0, r: 10 }, { x: 0, r: 5 }, { x: 0, r: 5 }, { x: 100, r: 5 }]);
+  check('a beeswarm puts the largest on the line and the rest beside it without touching',
+    ys[0] === 0 && Math.abs(Math.abs(ys[1]) - 16) < 1e-9 && ys[1] === -ys[2] && ys[3] === 0, JSON.stringify(ys));
+  const swarm = viewMore('swarm', register);
+  check('its table lists the largest first', swarm.table.indexOf('Rent') < swarm.table.indexOf('Coffee') && /^3 transactions, 1,635,000\.00 IDR$/.test(swarm.sub), swarm.sub);
+}
+
+{
+  const counted = bins([1, 2, 3, 10, 11, 100, 1000, 999]);
+  check('a histogram bins four to a decade', counted.bins.length === 13 && counted.bins[0].count === 1 && counted.count === 8 && counted.median === 10,
+    JSON.stringify(counted.bins.map((bin) => bin.count)));
+  check('and knows what the largest few add up to', Math.abs(counted.topShare - 1000 / 2126) < 1e-9 && counted.topCount === 1, String(counted.topShare));
+  const real = [0.6, 1, 2, 5, 9, 30, 100, 180, 320, 500, 600, 700, 800, ...Array.from({ length: 1300 }, (_, index) => 1000 + index * 700)];
+  const folded = bins(real);
+  check('the smallest one in a hundred share the first bin, so the axis starts where purchases do',
+    folded.bins[0].lo === 0 && folded.bins[0].count >= 13 && folded.bins.length <= 14 && folded.count === real.length, `${folded.bins.length} bins, first ${JSON.stringify(folded.bins[0])}`);
+  check('a bin edge is a round amount', edge(17782.79, { prefix: '', suffix: 'IDR' }) === '18k IDR' && edge(1e6, { prefix: '$', suffix: '' }) === '$1M', edge(17782.79, { prefix: '', suffix: 'IDR' }));
+  check('nothing to count is said so', bins([]).count === 0 && viewMore('histogram', { postings: [], unit: { prefix: '', suffix: '' } }).sub === 'no transactions', '');
+}
+
+{
+  const { host, log } = stub({ hledger: async () => '"Account","2024-01-01..2024-02-03","budget"\n"<unbudgeted>","$1333.89",""\n' });
+  await Chart.run('budget', host);
+  check('a budget chart of a journal with no budget says how to set one',
+    /has no budget to compare with\. A periodic transaction such as "~ monthly"/.test(log.said[0]), log.said[0]);
+  const flows2 = stub();
+  await Chart.run('cashflow', flows2.host);
+  check('the terminal says what a cash flow kept', /^chart: cashflow, 3 periods: in /.test(flows2.log.said[0]) || /^chart: cashflow, /.test(flows2.log.said[0]), flows2.log.said[0]);
 }
 
 // ------------------------------------------------------------------ the edit plugin
@@ -890,8 +1016,8 @@ check('a kind picks its parser',
   && parseReport('calendar', REGISTER_CSV).days.length === 3
   && parseReport('line', MONTHLY_CSV).periods.length === 3);
 
-check('six charts read a report of their own, and every other is a balance chart',
-  CUSTOM.length === 6 && isCustom('sunburst') && isCustom('sankey') && isCustom('treemap') && !isCustom('stacked') && !isCustom(null),
+check('seven charts read a report of their own, and every other is a balance chart',
+  CUSTOM.length === 7 && isCustom('pack') && isCustom('sunburst') && isCustom('sankey') && isCustom('treemap') && !isCustom('stacked') && !isCustom(null),
   CUSTOM.join(','));
 
 const d3Page = page({

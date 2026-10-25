@@ -30,7 +30,7 @@
 import { chosen, chosenSeries, counted, format, leftOut, palette, percent, periodTotal, seriesTotal, shape, trimmed } from './chart-data.js';
 import { escape, isLight } from './window-kit.js';
 import { foldFlows, headlineFor, heightFor, isCustom, multiples, render, tableFor } from './chart-d3.js';
-import { MORE, renderMore } from './chart-more.js';
+import { MORE, SHAPED, renderMore, viewMore } from './chart-more.js';
 import { player, timeline } from './chart-play.js';
 import { ANIMATED, drill, parse } from './chart-args.js';
 import { KEYS, keyFor, legend, save, tooltip } from './chart-ui.js';
@@ -165,6 +165,12 @@ export function viewOf(original) {
       draw: 'multiples', data, items: null,
       sub: headlineFor('multiples', data), table: tableFor('multiples', data), height: heightFor('multiples', data), mixed,
     };
+  }
+  if (SHAPED.includes(state.kind)) {
+    const shown = viewMore(state.kind, state.report, options);
+    // Only what the chart draws counts as left out: a cash flow is not short of the stocks.
+    const named = shown.others ? leftOut(shown.others, state.report.unit, state.command || '') : mixed;
+    return { draw: state.kind, items: null, ...shown, mixed: named };
   }
   if (isCustom(state.kind)) {
     // A Sankey of every category is a fringe of hairlines: twelve is as many as stay readable,

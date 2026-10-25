@@ -22,10 +22,10 @@
  */
 
 import { counted, format, group, inOneCommodity, leftOutOf, palette, percent, seriesTotal, split } from './chart-data.js';
-import { escape, mix } from './window-kit.js';
+import { escape, isLight, mix } from './window-kit.js';
 
 /** The kinds that read a report of their own rather than a balance report. */
-export const CUSTOM = ['treemap', 'sunburst', 'calendar', 'waterfall', 'multiples', 'sankey'];
+export const CUSTOM = ['treemap', 'sunburst', 'pack', 'calendar', 'waterfall', 'multiples', 'sankey'];
 
 export function isCustom(kind) {
   return CUSTOM.includes(kind);
@@ -221,9 +221,10 @@ export function groupsOf(hierarchy) {
     const found = ancestors.find((entry) => entry.depth === depth) || ancestors[ancestors.length - 2] || node;
     return found.ancestors().reverse().map((entry) => entry.data.name).filter(Boolean).join(':');
   };
-  // Every leaf, empty or not, so a group keeps its colour in every frame of an animation.
-  const order = new Map();
-  for (const leaf of hierarchy.leaves()) if (!order.has(groupOf(leaf))) order.set(groupOf(leaf), order.size);
+  // Every leaf, empty or not, and in order of name rather than size, so a branch keeps its colour
+  // in every frame of an animation, where the sizes change, and from one tree chart to another.
+  const names = [...new Set(hierarchy.leaves().map(groupOf))].sort();
+  const order = new Map(names.map((name, index) => [name, index]));
   return { groupOf, order };
 }
 
@@ -439,7 +440,7 @@ export const amountOf = (value, unit) => format({ value, ...(unit || { prefix: '
 
 /** The line under the heading. */
 export function headlineFor(kind, data) {
-  if (kind === 'sunburst') return headlineFor('treemap', data);
+  if (kind === 'sunburst' || kind === 'pack') return headlineFor('treemap', data);
   if (kind === 'treemap') {
     const leaves = data.rows.filter((row, index) => {
       const next = data.rows[index + 1];
@@ -467,7 +468,7 @@ export function headlineFor(kind, data) {
 
 /** The same data as a table, which is what a screen reader gets. */
 export function tableFor(kind, data) {
-  if (kind === 'sunburst') return tableFor('treemap', data);
+  if (kind === 'sunburst' || kind === 'pack') return tableFor('treemap', data);
   const table = (head, rows) => `<table><thead><tr><th>${head[0]}</th><th class="n">${head[1]}</th></tr></thead><tbody>${rows
     .map(([label, value]) => `<tr><td>${label}</td><td class="n">${escape(value)}</td></tr>`)
     .join('')}</tbody></table>`;
@@ -562,7 +563,8 @@ export function heightFor(kind, data) {
     return Math.min(900, Math.max(300, column * 46 + 40));
   }
   if (kind === 'calendar') return 220;
-  if (kind === 'sunburst') return 520;
+  if (kind === 'sunburst' || kind === 'pack') return 540;
+  if (kind === 'treemap') return 640;
   return 420;
 }
 
@@ -1131,49 +1133,126 @@ function drawDoughnut(svg, model, colors, hooks, state) {
 
 // ---------------------------------------------------------------- the tree
 
-/** A treemap of the account tree, area proportional to the leaf balances. */
+/**
+ * A colour for a card in the cascaded treemap: its branch's hue, lighter the nearer it is to
+ * a leaf, so a parent reads as the frame its children sit in. The palette writes colours as
+ * `hsl(h s% l%)`; anything else is used as it is.
+ */
+export function cardColour(base, height, dark) {
+  const match = /^hsl\((\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)%\s+(\d+(?:\.\d+)?)%\)$/.exec(String(base));
+  if (!match) return base;
+  const lightness = dark ? Math.max(18, 66 - height * 14) : Math.min(90, 66 + height * 9);
+  const saturation = Math.max(20, Number(match[2]) - height * 8);
+  return `hsl(${match[1]} ${saturation}% ${lightness}%)`;
+}
+
+/**
+ * Pull each parent's bottom and right edges in where its last children meet them, so the
+ * nested cards cascade like a fanned deck: Lü and Fogarty's cascaded treemap, as d3's example
+ * draws it. `offset` is the outer padding.
+ */
+export function cascade(root, offset) {
+  const across = new Map();
+  const down = new Map();
+  root.eachAfter((node) => {
+    if (node.children) {
+      across.set(node, 1 + Math.max(...node.children.map((child) => (child.x1 === node.x1 - offset ? across.get(child) : -Infinity)), -1));
+      down.set(node, 1 + Math.max(...node.children.map((child) => (child.y1 === node.y1 - offset ? down.get(child) : -Infinity)), -1));
+    } else {
+      across.set(node, 0);
+      down.set(node, 0);
+    }
+  }).eachBefore((node) => {
+    node.x1 -= 2 * offset * across.get(node);
+    node.y1 -= 2 * offset * down.get(node);
+  });
+  return root;
+}
+
+/**
+ * The account tree as cascaded cards: every account is a card, a parent's with a strip along
+ * its top naming it and its total, its children laid inside it, each card offset from the one
+ * it sits on, with a soft shadow so the levels read as layers. A card's hue is its top-level
+ * branch and its shade how far it is from a leaf. Every card, parent or leaf, opens its
+ * account. In an animation `fill` is this period's share of the largest, and the map is drawn
+ * at that share of the area.
+ */
 function drawTreemap(svg, data, colors, hooks) {
-  const { d3, width, height, root } = frame(svg);
-  // In an animation `fill` is this period's total over the largest: the map is drawn at that
-  // share of the area, centred, so a smaller month is a smaller map rather than the same one.
+  const { d3, width, height, root } = frame(svg, (width) => Math.max(460, Math.min(1100, width * 0.78)));
   const fill = data.fill === undefined ? 1 : Math.max(0.02, Math.min(1, data.fill));
   const side = Math.sqrt(fill);
-  const size = [width * side, Math.max(height - 8, 120) * side];
-  const hierarchy = d3
-    .treemap()
-    .size(size)
-    .paddingInner(2)
-    .round(true)(d3.hierarchy(nestTree(data.rows)).sum((node) => node.value || 0));
-  const offset = [(width - size[0]) / 2, (Math.max(height - 8, 120) - size[1]) / 2];
+  const size = [Math.max(40, width * side), Math.max(40, (height - 4) * side)];
+  const offset = 3;
+  const tree = d3.hierarchy(nestTree(data.rows)).sum((node) => node.value || 0).sort((left, right) => right.value - left.value);
+  const laid = cascade(d3.treemap().size(size).paddingOuter(offset).paddingTop(19).paddingInner(1).round(true)(tree), offset);
+  if (!(laid.value > 0)) { nothing(root, colors); return {}; }
 
-  const { groupOf, order } = groupsOf(hierarchy);
+  const { groupOf, order } = groupsOf(laid);
   const colours = palette(colors, Math.max(order.size, 1));
-  const total = hierarchy.value || 1;
-  const path = (leaf) => leaf.ancestors().reverse().map((node) => node.data.name).filter(Boolean).join(':');
-  const shown = hierarchy.leaves().filter((leaf) => leaf.value > 0);
+  const dark = !isLight(colors.background);
+  const colourOf = (node) => {
+    const group = order.get(groupOf(node.leaves()[0]));
+    return cardColour(group === undefined ? colours[0] : colours[group % colours.length], node.height, dark);
+  };
+  const ink = (colour) => {
+    const match = /(\d+(?:\.\d+)?)%\)$/.exec(colour);
+    return match && Number(match[1]) > 52 ? '#111111' : '#f4f4f4';
+  };
+  const total = laid.value || 1;
+  const path = (node) => node.ancestors().reverse().map((entry) => entry.data.name).filter(Boolean).join(':');
+  // The unnamed root is the frame of the whole picture, not a card.
+  const shown = laid.descendants().filter((node) => node.depth > 0 && node.value > 0 && node.x1 > node.x0 && node.y1 > node.y0);
 
-  const map = root.append('g').attr('transform', `translate(${offset[0]},${offset[1]})`);
-  const cells = map.append('g').selectAll('rect').data(shown).join('rect')
-    .attr('x', (leaf) => leaf.x0)
-    .attr('y', (leaf) => leaf.y0)
-    .attr('width', (leaf) => Math.max(0, leaf.x1 - leaf.x0))
-    .attr('height', (leaf) => Math.max(0, leaf.y1 - leaf.y0))
-    .attr('fill', (leaf) => colours[order.get(groupOf(leaf)) % colours.length])
-    .attr('stroke', colors.background)
-    .attr('stroke-width', 1);
-  interactive(cells, {
+  const shadow = `shadow-${Math.random().toString(36).slice(2, 8)}`;
+  root.append('defs').append('filter').attr('id', shadow).attr('x', '-10%').attr('y', '-10%').attr('width', '130%').attr('height', '130%')
+    .append('feDropShadow').attr('dx', 0).attr('dy', 0).attr('stdDeviation', 3).attr('flood-color', '#000').attr('flood-opacity', dark ? 0.55 : 0.3);
+  const map = root.append('g').attr('transform', `translate(${(width - size[0]) / 2},${(height - 4 - size[1]) / 2})`);
+  // One layer per height, the tallest first, as d3's example draws them, so each level casts its
+  // shadow on the one beneath.
+  const layers = d3.groups(shown, (node) => node.height).sort((left, right) => right[0] - left[0]);
+  const cards = [];
+  for (const [, nodes] of layers) {
+    const layer = map.append('g').attr('filter', `url(#${shadow})`);
+    for (const node of nodes) cards.push({ node, group: layer.append('g').attr('transform', `translate(${node.x0},${node.y0})`) });
+  }
+  const rects = d3.selectAll(cards.map((card) => card.group.append('rect')
+    .datum(card.node)
+    .attr('width', card.node.x1 - card.node.x0)
+    .attr('height', card.node.y1 - card.node.y0)
+    .attr('fill', colourOf(card.node))
+    .node()));
+  interactive(rects, {
     d3, svg, hooks, colors,
-    tip: (leaf) => ({ title: path(leaf), rows: [{ label: amountOf(leaf.value, data.unit), value: `${percent(leaf.value, total)} of the total` }] }),
-    account: (leaf) => path(leaf),
-    label: (leaf) => `${path(leaf)}, ${amountOf(leaf.value, data.unit)}, ${percent(leaf.value, total)}`,
+    tip: (node) => ({
+      title: path(node),
+      rows: [
+        { label: amountOf(node.value, data.unit), value: `${percent(node.value, total)} of the total` },
+        ...(node.children ? [{ label: `${counted(node.leaves().length, 'account')} inside` }] : []),
+      ],
+    }),
+    account: (node) => path(node),
+    label: (node) => `${path(node)}, ${amountOf(node.value, data.unit)}, ${percent(node.value, total)}`,
   });
-  map.append('g').style('pointer-events', 'none').selectAll('text')
-    .data(shown.filter((leaf) => leaf.x1 - leaf.x0 > 62 && leaf.y1 - leaf.y0 > 20)).join('text')
-    .attr('x', (leaf) => leaf.x0 + 4)
-    .attr('y', (leaf) => leaf.y0 + 14)
-    .attr('fill', colors.background)
-    .attr('font-size', 11)
-    .text((leaf) => fit(leaf.data.name, leaf.x1 - leaf.x0 - 8));
+  for (const { node, group } of cards) {
+    const w = node.x1 - node.x0;
+    const h = node.y1 - node.y0;
+    const colour = ink(colourOf(node));
+    if (node.children) {
+      // A parent's strip: its name, then its total, as far as the card is wide.
+      if (w < 30 || h < 16) continue;
+      const name = fit(node.data.name, w - 8);
+      const text = group.append('text').attr('x', 4).attr('y', 13).attr('font-size', 11).attr('fill', colour).style('pointer-events', 'none');
+      text.append('tspan').attr('font-weight', 600).text(name);
+      const room = w - 8 - name.length * 6.6 - 8;
+      const value = tick(node.value, data.unit);
+      if (room > value.length * 6) text.append('tspan').attr('dx', 6).attr('fill-opacity', 0.75).text(value);
+    } else {
+      if (w < 34 || h < 15) continue;
+      const text = group.append('text').attr('font-size', 11).attr('fill', colour).style('pointer-events', 'none');
+      text.append('tspan').attr('x', 4).attr('y', 13).text(fit(node.data.name, w - 8));
+      if (h > 30) text.append('tspan').attr('x', 4).attr('y', 27).attr('fill-opacity', 0.75).text(fit(tick(node.value, data.unit), w - 8));
+    }
+  }
   return {};
 }
 

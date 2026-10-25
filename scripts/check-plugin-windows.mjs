@@ -29,7 +29,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { COLORS, DARK, FLOWS_CSV, FLOWS_MONTHS_CSV, MONTHLY_CSV, RANKING_CSV, REGISTER_CSV, TREE_CSV, TREE_MONTHS_CSV, dailyCsv } from './chart-fixtures.mjs';
+import { BUDGET_CSV, COLORS, DARK, FLOWS_CSV, FLOWS_MONTHS_CSV, MONTHLY_CSV, RANKING_CSV, REGISTER_CSV, TREE_CSV, TREE_MONTHS_CSV, dailyCsv } from './chart-fixtures.mjs';
 
 // This process writes every page, so its own coverage counts: it is measured from before the
 // plugin's modules are loaded, which is why they are imported here and not above.
@@ -79,6 +79,12 @@ const CASES = {
   playburst: { line: '--animate --cumulative sunburst expenses', csv: TREE_MONTHS_CSV },
   playflows: { line: '--animate sankey', csv: FLOWS_MONTHS_CSV },
   playpie: { line: '--animate pie expenses', csv: MONTHLY_CSV },
+  cashflow: { line: 'cashflow', csv: FLOWS_MONTHS_CSV },
+  budget: { line: 'budget', csv: BUDGET_CSV },
+  swarm: { line: 'swarm', csv: REGISTER_CSV },
+  histogram: { line: 'histogram', csv: REGISTER_CSV },
+  pack: { line: 'pack expenses', csv: TREE_CSV },
+  playpack: { line: '--animate pack expenses', csv: TREE_MONTHS_CSV },
 };
 
 function windowFor(name, theme, { library = true } = {}) {
@@ -493,7 +499,8 @@ async function everyChartDraws(tab) {
     waterfall: 'rect[role=button]', multiples: 'path', sankey: 'rect[role=button]',
     heatmap: 'rect[role=button]', bump: 'circle[role=button]', stream: 'path', sunburst: 'path[role=button]',
     race: 'rect[role=button]', playtree: 'rect[role=button]', playburst: 'path[role=button]', playflows: 'rect[role=button]',
-    playpie: 'path[role=button]',
+    playpie: 'path[role=button]', cashflow: 'rect[role=button]', budget: 'rect[role=button]', swarm: 'circle[role=button]',
+    histogram: 'rect[role=img]', pack: 'circle[role=button]', playpack: 'circle[role=button]',
   };
   for (const theme of ['light', 'dark']) {
     for (const name of Object.keys(CASES)) {
@@ -535,9 +542,13 @@ async function everyChartDraws(tab) {
   check('--sort name orders the sparklines by name', (await tab.eval("[...document.querySelectorAll('#table td:first-child')].map((td) => td.textContent).join()"))
     === 'expenses:food:coffee,expenses:housing:rent,expenses:reading:books', '');
   await tab.show('treemap');
-  check('the treemap draws one cell per leaf, not the parents',
-    (await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")) === 3,
+  check('the treemap draws a card for every account, parents and leaves',
+    (await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")) === 6,
     String(await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")));
+  const cardTexts = await tab.eval("[...document.querySelectorAll('#chart text')].map((node) => node.textContent)");
+  check('a parent card is headed with its name and total, a leaf with its own',
+    cardTexts.includes('food$99') && cardTexts.includes('expenses$699') && cardTexts.includes('rent$600'), cardTexts.join(' | '));
+  check('and the levels are layered with a shadow', await tab.eval("document.querySelectorAll('#chart filter feDropShadow').length === 1 && document.querySelectorAll('#chart g[filter]').length >= 2"));
   await tab.show('calendar');
   check('the calendar names both months it spans',
     await tab.eval("(() => { const t = [...document.querySelectorAll('#chart text')].map(n => n.textContent); return t.some(x => /^Jan/.test(x)) && t.includes('Feb'); })()"),
@@ -637,7 +648,7 @@ async function byKeyboard(tab) {
   // What Enter on the first mark asks for: that account over time, in the same period, with the
   // options that still mean something for one account (--log does; --top and --sort do not).
   for (const [name, expected] of [['bar', 'line expenses:housing:rent'], ['columns', '--log line -M expenses:housing:rent'],
-    ['doughnut', 'line expenses:housing:rent'], ['treemap', 'line expenses:food:coffee'], ['waterfall', 'line income'],
+    ['doughnut', 'line expenses:housing:rent'], ['treemap', 'line expenses'], ['waterfall', 'line income'],
     ['multiples', '--log line expenses:food:coffee'], ['sankey', 'line income:salary']]) {
     await tab.show(name);
     await tab.eval('document.activeElement && document.activeElement.blur()');
@@ -728,6 +739,40 @@ async function moreCharts(tab) {
   await tab.until('window.__asked.length > 0');
   check('and a click on a ring charts that account over time', /^line expenses:/.test(await tab.eval('window.__asked[window.__asked.length - 1]')),
     await tab.eval('window.__asked[window.__asked.length - 1]'));
+}
+
+async function moneyCharts(tab) {
+  const texts = () => tab.eval("[...document.querySelectorAll('#chart text')].map((node) => node.textContent)");
+  const sub = () => tab.eval("document.getElementById('sub').textContent");
+  await tab.show('cashflow');
+  check('a cash flow puts income above the line and spending below, with the net as a line',
+    (await texts()).includes('in ↑') && (await tab.eval("document.querySelectorAll('#chart circle').length")) === 3
+    && /^3 periods: in \$6,400\.00, out \$1,973\.89, net \$4,426\.11, 69\.2% of income kept$/.test(await sub()), await sub());
+  const net = await tab.centre('#chart circle');
+  await tab.mouse('mouseMoved', net[0], net[1]);
+  check('and a net dot says what was kept', /kept/.test(await tab.tip()) || /overspent/.test(await tab.tip()), await tab.tip());
+  await tab.show('budget');
+  check('a budget chart is a track, a bar and a tick per budgeted account, the furthest over first',
+    (await tab.eval("document.querySelectorAll('#chart rect[role=button]').length")) === 2 && (await texts()).filter((text) => /^expenses:|%$/.test(text)).join() === 'expenses:housing,50%,expenses:food,49%'
+    && /spent \$1,333\.89 of \$2,600\.00 budgeted \(51%\); 0 of 2 accounts over/.test(await sub()), JSON.stringify(await texts()));
+  await tab.show('swarm');
+  check('a swarm draws a dot per purchase, the largest largest', (await tab.eval("document.querySelectorAll('#chart circle').length")) === 3
+    && (await tab.eval("(() => { const r = [...document.querySelectorAll('#chart circle')].map((c) => +c.getAttribute('r')); return Math.max(...r) > 3 * Math.min(...r); })()")), '');
+  const dot = await tab.centre('#chart circle', 'last');
+  await tab.mouse('mouseMoved', dot[0], dot[1]);
+  check('and its tooltip is the transaction', /^2024-0\d-\d\d /.test(await tab.tip()), await tab.tip());
+  await tab.show('histogram');
+  check('a histogram counts purchases by size and says how they spread', /^3 transactions; half under \$86\.40/.test(await sub()) && (await texts()).includes('bars: how many'), await sub());
+  await tab.show('pack');
+  check('a circle pack draws every account as a circle, parents around their children',
+    (await tab.eval("document.querySelectorAll('#chart circle[role=button]').length")) === 6 && (await texts()).includes('rent'), String(await tab.eval("document.querySelectorAll('#chart circle').length")));
+  const circle = await tab.centre('#chart circle[role=button]', 'last');
+  await tab.click(circle[0], circle[1]);
+  await tab.until('window.__asked.length > 0');
+  check('and a click on a circle opens its account', /^line expenses/.test(await tab.eval('window.__asked[window.__asked.length - 1]')), await tab.eval('window.__asked[window.__asked.length - 1]'));
+  await tab.show('playpack');
+  await tab.until("!/playing/.test(document.getElementById('timeline').getAttribute('aria-valuetext'))", 9000);
+  check('and a circle pack plays through its periods', (await tab.eval("document.querySelector('.period').textContent")) === '2024-03', '');
 }
 
 async function playing(tab) {
@@ -824,7 +869,7 @@ async function relatedCharts(tab) {
   await tab.show('bar');
   const links = await tab.eval("[...document.querySelectorAll('#also a')].map(a => a.textContent).join(' | ')");
   check('a chart lists the same query as the other types, by the line each one is',
-    links === 'chart pie expenses | chart treemap expenses | chart sunburst expenses | chart line expenses'
+    links === 'chart pie expenses | chart treemap expenses | chart sunburst expenses | chart pack expenses | chart line expenses'
     && !(await tab.eval("document.getElementById('also').hidden")), links);
   const link = await tab.centre('#also a', 'last');
   await tab.click(link[0], link[1]);
@@ -834,7 +879,7 @@ async function relatedCharts(tab) {
   check('and a chart with nothing related has no line for it', await tab.eval("document.getElementById('also').hidden"));
   await tab.key('Escape', { keyCode: 27 });
   check('Escape comes back, with the links where they were', (await tab.heading()) === 'bar: expenses'
-    && (await tab.eval("document.querySelectorAll('#also a').length")) === 4, await tab.heading());
+    && (await tab.eval("document.querySelectorAll('#also a').length")) === 5, await tab.heading());
   // A link is reached by Tab and followed with Enter, like the rest of the window.
   await tab.eval("document.querySelector('#also a').focus()");
   await tab.key('Enter', { keyCode: 13, text: '\r' });
@@ -932,6 +977,7 @@ try {
   await relatedCharts(tab);
   await goingBack(tab);
   await moreCharts(tab);
+  await moneyCharts(tab);
   await playing(tab);
   await whenThingsGoWrong(tab);
   await theEditor(tab);

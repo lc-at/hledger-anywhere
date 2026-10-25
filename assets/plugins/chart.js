@@ -29,6 +29,7 @@ import { command, line, parse, related, title } from './chart-args.js';
 import { counted, format, inOneCommodity, leftOut, periodTotal, shape, split, trimmed } from './chart-data.js';
 import { beside, bridge, colorsOf, shell } from './window-kit.js';
 import { byDay, flows, headlineFor, isCustom, readRegister, readTree, readTreeSeries, waterfall } from './chart-d3.js';
+import { SHAPED, readBudget, viewMore } from './chart-more.js';
 
 export default {
   async run(args, host) {
@@ -62,8 +63,13 @@ export default {
     }
 
     if (!report) {
-      view.write(shell(colors, query.title, 'hledger returned nothing to chart.'));
-      host.say(`${host.name}: ${query.title} has no amounts to chart. The command was: hledger ${query.command}`);
+      // A budget chart of a journal with no budget is not empty for want of spending; it says
+      // how a budget is set.
+      const why = query.kind === 'budget'
+        ? `${query.title} has no budget to compare with. A periodic transaction such as "~ monthly" with a posting per account sets one; the command was: hledger ${query.command}`
+        : `${query.title} has no amounts to chart. The command was: hledger ${query.command}`;
+      view.write(shell(colors, query.title, query.kind === 'budget' ? 'No budget to compare with.' : 'hledger returned nothing to chart.'));
+      host.say(`${host.name}: ${why}`);
       return;
     }
 
@@ -83,7 +89,7 @@ export default {
       scripts: [beside('vendor/d3/d3.min.js')],
     }));
     // Said in the terminal too: a total that left something out should not look complete.
-    const mixed = leftOut(report.others, report.unit, query.command);
+    const mixed = leftOut(SHAPED.includes(query.kind) ? viewMore(query.kind, query.kind === 'cashflow' ? trimmed(report) : report, query.options).others || [] : report.others, report.unit, query.command);
     host.say(`${host.name}: ${summary(query, report)}, in a new window.${mixed ? ` ${mixed}` : ''}`);
   },
 };
@@ -160,8 +166,14 @@ export function parseReport(kind, text, options = {}) {
   // Played period by period, a chart keeps every period: the tree with a column each for a
   // treemap or a sunburst, the balance report itself for the rest, which the window turns into
   // frames.
-  if (options.animate) return kind === 'treemap' || kind === 'sunburst' ? readTreeSeries(text) : read(text);
-  if (kind === 'treemap' || kind === 'sunburst') return readTree(text);
+  const tree = kind === 'treemap' || kind === 'sunburst' || kind === 'pack';
+  if (options.animate) return tree ? readTreeSeries(text) : read(text);
+  if (tree) return readTree(text);
+  if (kind === 'budget') return readBudget(text);
+  if (kind === 'swarm' || kind === 'histogram') {
+    const register = readRegister(text);
+    return register && register.postings.length ? register : null;
+  }
   if (kind === 'calendar' || kind === 'waterfall') {
     const register = readRegister(text);
     if (!register) return null;
@@ -206,6 +218,7 @@ function listen(host) {
 function summary(query, report) {
   // The shaped charts already have a sentence for their data; using it keeps the terminal and
   // the window saying the same thing.
+  if (SHAPED.includes(query.kind)) return `${query.kind}, ${viewMore(query.kind, query.kind === 'cashflow' ? trimmed(report) : report, query.options).sub}`;
   if (query.options.animate) {
     return `${query.kind}, played over ${counted(report.periods.length, 'period')}, ${report.periods[0]} to ${report.periods[report.periods.length - 1]}`;
   }

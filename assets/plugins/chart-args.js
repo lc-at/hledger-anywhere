@@ -46,7 +46,11 @@ export const TYPES = {
   },
   treemap: {
     report: 'balance --tree', split: false, options: ['cumulative', 'animate'],
-    says: 'the account tree, area by balance',
+    says: 'the account tree as cascaded cards, area by balance',
+  },
+  pack: {
+    report: 'balance --tree', split: false, options: ['cumulative', 'animate'],
+    says: 'the account tree as circles inside circles',
   },
   sunburst: {
     report: 'balance --tree', split: false, options: ['cumulative', 'animate'],
@@ -55,6 +59,22 @@ export const TYPES = {
   sankey: {
     report: 'balance', split: false, options: ['top', 'cumulative', 'animate'],
     says: 'income flowing into spending and savings',
+  },
+  cashflow: {
+    report: 'balance', split: true, options: ['cumulative', 'top'], depth: 2,
+    says: 'income up, spending down, and the net, period by period',
+  },
+  budget: {
+    report: 'balance --budget', split: false, options: ['top', 'sort'], account: 'expenses',
+    says: 'what was spent against the budget, account by account',
+  },
+  swarm: {
+    report: 'register', split: false, options: ['top'], account: 'expenses',
+    says: 'every transaction as a dot in time, sized by its amount',
+  },
+  histogram: {
+    report: 'register', split: false, options: [], account: 'expenses',
+    says: 'how many transactions there were of each size',
   },
   heatmap: {
     report: 'balance', split: true, options: ['log', 'percent', 'cumulative', 'top', 'sort', 'invert'],
@@ -82,13 +102,14 @@ export const TYPES = {
  * The types that draw one period and can be played through every period with --animate, and
  * which of their options only mean something then: a running total needs periods to run over.
  */
-export const ANIMATED = ['bar', 'pie', 'treemap', 'sunburst', 'sankey'];
-const NEEDS_ANIMATE = { cumulative: ['pie', 'treemap', 'sunburst', 'sankey'] };
+export const ANIMATED = ['bar', 'pie', 'treemap', 'sunburst', 'pack', 'sankey'];
+const NEEDS_ANIMATE = { cumulative: ['pie', 'treemap', 'sunburst', 'pack', 'sankey'] };
 
 /** Other names a type answers to. */
 const ALIASES = {
   doughnut: 'pie', donut: 'pie', area: 'stacked', column: 'bar', columns: 'bar', sparklines: 'multiples', flows: 'sankey',
   streamgraph: 'stream', heat: 'heatmap', rank: 'bump', ranks: 'bump', rings: 'sunburst', race: 'bar',
+  beeswarm: 'swarm', circles: 'pack', bubbles: 'pack', bullet: 'budget', distribution: 'histogram', 'cash-flow': 'cashflow',
 };
 
 /** The chart options, what each one does, and whether it takes a value. */
@@ -221,7 +242,11 @@ export function command({ type, query, options = {} }) {
   const parts = [spec.report, ...query.map(quote)];
   // An animated chart plays period by period, so it is split like a chart over time.
   if ((spec.split || options.animate) && !query.some((word) => INTERVAL_FLAGS.includes(word))) parts.push('-M');
-  if (type === 'sankey' && !query.some((word) => word === '--depth' || /^--depth=|^-\d+$/.test(word))) parts.push('--depth 2');
+  const deep = query.some((word) => word === '--depth' || /^--depth=|^-\d+$/.test(word));
+  if ((type === 'sankey' || spec.depth) && !deep) parts.push(`--depth ${spec.depth || 2}`);
+  // A type about spending asks for it when the query names no account: a swarm of every posting
+  // in a journal is every transfer and trade twice over.
+  if (spec.account && partsOf(query).terms.length === 0) parts.splice(1, 0, spec.account);
   if (!query.includes('-O') && !query.includes('--output-format')) parts.push('-O csv');
   return parts.join(' ');
 }
@@ -254,7 +279,8 @@ export function title({ type, query, options }) {
     options.top && `top ${options.top}`, options.sort === 'name' && 'by name', options.invert && 'inverted',
     options.animate && 'animated',
   ].filter(Boolean);
-  const of = terms.length ? terms.join(' ') : 'all accounts';
+  // A type that charts spending by default says so, rather than "all accounts".
+  const of = terms.length ? terms.join(' ') : TYPES[type].account || 'all accounts';
   return `${type}: ${of}${flags.length ? `, ${flags.join(' ')}` : ''}${shaped.length ? ` (${shaped.join(', ')})` : ''}`;
 }
 
@@ -288,8 +314,13 @@ export function related(parsed) {
   // of a whole, and as flows. Five links at most, nearest first.
   const families = [
     ['line', 'stacked', 'stream', 'heatmap', 'bump', 'multiples', 'bar'],
-    ['bar', 'pie', 'treemap', 'sunburst', 'line'],
-    ['sankey', 'waterfall', 'calendar'],
+    ['bar', 'pie', 'treemap', 'sunburst', 'pack', 'line'],
+    ['treemap', 'pack', 'sunburst', 'bar', 'pie'],
+    ['sankey', 'cashflow', 'waterfall', 'budget', 'calendar'],
+    ['cashflow', 'sankey', 'line', 'waterfall', 'budget'],
+    ['budget', 'bar', 'cashflow', 'heatmap'],
+    ['swarm', 'histogram', 'calendar', 'bar'],
+    ['histogram', 'swarm', 'calendar', 'bar'],
   ];
   const family = families.find((types) => types[0] === parsed.type) || families.find((types) => types.includes(parsed.type)) || [];
   return family
@@ -301,7 +332,11 @@ export function related(parsed) {
       for (const [name, types] of Object.entries(NEEDS_ANIMATE)) {
         if (options[name] && !options.animate && types.includes(type)) delete options[name];
       }
-      const args = line({ type, query: parsed.query, options });
+      // What a type asked for by default is asked for by name, so the next chart is of the same
+      // numbers: a swarm of expenses suggests a bar chart of expenses, not of everything.
+      const fallback = TYPES[parsed.type].account;
+      const query = fallback && partsOf(parsed.query).terms.length === 0 ? [fallback, ...parsed.query] : parsed.query;
+      const args = line({ type, query, options });
       return { label: `chart ${args}`, args };
     });
 }
