@@ -395,6 +395,32 @@ waits until every posting on or before the statement date is ticked, and says so
 needs a file from an `open`ed folder; anywhere else the window still reconciles and offers the
 assertion to copy.
 
+**Running balances.** Each posting shows the account's balance after it, in hledger's order,
+the way a statement prints one beside each line. Type the statement's figure beside a posting
+and the difference shows there:
+
+```
+2026-01-01  Buy ABCD     -100,000   200,000   [200,000]   ✓
+2026-01-01  Buy food      -50,000   150,000   [150,000]   ✓
+2026-01-01  Buy drinks    -50,000   100,000   [ 95,000]   -5,000   ← where they part
+```
+
+The first line where they part is marked, and the window says what it may be: a posting in
+the journal of exactly the difference, or, if none, a line on the statement the journal does
+not have, with a button to add it. A posting added that way is written straight after the one
+where they parted, so hledger orders it where the statement has it, and the typed balance
+moves to it. A typed balance that matches is written, on Save, as a
+balance assertion on that posting (`Assets:Bank  -50000 IDR = 150000 IDR`), so hledger checks
+it from then on; one that does not match is not written.
+
+**Editing and adding.** `e` (or ✎) edits a posting in place: its date and description, and in
+a transaction of two postings in one commodity its amount and other account; the other side
+follows, negated, so it stays balanced, and an amount hledger inferred is written out as it
+computed it. `n` (or Add a posting) adds a missing one, a bank fee or interest, as a new
+transaction of two at the end of the file. Nothing is written until Save or Finish, which
+show the exact lines first; hledger then checks the result, and if anything fails, including
+an assertion elsewhere in the journal the change would break, every file is put back.
+
 If new transactions are entered without `*`, hledger's own `-U` and `-C` then show what is
 left to reconcile; the plugin does not depend on that.
 

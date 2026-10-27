@@ -149,14 +149,17 @@ export default {
     let { data } = read;
     const check = `balance ${quote(read.query)} -O csv`;
 
-    const work = ({ ticked, finish }) => {
+    // A request from the window carries the ticks, edits, new postings and typed running totals.
+    // They come from another window's realm, so they are copied into plain data here first.
+    const work = (request) => {
+      const { ticked, finish, edits = {}, inserts = [], expected = {} } = JSON.parse(JSON.stringify(request));
       const set = new Set(ticked);
       const texts = {};
       for (const { path } of writableFiles(host, data)) {
         const text = host.read(path);
         if (text != null) texts[path] = text;
       }
-      return plan({ data, texts, ticked: set, finish });
+      return plan({ data, texts, ticked: set, finish, edits, inserts, expected });
     };
 
     // The window asks the plugin to preview and apply, since only this side can reach the files.
@@ -164,7 +167,7 @@ export default {
       preview(request) {
         const result = work(request);
         return {
-          files: result.files.map((file) => ({ path: file.path, changes: file.changes, appended: file.appended })),
+          files: result.files.map((file) => ({ path: file.path, changes: file.changes, appended: file.appended, inserted: file.inserted })),
           missing: result.missing,
           assertion: result.assertion,
           writable: writableFiles(host, data),
@@ -205,10 +208,16 @@ export default {
           return { error: `hledger refused the result, so the files were put back as they were: ${error && error.message ? error.message : error}` };
         }
         data = (await readAccount(host, account, data.commodity)).data || data;
-        const changes = result.files.reduce((sum, file) => sum + file.changes.length, 0);
+        const lines = result.files.reduce((sum, file) => sum + file.changes.length, 0);
+        const added = (request.inserts || []).length;
+        const done = [
+          lines && `${lines} line${lines === 1 ? '' : 's'} changed`,
+          added && `${added} posting${added === 1 ? '' : 's'} added`,
+          result.asserted && `${result.asserted} running balance${result.asserted === 1 ? '' : 's'} asserted`,
+        ].filter(Boolean).join(', ');
         const what = request.finish
-          ? `${account} reconciled to ${request.finish.date}: ${changes} postings marked and the balance asserted`
-          : `${account}: progress saved, ${changes} postings marked`;
+          ? `${account} reconciled to ${request.finish.date}: ${done ? `${done}, and ` : ''}the statement balance asserted`
+          : `${account}: saved, ${done || 'nothing to change'}`;
         host.say(`${host.name}: ${what}.`);
         return { ok: true, message: what, data, fingerprint: fingerprint(data) };
       },
@@ -219,6 +228,7 @@ export default {
       colors,
       token,
       files: writableFiles(host, data),
+      accounts,
       statementDate: line.statement || today(),
       statementBalance: line.balance,
       fingerprint: fingerprint(data),

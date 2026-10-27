@@ -343,7 +343,7 @@
       ],
       "module": "./reconcile.js",
       "usage": "reconcile <account> [--statement DATE] [--balance N]",
-      "help": "Opens a window listing an account's postings since its last balance assertion, which is the point already proven. Type the statement's date and closing balance and tick what the statement shows; the difference falls to zero as it matches. Finish marks each ticked posting cleared and appends a balance assertion at the end of the file, then runs hledger to confirm it holds, putting the file back if it does not. Save progress writes the marks alone. Only standard hledger is written, and only to files from an open folder.",
+      "help": "Opens a window listing an account's postings since its last balance assertion, which is the point already proven. Type the statement's date and closing balance and tick what the statement shows; the difference falls to zero as it matches. Finish marks each ticked posting cleared and appends a balance assertion at the end of the file, then runs hledger to confirm it holds, putting the file back if it does not. Each posting shows the balance after it; type the statement's beside it to see where they part. Postings can be edited and added. Save writes the marks and changes without the final assertion. Only standard hledger is written, and only to files from an open folder.",
       "sections": [
         {
           "title": "Options",
@@ -374,6 +374,22 @@
               "move between postings"
             ],
             [
+              "Balance",
+              "the account's balance after each posting"
+            ],
+            [
+              "Statement balance",
+              "type the statement's; the difference shows"
+            ],
+            [
+              "e",
+              "edit the posting: date, description, amount"
+            ],
+            [
+              "n",
+              "add a posting the journal is missing"
+            ],
+            [
               "a",
               "tick every posting shown"
             ],
@@ -382,12 +398,12 @@
               "search descriptions, accounts and amounts"
             ],
             [
-              "Finish",
-              "at a difference of zero: mark, assert, check"
+              "Save",
+              "write the marks, edits, new postings and checks"
             ],
             [
-              "Save progress",
-              "write the marks so far, nothing else"
+              "Finish",
+              "at a difference of zero: also assert the balance"
             ]
           ]
         },
@@ -401,6 +417,10 @@
             [
               "0 IDR = 664092.01 IDR",
               "an assertion, in its own transaction at the end"
+            ],
+            [
+              "-50000 IDR = 150000 IDR",
+              "a matching statement balance, on its posting"
             ]
           ]
         },

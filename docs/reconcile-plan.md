@@ -12,9 +12,12 @@ Two things changed while building it, both for correctness:
 - **Source paths are matched to loaded files.** The app mounts journals under `/data/`, a
   plain hledger run at `/`, and a journal may itself live in a `data/` folder, so hledger's
   `sourceName` is resolved against `host.files()` by its end, not by stripping a prefix.
-- **Not built:** Enter opening a transaction in `edit` at its line, and "add a posting" for a
-  fee the journal is missing. Both need `edit` to open a file at a line, which it cannot yet.
-  Everything else in phases 1 and 2 below is built as described.
+- **Added after:** a running balance on every posting, a statement balance typed beside any of
+  them with the difference there (the first mismatch marked and explained, a matching one
+  written as an assertion on its posting), editing a posting in place, and adding a missing
+  one. Editing an amount writes an inferred amount out explicitly and moves the other side of
+  a two-posting transaction with it; anything more complex keeps its amount read-only.
+- **Not built:** Enter opening a transaction in `edit` at its line, which `edit` cannot do yet.
 
 A plugin that opens a window for checking one account against a bank or e-wallet statement:
 tick off what the statement shows, watch the difference fall to zero, and write the result

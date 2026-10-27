@@ -159,6 +159,12 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
     if (!amount && !asserts) continue;
     const positions = transaction.tsourcepos || [];
     const file = String((positions[0] || {}).sourceName || '').replace(/^\/+/, '');
+    // A transaction of two postings in one commodity, with no costs, is one whose amounts and
+    // other account can be edited and stay balanced: the other side is the same amount, negated.
+    const simple = transaction.tpostings.length === 2
+      && transaction.tpostings.every((entry) => (entry.pamount || []).length === 1 && entry.pamount[0].acommodity === commodity && !entry.pamount[0].acost)
+      && !transaction.tpostings.some((entry) => (entry.ptags || []).some(([name]) => /generated-posting/.test(name)));
+    const otherPosting = transaction.tpostings.find((entry) => entry !== posting);
     const row = {
       id: `${transaction.tindex}:${posting.paccount}:${occurrence}`,
       date: posting.pdate || transaction.tdate,
@@ -168,6 +174,9 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
       amount: amount ? toMinor(quantityOf(amount), style.precision) : 0,
       status: posting.pstatus || 'Unmarked',
       generated: (posting.ptags || []).some(([name]) => name === '_generated-posting' || name === 'generated-posting'),
+      ownDate: Boolean(posting.pdate),
+      simple,
+      other: simple && otherPosting ? otherPosting.paccount : null,
       where: { file, first: (positions[0] || {}).sourceLine || 0, last: (positions[1] || positions[0] || {}).sourceLine || 0, occurrence },
     };
     if (asserts) {
@@ -184,14 +193,68 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
 // ---------------------------------------------------------------- the arithmetic
 
 /**
+ * The rows as hledger orders them, with their edits applied and new ones added: by date, then
+ * in file order, with a new posting after the day's existing ones, since it is appended to the
+ * end of the file. Each row gets `balance`, the account's balance after it, which is what a
+ * statement prints beside each line and what a balance assertion on that posting would assert.
+ */
+export function ordered(data, { edits = {}, inserts = [] } = {}) {
+  const rows = data.rows.map((row, at) => ({ ...row, ...pick(edits[row.id]), at, edited: Boolean(edits[row.id]) }));
+  // A new posting goes after the posting it was added beside, if it is on that day, which is where
+  // it is written; otherwise at the end of the file, after the day's others.
+  inserts.forEach((insert, at) => {
+    const beside = insert.after != null ? data.rows.findIndex((row) => row.id === insert.after && row.date === insert.date) : -1;
+    rows.push({
+      id: insert.id, date: insert.date, description: insert.description, account: data.account, against: insert.other,
+      other: insert.other, amount: insert.amount, status: 'Unmarked', simple: true, inserted: true,
+      at: beside >= 0 ? beside + 0.5 + at / 1000 : data.rows.length + at,
+      where: { file: insert.file || null, first: 0, last: 0, occurrence: 0 },
+    });
+  });
+  rows.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : left.at - right.at));
+  let balance = data.start ? data.start.balance : 0;
+  for (const row of rows) {
+    balance += row.amount;
+    row.balance = balance;
+  }
+  return rows;
+}
+
+/** The fields an edit may change, as a row has them. */
+function pick(edit) {
+  if (!edit) return {};
+  const out = {};
+  if (edit.date) out.date = edit.date;
+  if (edit.description != null) out.description = edit.description;
+  if (edit.amount != null) out.amount = edit.amount;
+  if (edit.other) { out.other = edit.other; out.against = edit.other; }
+  return out;
+}
+
+/**
+ * Each row whose expected running total was typed, and the difference there: the statement's
+ * balance after that line less the journal's. The first row where it is not zero is where the
+ * journal and the statement part, which is where to look.
+ */
+export function checkpoints(rows, expected = {}) {
+  const out = [];
+  for (const row of rows) {
+    if (expected[row.id] == null) continue;
+    out.push({ id: row.id, expected: expected[row.id], balance: row.balance, difference: expected[row.id] - row.balance });
+  }
+  return { points: out, first: out.find((point) => point.difference !== 0) || null };
+}
+
+/**
  * Where a reconciliation stands. `ticked` is a set of row ids; rows after the statement date
  * are not on the statement and do not count. `outstanding` are the rows on or before the date
  * that are not ticked: a balance assertion counts every posting, so they must be ticked (or
  * re-dated) before the reconciliation can finish.
  */
-export function summarize({ data, ticked, statementDate, statementBalance }) {
+export function summarize({ data, ticked, statementDate, statementBalance, edits = {}, inserts = [] }) {
   const opening = data.start ? data.start.balance : 0;
-  const inRange = data.rows.filter((row) => !statementDate || row.date <= statementDate);
+  const all = ordered(data, { edits, inserts });
+  const inRange = all.filter((row) => !statementDate || row.date <= statementDate);
   const on = inRange.filter((row) => ticked.has(row.id));
   const tickedTotal = on.reduce((sum, row) => sum + row.amount, 0);
   const expected = opening + tickedTotal;
@@ -205,7 +268,7 @@ export function summarize({ data, ticked, statementDate, statementBalance }) {
     expected,
     difference,
     shown: inRange.length,
-    later: data.rows.length - inRange.length,
+    later: all.length - inRange.length,
     outstanding,
     tooEarly,
     canFinish: difference === 0 && outstanding.length === 0 && !tooEarly && Boolean(statementDate),
@@ -249,6 +312,64 @@ export function remark(line, mark) {
   return `${' '.repeat(lead)}${mark} ${rest}`;
 }
 
+/**
+ * A transaction's first line, in its parts: date, secondary date, status, code, description and
+ * comment. Unchanged parts are written back exactly as they were.
+ */
+export function parseHeader(line) {
+  const match = /^(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})(=\S+)?([ \t]+[*!])?([ \t]+\([^)]*\))?(.*)$/.exec(line);
+  if (!match) return null;
+  const rest = match[5];
+  const comment = /\s+;/.exec(rest);
+  const description = (comment ? rest.slice(0, comment.index) : rest).trim();
+  return { date: match[1], date2: match[2] || '', status: match[3] || '', code: match[4] || '', description, comment: comment ? rest.slice(comment.index) : '' };
+}
+
+export function formatHeader(header) {
+  return `${header.date}${header.date2}${header.status}${header.code}${header.description ? ` ${header.description}` : ''}${header.comment}`;
+}
+
+/**
+ * A posting line, in its parts: indent, status mark, the account (and the brackets of a virtual
+ * posting), the gap after it, the amount text (with any assertion), and a comment.
+ */
+export function parsePosting(line) {
+  const match = /^([ \t]+)(?:([*!])([ \t]*))?([([]?)(\S(?:.*?\S)?)([)\]]?)(?:(\t| {2,})(.*))?$/.exec(line);
+  if (!match || match[5].startsWith(';')) return null;
+  const rest = match[8] || '';
+  const at = rest.indexOf(';');
+  return {
+    indent: match[1], mark: match[2] || '', markGap: match[3] || '', open: match[4], account: match[5], close: match[6],
+    gap: match[7] || '', amount: (at >= 0 ? rest.slice(0, at) : rest).trim(), comment: at >= 0 ? rest.slice(at).trimEnd() : '',
+  };
+}
+
+/**
+ * A posting line written from its parts. `end` is the column its amount should end at, so a
+ * rewritten amount stays right-aligned with the transaction's others; the gap is at least two
+ * spaces, which is what separates an account from an amount.
+ */
+export function formatPosting(parts, end = 0, was = parts) {
+  // The lead is the original's, re-marked, so the account stays in its column.
+  const lead = remark(`${was.indent}${was.mark ? `${was.mark}${was.markGap}` : ''}x`, parts.mark).slice(0, -1);
+  const name = `${lead}${parts.open}${parts.account}${parts.close}`;
+  if (!parts.amount) return `${name}${parts.comment ? `  ${parts.comment}` : ''}`;
+  const gap = Math.max(2, end ? end - name.length - parts.amount.length : (parts.gap || '    ').replace(/\t/g, '    ').length);
+  return `${name}${' '.repeat(gap)}${parts.amount}${parts.comment ? `  ${parts.comment}` : ''}`;
+}
+
+/** Where the amount on a posting line ends, or 0 if it has none. */
+function amountEnd(line) {
+  const parts = parsePosting(line);
+  if (!parts || !parts.amount) return 0;
+  return line.indexOf(parts.amount) + parts.amount.length;
+}
+
+/** A new transaction for the account, appended to the file: the account's side carries the amount. */
+export function insertText(insert, account, style, ticked) {
+  return `${insert.date} ${insert.description}\n  ${ticked ? '*' : ' '} ${account}    ${journalAmount(insert.amount, style)}\n    ${insert.other}\n`;
+}
+
 /** The transaction that proves the statement balance: one posting of nothing, asserting. */
 export function assertionText(date, account, minor, style, inclusive = false) {
   const zero = journalAmount(0, style);
@@ -264,56 +385,121 @@ export function assertionText(date, account, minor, style, inclusive = false) {
  * the account's latest posting is in. A row that cannot be found (a generated posting, or a
  * file that changed) is reported in `missing` rather than guessed at.
  */
-export function plan({ data, texts, ticked, finish = null }) {
+export function plan({ data, texts, ticked, finish = null, edits = {}, inserts = [], expected = {} }) {
   const files = new Map();
   const missing = [];
   const lines = (path) => {
     if (!files.has(path)) {
       if (texts[path] == null) return null;
-      files.set(path, { path, before: texts[path], lines: texts[path].split('\n'), changes: [], appended: '' });
+      files.set(path, { path, before: texts[path], lines: texts[path].split('\n'), changes: [], appended: '', inserted: [] });
     }
     return files.get(path);
   };
-  for (const row of data.rows) {
+  const rows = ordered(data, { edits, inserts });
+  // Expected running totals that match are written as assertions on their postings; one that
+  // does not match is the person's note to find out why, and hledger would refuse it.
+  const asserting = new Map(checkpoints(rows, expected).points.filter((point) => point.difference === 0).map((point) => [point.id, point.balance]));
+  const change = (file, at, after, id) => {
+    const before = file.lines[at];
+    if (after === before) return;
+    const earlier = file.changes.find((entry) => entry.line === at + 1);
+    if (earlier) earlier.after = after;
+    else file.changes.push({ line: at + 1, before, after, id });
+    file.lines[at] = after;
+  };
+
+  for (const row of rows.filter((entry) => !entry.inserted)) {
     const wanted = ticked.has(row.id) ? 'Cleared' : 'Unmarked';
-    // A pending mark the person did not tick stays pending: it says something of its own.
-    if (row.status === wanted || (wanted === 'Unmarked' && row.status === 'Pending')) continue;
+    const remarkIt = !(row.status === wanted || (wanted === 'Unmarked' && row.status === 'Pending'));
+    const edit = edits[row.id] || null;
+    const assertTo = asserting.get(row.id);
+    if (!remarkIt && !edit && assertTo == null) continue;
     if (row.generated) { missing.push({ id: row.id, why: 'generated by a rule, not written in the file' }); continue; }
     const file = lines(row.where.file);
     if (!file) { missing.push({ id: row.id, why: `${row.where.file} is not loaded` }); continue; }
-    let seen = 0;
-    let at = -1;
+    // The transaction's posting lines, in order, comment lines skipped.
+    const header = row.where.first - 1;
     const end = Math.max(row.where.last - 1, row.where.first);
+    const postings = [];
     for (let index = row.where.first; index < end && index < file.lines.length; index += 1) {
-      const posting = accountOn(file.lines[index]);
-      if (!posting || file.lines[index].trim().startsWith(';')) continue;
-      if (posting.account !== row.account) continue;
-      if (seen === row.where.occurrence) { at = index; break; }
-      seen += 1;
+      const parts = parsePosting(file.lines[index]);
+      if (parts && !file.lines[index].trim().startsWith(';')) postings.push({ at: index, parts });
     }
-    if (at < 0) { missing.push({ id: row.id, why: 'its line was not found where hledger said it was' }); continue; }
-    const before = file.lines[at];
-    const after = remark(before, wanted === 'Cleared' ? '*' : '');
-    if (after === before) continue;
-    file.lines[at] = after;
-    file.changes.push({ line: at + 1, before, after, id: row.id });
+    let seen = 0;
+    const own = postings.find((entry) => entry.parts.account === row.account && seen++ === row.where.occurrence);
+    if (!own) { missing.push({ id: row.id, why: 'its line was not found where hledger said it was' }); continue; }
+    const others = postings.filter((entry) => entry !== own);
+    const column = Math.max(0, ...postings.map((entry) => amountEnd(file.lines[entry.at])));
+
+    if (edit && (edit.date || edit.description != null)) {
+      const parsed = parseHeader(file.lines[header]);
+      if (!parsed) { missing.push({ id: row.id, why: 'its first line is not a transaction header' }); continue; }
+      if (edit.date && row.ownDate) { missing.push({ id: row.id, why: 'the posting has a date of its own' }); continue; }
+      change(file, header, formatHeader({ ...parsed, date: edit.date || parsed.date, description: edit.description != null ? edit.description : parsed.description }), row.id);
+    }
+    const parts = { ...own.parts };
+    if (remarkIt) parts.mark = wanted === 'Cleared' ? '*' : '';
+    const amountChanged = edit && edit.amount != null && edit.amount !== data.rows.find((entry) => entry.id === row.id).amount;
+    if ((amountChanged || (edit && edit.other)) && !row.simple) {
+      missing.push({ id: row.id, why: 'its amount and other account can only be changed in a transaction of two postings in one commodity' });
+      continue;
+    }
+    if (amountChanged || assertTo != null) {
+      // An amount hledger inferred is written out as it computed it; the transaction balances
+      // exactly as before, and an assertion can then follow it.
+      const amount = amountChanged || !parts.amount ? journalAmount(row.amount, data.style) : parts.amount.replace(/\s*=.*$/, '');
+      parts.amount = assertTo != null ? `${amount} ${data.inclusive ? '=*' : '='} ${journalAmount(assertTo, data.style)}` : amount;
+    }
+    // Only the mark changing is the common case, and touches nothing but the mark.
+    const onlyMark = parts.amount === own.parts.amount;
+    change(file, own.at, onlyMark ? remark(file.lines[own.at], parts.mark) : formatPosting(parts, column, own.parts), row.id);
+    if (row.simple && others.length === 1 && (amountChanged || (edit && edit.other))) {
+      const other = { ...others[0].parts };
+      if (edit.other) other.account = edit.other;
+      // The other side follows: negated if it was written, left to hledger if it was not.
+      if (amountChanged && other.amount) other.amount = journalAmount(-row.amount, data.style);
+      change(file, others[0].at, formatPosting(other, column, others[0].parts), row.id);
+    }
+  }
+  for (const file of files.values()) file.changes.sort((left, right) => left.line - right.line);
+
+  // New postings and the final assertion go at the end of the file, new ones first, so the
+  // assertion is checked after them.
+  const lastFile = () => {
+    const last = [...data.rows].reverse().find((row) => !row.generated && texts[row.where.file] != null);
+    return last ? last.where.file : Object.keys(texts)[0];
+  };
+  for (const insert of inserts) {
+    const beside = insert.after != null ? data.rows.find((row) => row.id === insert.after && row.date === insert.date && !row.generated) : null;
+    const path = beside ? beside.where.file : insert.file || lastFile();
+    const file = path ? lines(path) : null;
+    if (!file) { missing.push({ id: insert.id, why: 'there is no file to add it to' }); continue; }
+    let text = insertText(insert, data.account, data.style, ticked.has(insert.id));
+    const assertTo = asserting.get(insert.id);
+    if (assertTo != null) text = text.replace(/^(.*\n.*?)\n/, `$1 ${data.inclusive ? '=*' : '='} ${journalAmount(assertTo, data.style)}\n`);
+    // Beside the transaction it explains, so hledger orders it where the statement has it.
+    if (beside) file.inserted.push({ index: beside.where.last - 1, line: beside.where.last - 1, text });
+    else file.appended += `${file.appended ? '\n' : ''}${text}`;
   }
   // The assertion, whether or not there is a file to append it to: a read-only journal still
   // gets it, to copy in by hand.
   const assertion = finish ? assertionText(finish.date, data.account, finish.balance, data.style, data.inclusive) : '';
   if (finish) {
-    const last = [...data.rows].reverse().find((row) => !row.generated && texts[row.where.file] != null);
-    const path = finish.file || (last ? last.where.file : Object.keys(texts)[0]);
+    const path = finish.file || lastFile();
     const file = path ? lines(path) : null;
-    if (file) file.appended = assertion;
+    if (file) file.appended += `${file.appended ? '\n' : ''}${assertion}`;
     else missing.push({ id: null, why: `${path || 'the journal'} cannot be read here, so the assertion has nowhere to go` });
   }
   const out = [];
   for (const file of files.values()) {
-    if (!file.changes.length && !file.appended) continue;
-    let after = file.lines.join('\n');
+    if (!file.changes.length && !file.appended && !file.inserted.length) continue;
+    // Insertions last, from the bottom up, so the line numbers of the changes still hold.
+    const lines = [...file.lines];
+    const order = file.inserted.map((entry, at) => ({ ...entry, at })).sort((left, right) => right.index - left.index || right.at - left.at);
+    for (const entry of order) lines.splice(entry.index, 0, '', ...entry.text.trimEnd().split('\n'));
+    let after = lines.join('\n');
     if (file.appended) after = `${after}${after.endsWith('\n') ? '' : '\n'}\n${file.appended}`;
-    out.push({ path: file.path, before: file.before, after, changes: file.changes, appended: file.appended });
+    out.push({ path: file.path, before: file.before, after, changes: file.changes, appended: file.appended, inserted: file.inserted.map(({ line, text }) => ({ line, text })) });
   }
-  return { files: out, missing, assertion };
+  return { files: out, missing, assertion, asserted: asserting.size };
 }

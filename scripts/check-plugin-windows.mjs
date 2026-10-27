@@ -145,6 +145,7 @@ const OPENER = `
       // apply that answers with the account as it would be read back, ticks marked.
       preview(request) {
         window.__previewed.push(request);
+        window.__lastPreview = request;
         return {
           files: [{ path: 'fixture.journal', changes: request.ticked.map((id, index) => ({ line: 9 + index, before: '    Assets:Bank:Checking', after: '  * Assets:Bank:Checking', id })),
             appended: request.finish ? '2026-09-30 * Reconciled with statement\\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\\n' : '' }],
@@ -1000,14 +1001,17 @@ async function reconciling(tab) {
   await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
   check('Finish shows what would be written before writing it',
-    /fixture\.journal: 5 postings would be marked, and at the end:/.test(await text('preview')) && /= 5670000\.00 IDR/.test(await text('preview')) && (await tab.eval('window.__applied.length')) === 0,
+    /fixture\.journal: 5 lines would change, and at the end:/.test(await text('preview')) && /= 5670000\.00 IDR/.test(await text('preview')) && (await tab.eval('window.__applied.length')) === 0,
     await text('preview'));
   check('and asks the plugin with the ticks and the statement', await tab.eval("(() => { const r = window.__previewed.pop(); return r.ticked.length === 5 && r.finish.date === '2026-09-30' && r.finish.balance === 567000000 && r.fingerprint === 'before'; })()"), '');
   await tab.eval("document.getElementById('apply').click()");
   await tab.until("/reconciled/.test(document.getElementById('status').textContent)");
   check('writing goes through the plugin, and the window shows the account as it is now',
     /Assets:Bank:Checking reconciled to 2026-09-30\./.test(await text('status')) && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await tab.eval('document.getElementById(\'preview\').hidden')), await text('status'));
+  check('with everything written, there is nothing left to save', (await tab.eval("document.getElementById('progress').disabled")) && (await text('pending')) === '', await text('pending'));
   await tab.eval("window.__refuse = 'hledger refused the result, so the files were put back as they were: Balance assertion failed'");
+  await tickRow(0);
+  check('and a change says so beside Save', /unsaved: 1 mark/.test(await text('pending')), await text('pending'));
   await tab.eval("document.getElementById('progress').click()");
   await tab.until("!document.getElementById('preview').hidden");
   await tab.eval("document.getElementById('apply').click()");
@@ -1029,6 +1033,95 @@ async function reconciling(tab) {
   await tab.eval("document.getElementById('copy').click()");
   await tab.until("document.getElementById('status').textContent.length > 0");
   check('and copying says what happened', /Copied|Copying was not allowed/.test(await text('status')), await text('status'));
+}
+
+async function reconcileRunning(tab) {
+  const text = (id) => tab.eval(`document.getElementById('${id}').innerText`);
+  const cell = (row, column) => tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${row}].children[${column}].textContent.trim()`);
+  const expect = (row, value) => tab.eval(`(() => { const input = document.querySelectorAll('#rows tr[data-id] input[data-expect]')[${row}]; input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await tab.show('reconcile', 'dark');
+  check('each posting shows the balance after it', [await cell(0, 4), await cell(1, 4), await cell(2, 4)].join(' | ') === '979,000.00 IDR | 5,979,000.00 IDR | 5,679,000.00 IDR',
+    [await cell(0, 4), await cell(1, 4), await cell(2, 4)].join(' | '));
+  await expect(0, '979,000');
+  await expect(1, '5,979,000');
+  await expect(3, '5,679,000');
+  check('a typed statement balance shows its difference at that line', (await cell(0, 6)) === '✓' && (await cell(1, 6)) === '✓' && (await cell(3, 6)) === '4,000.00 IDR',
+    [await cell(0, 6), await cell(1, 6), await cell(3, 6)].join(' | '));
+  check('the first line where they part is marked', await tab.eval("document.querySelectorAll('#rows tr.first').length === 1 && document.querySelectorAll('#rows tr[data-id]')[3].classList.contains('first')"));
+  check('and the hint says where, and that it may be the posting before',
+    /part at 2026-09-05 Split, by 4,000\.00 IDR: 2026-09-05 Split \(-4,000\.00 IDR\) is exactly that/.test(await text('hints')), await text('hints'));
+  check('matching balances are counted as ones to assert', /2 balances to assert/.test(await text('pending')), await text('pending'));
+  await expect(3, '5,675,000');
+  check('typing it right clears the mismatch', (await cell(3, 6)) === '✓' && (await tab.eval("document.querySelectorAll('#rows tr.first').length")) === 0, await cell(3, 6));
+  await expect(3, '5,600,000');
+  const add = await tab.eval("!!document.querySelector('#hints button[data-add]')");
+  check('a difference no posting explains offers to add one for it', add, await text('hints'));
+  await tab.eval("document.querySelector('#hints button[data-add]').click()");
+  check('which opens a new posting with that amount and date', (await tab.eval("document.querySelector('tr.editor [name=amount]').value")) === '-75,000.00'
+    && (await tab.eval("document.querySelector('tr.editor [name=date]').value")) === '2026-09-05', await tab.eval("document.querySelector('tr.editor [name=amount]').value"));
+  await tab.eval("document.querySelector('tr.editor [name=description]').value = 'Bank fee'");
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('a new posting needs its other account', /The other account is needed/.test(await text('status')), await text('status'));
+  await tab.eval("document.querySelector('tr.editor [name=other]').value = 'Expenses:Fees'");
+  await tab.eval("document.querySelector('tr.editor [name=other]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
+  const rows = () => tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].map((tr) => tr.children[2].textContent.trim().split('\\n')[0] + '=' + tr.children[4].textContent.trim()).join(' | ')");
+  check('Enter keeps it: it is ticked, marked new, and placed straight after the posting where they parted, the balances following',
+    /Split[^|]*=5,675,000\.00 IDR \| Bank feenew[^|]*=5,600,000\.00 IDR \| Split[^|]*=5,595,000\.00 IDR \| After the statement[^|]*=5,592,500\.00 IDR/.test(await rows()), await rows());
+  const feeRow = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Bank fee/.test(tr.textContent))");
+  check('and the statement balance typed where they parted moves to it, where it now matches',
+    (await cell(feeRow, 6)) === '✓' && (await cell(3, 6)) === '' && (await tab.eval("document.querySelectorAll('#rows tr.first').length")) === 0, `${await cell(feeRow, 6)} / ${await cell(3, 6)}`);
+  // Edit an existing posting: e on the first row, a new amount, kept.
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('j', { code: 'KeyJ', keyCode: 74, text: 'j' });
+  await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
+  await tab.key('e', { code: 'KeyE', keyCode: 69, text: 'e' });
+  check('e edits the posting in place', (await tab.eval("document.querySelector('tr.editor [name=description]').value")) === 'Coffee'
+    && !(await tab.eval("document.querySelector('tr.editor [name=amount]').disabled")), '');
+  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=amount]').value = '-25,000'; f.querySelector('[name=description]').value = 'Coffee beans'; f.querySelector('[data-keep]').click(); })()");
+  check('an edit changes the amount and every balance after it, and is marked',
+    (await cell(0, 3)) === '-25,000.00 IDR' && (await cell(0, 4)) === '975,000.00 IDR' && /Coffee beansedited/.test(await cell(0, 2)) && /1 edit, 1 new/.test(await text('pending')),
+    `${await cell(0, 3)} ${await cell(0, 4)} ${await text('pending')}`);
+  await tab.eval("document.querySelector('#rows button[data-edit]').click()");
+  check('an edited posting can be undone', await tab.eval("!!document.querySelector('tr.editor [data-undo]')"));
+  await tab.eval("document.querySelector('tr.editor [data-undo]').click()");
+  check('and is as it was', (await cell(0, 3)) === '-21,000.00 IDR', await cell(0, 3));
+  // A posting in a transaction of several cannot have its amount changed here.
+  const split = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Split/.test(tr.textContent))");
+  await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${split}].querySelector('button[data-edit]').click()`);
+  check('in a transaction of several postings, only the date and description can be changed',
+    (await tab.eval("document.querySelector('tr.editor [name=amount]').disabled")) && !(await tab.eval("document.querySelector('tr.editor [name=description]').disabled")), '');
+  await tab.key('Escape', { keyCode: 27 });
+  check('Escape closes an editor', (await tab.eval("document.querySelectorAll('tr.editor').length")) === 0, '');
+  // n adds a posting; a bad one is refused, and one can be removed.
+  await tab.key('n', { code: 'KeyN', keyCode: 78, text: 'n' });
+  check('n adds a posting', (await tab.eval("document.querySelectorAll('tr.editor').length")) === 1, '');
+  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=description]').value = ''; f.querySelector('[data-keep]').click(); })()");
+  check('a new posting needs a description', /A description is needed/.test(await text('status')), await text('status'));
+  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=description]').value = 'x'; f.querySelector('[name=amount]').value = ''; f.querySelector('[data-keep]').click(); })()");
+  check('and an amount', /An amount is needed/.test(await text('status')), await text('status'));
+  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=date]').value = ''; f.querySelector('[data-keep]').click(); })()");
+  check('and a date', /A date is needed/.test(await text('status')), await text('status'));
+  await tab.eval("document.querySelector('tr.editor [data-close]').click()");
+  const fee = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Bank fee/.test(tr.textContent))");
+  await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${fee}].querySelector('button[data-edit]').click()`);
+  await tab.eval("document.querySelector('tr.editor [data-drop]').click()");
+  check('a new posting can be removed before it is written', !/Bank fee/.test(await rows()) && !/new/.test(await text('pending')), await text('pending'));
+  // Save sends the plugin the ticks, edits, new postings and typed balances together.
+  await expect(3, '5,600,000');
+  await tab.eval("document.querySelector('#hints button[data-add]').click()");
+  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=description]').value = 'Bank fee'; f.querySelector('[name=other]').value = 'Expenses:Fees'; f.querySelector('[data-keep]').click(); })()");
+  await tab.eval("document.getElementById('progress').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  check('Save sends the new posting and the typed balances to be written with the marks',
+    await tab.eval("(() => { const r = window.__previewed.pop(); return r.inserts.length === 1 && r.inserts[0].amount === -7500000 && r.inserts[0].other === 'Expenses:Fees' && r.inserts[0].after === '5:Assets:Bank:Checking:0' && Object.keys(r.expected).length === 3 && r.expected[r.inserts[0].id] === 560000000 && !r.finish; })()"), await tab.eval('JSON.stringify(window.__previewed[window.__previewed.length - 1] || window.__lastPreview)'));
+  await tab.eval("document.getElementById('cancel').click()");
+  // A hint is followed to its posting.
+  await expect(3, '');
+  await expect(1, '5,979,000');
+  await expect(2, '5,979,000');
+  const pointing = await tab.eval("!!document.querySelector('#hints p[data-id]')");
+  if (pointing) await tab.eval("document.querySelector('#hints p[data-id]').click()");
+  check('a hint that names a posting moves to it', !pointing || (await tab.eval("document.activeElement && document.activeElement.dataset.id")) !== undefined, await text('hints'));
 }
 
 async function theEditor(tab) {
@@ -1108,6 +1201,7 @@ try {
   await whenThingsGoWrong(tab);
   await theEditor(tab);
   await reconciling(tab);
+  await reconcileRunning(tab);
   await coverage.collect(tab);
   coverage.merge((await self.post('Profiler.takePreciseCoverage')).result);
 
