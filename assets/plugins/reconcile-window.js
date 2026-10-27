@@ -7,15 +7,15 @@
  *
  * Each posting shows the account's balance after it, the way a statement prints one beside each
  * line, and takes the statement's figure for it: the difference shows there, and the first line
- * where it is not zero is where the statement and the journal part. A posting can be edited
- * (date, description, and in a simple transaction its amount and other account) and a missing
- * one added; nothing is written until Save or Finish, which preview it first.
+ * where it is not zero is where the statement and the journal part. A transaction is edited as
+ * its journal text, anything in it, and a missing one is added the same way; nothing is written
+ * until Save or Finish, which preview it first.
  *
  * Keys: ↑ ↓ or j k move, Space ticks, e edits, n adds a posting, a ticks every posting shown,
- * / searches, Escape clears the search or closes an editor.
+ * / searches, Ctrl+Enter keeps an edit, Escape clears the search or closes an editor.
  */
 
-import { checkpoints, hints, ordered, parseInput, readable, summarize } from './reconcile-data.js';
+import { checkpoints, hints, ordered, parseInput, readTransaction, readable, summarize, template } from './reconcile-data.js';
 import { escape, isLight, mix } from './window-kit.js';
 
 /** The whole document, with the data in a JSON block and the page to be mounted. */
@@ -69,9 +69,10 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   tr.first td { box-shadow:inset 3px 0 0 ${colors.accent}; }
   tr.later td { opacity:.45; }
   tr.editor td { background:${softer}; cursor:default; }
-  tr.editor input { padding:3px 6px; }
-  .editing { display:flex; flex-wrap:wrap; gap:8px; align-items:end; }
-  .editing input[name=description] { min-width:220px; flex:1; }
+  .editing textarea { display:block; width:100%; box-sizing:border-box; font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;
+    color:${colors.foreground}; background:${colors.background}; border:1px solid ${colors.dim}66; border-radius:4px; padding:6px 8px; resize:vertical; tab-size:4; }
+  .editing .buttons { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
+  .editing .reading { color:${colors.foreground}; font-size:12px; margin:6px 0 0; }
   .against { color:${colors.dim}; }
   .badge { color:${colors.accent}; font-size:11px; margin-left:4px; }
   .muted { color:${colors.dim}; font-size:11px; }
@@ -105,7 +106,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
   <table><thead><tr><th class="tick" aria-label="ticked"></th><th>Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n">Statement balance</th><th class="n">Difference</th><th aria-label="edit"></th></tr></thead><tbody id="rows"></tbody></table>
-  <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks every posting shown · / searches · Esc closes</p>
+  <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks every posting shown · / searches · Ctrl+Enter keeps an edit · Esc closes</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
 <script type="module">import { mount } from ${JSON.stringify(module)}; mount();</script>
@@ -153,6 +154,8 @@ export function mount(root = document) {
   // A posting added to explain a typed balance takes that balance over: the statement's line
   // it stood for is the new posting's.
   let from = null;
+  // A new posting's text before it is kept, when it was started with an amount.
+  let drafting = null;
   let made = 0;
   let focus = 0;
   let shown = [];
@@ -190,7 +193,12 @@ export function mount(root = document) {
       notes.push(`${now.outstanding.length} posting${now.outstanding.length === 1 ? ' is' : 's are'} dated on or before the statement but not ticked. A balance assertion counts every posting up to its date, so tick ${now.outstanding.length === 1 ? 'it' : 'them'}, set the statement date earlier, or give ${now.outstanding.length === 1 ? 'it' : 'them'} the date the bank shows.`);
     }
     if (now.later) notes.push(`${now.later} later posting${now.later === 1 ? '' : 's'}, after the statement date, ${now.later === 1 ? 'is' : 'are'} shown faded and not counted.`);
-    $('notes').innerHTML = notes.map((text) => `<p class="note">${escape(text)}</p>`).join('');
+    if (now.unknown) notes.push(`${now.unknown} edited transaction${now.unknown === 1 ? '' : 's'} cannot be read here, so the balances after ${now.unknown === 1 ? 'it' : 'them'} show ? until Save, when hledger reads ${now.unknown === 1 ? 'it' : 'them'}.`);
+    const restores = Object.entries(edits).filter(([, edit]) => !edit.text.trim()).map(([id]) => {
+      const row = state.data.rows.find((entry) => entry.id === id);
+      return `<p class="note">Deleted: ${escape(row.date)} ${escape(row.description)} ${escape(money(row.amount))} <button class="icon" data-restore="${escape(id)}">restore</button></p>`;
+    });
+    $('notes').innerHTML = notes.map((text) => `<p class="note">${escape(text)}</p>`).join('') + restores.join('');
 
     // Hints: the statement total's, then the running totals'.
     const all = rows();
@@ -225,9 +233,12 @@ export function mount(root = document) {
   function describe() {
     const marks = state.data.rows.filter((row) => (ticked.has(row.id) ? row.status !== 'Cleared' : row.status === 'Cleared')).length;
     const matched = checkpoints(rows(), expected).points.filter((point) => point.difference === 0).length;
+    const deleted = Object.values(edits).filter((edit) => !edit.text.trim()).length;
+    const changed = Object.keys(edits).length - deleted;
     const parts = [
       marks && `${marks} mark${marks === 1 ? '' : 's'}`,
-      Object.keys(edits).length && `${Object.keys(edits).length} edit${Object.keys(edits).length === 1 ? '' : 's'}`,
+      changed && `${changed} edit${changed === 1 ? '' : 's'}`,
+      deleted && `${deleted} deleted`,
       inserts.length && `${inserts.length} new`,
       matched && `${matched} balance${matched === 1 ? '' : 's'} to assert`,
     ].filter(Boolean);
@@ -243,33 +254,53 @@ export function mount(root = document) {
   }
 
   function rowHtml(row, later) {
-    const point = expected[row.id] != null ? expected[row.id] - row.balance : null;
+    const point = expected[row.id] != null && row.balance != null ? expected[row.id] - row.balance : null;
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
     const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
     return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}" aria-selected="${ticked.has(row.id)}">
 <td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td>${escape(row.date)}</td>
 <td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}<br><span class="against">${escape(row.against || '')}</span></td>
-<td class="n">${escape(money(row.amount))}</td><td class="n">${escape(money(row.balance))}</td>
+<td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
 <td class="n expect"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
 <td class="n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td>
 <td><button class="icon" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">✎</button></td></tr>`;
   }
 
-  /** An editor in place of a row: date, description, and for a simple transaction amount and other account. */
+  /** What a transaction's text means for the account, said under the editor as it is typed. */
+  function reading(text) {
+    if (!text.trim()) return 'Empty: the transaction will be deleted.';
+    const read = readTransaction(text, state.data.account, style(), state.data.inclusive);
+    if (!read.header) return 'The first line needs a date: 2026-09-05 Description.';
+    if (!read.touches) return `It does not post to ${state.data.account}, so it will leave this list.`;
+    if (read.postings < 2) return 'It needs another posting: the account the money came from or went to.';
+    if (read.off) return `It does not balance: its amounts add up to ${money(read.off)}. Leave one amount out and hledger works it out.`;
+    if (read.amount == null) return `The amount for ${state.data.account} cannot be worked out here (a cost, another commodity, or more than one amount left out); hledger reads it on Save.`;
+    return `${read.date}: ${money(read.amount)} to ${state.data.account}${read.against ? `, against ${read.against}` : ''}.`;
+  }
+
+  /** The text an editor starts from: the edit so far, the transaction as written, or a template. */
+  function textOf(row) {
+    if (edits[row.id]) return edits[row.id].text;
+    const insert = inserts.find((entry) => entry.id === row.id);
+    if (insert) return insert.text;
+    if (row.inserted) return row.text;
+    return row.text;
+  }
+
+  /** An editor in place of a row: the transaction's journal text, all of it. */
   function editorHtml(row) {
-    const simple = row.simple && !row.generated;
-    const why = simple ? '' : ' title="in a transaction of more than two postings, or of several commodities, only the date and description can be changed here; use edit for the rest"';
-    const amount = row.amount == null ? '' : money(row.amount).replace(` ${style().commodity}`, '').replace(style().commodity, '');
+    const text = textOf(row);
+    const readable = text != null;
+    const height = Math.min(16, Math.max(4, (text || '').split('\n').length + 1));
     return `<tr class="editor" data-editor="${escape(row.id)}"><td></td><td colspan="7"><div class="editing">
-<label>Date<input type="date" name="date" value="${escape(row.date || '')}"${row.ownDate ? ' disabled title="this posting has a date of its own"' : ''}></label>
-<label>Description<input name="description" value="${escape(row.description || '')}"></label>
-<label>Amount, to ${escape(state.data.account)}<input name="amount" inputmode="decimal" value="${escape(amount)}"${simple ? '' : ` disabled${why}`}></label>
-<label>Other account<input name="other" list="accounts" value="${escape(row.other || row.against || '')}"${simple ? '' : ` disabled${why}`}></label>
-<button class="primary" data-keep="${escape(row.id)}">${row.inserted ? 'Keep' : 'Keep the edit'}</button>
+<textarea name="text" rows="${height}" spellcheck="false" aria-label="the transaction, as journal text"${readable ? '' : ' disabled'}>${escape(text || '')}</textarea>
+<p class="reading" id="reading">${escape(readable ? reading(text) : 'Its file cannot be read here, so it cannot be edited; use edit in the terminal.')}</p>
+<div class="buttons"><button class="primary" data-keep="${escape(row.id)}"${readable ? '' : ' disabled'}>Keep</button>
 ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edits[row.id] ? `<button data-undo="${escape(row.id)}">Undo the edit</button>` : '')}
 <button data-close="1">Cancel</button>
-</div><p class="muted">Nothing is written until Save or Finish, which show it first.</p></td></tr>`;
+<span class="muted">Ctrl+Enter keeps it. ${row.inserted ? '' : 'Empty it to delete the transaction. '}Nothing is written until Save or Finish, which show it first.</span></div>
+</div></td></tr>`;
   }
 
   function drawRows() {
@@ -277,7 +308,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     shown = matching(rows(), $('search').value, style());
     const html = [];
     if (editing && editing.startsWith('new:') && !inserts.some((insert) => insert.id === editing)) {
-      html.push(editorHtml({ id: editing, date: statement().date || state.statementDate, description: '', amount: null, simple: true, inserted: true, other: '' }));
+      html.push(editorHtml({ id: editing, inserted: true, text: drafting || template(statement().date || state.statementDate, state.data.account, null, style()) }));
     }
     for (const row of shown) {
       html.push(rowHtml(row, date && row.date > date));
@@ -286,8 +317,12 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     $('rows').innerHTML = html.join('');
     focus = Math.min(focus, Math.max(0, shown.length - 1));
     drawSums();
-    const field = $('rows').querySelector('tr.editor input:not([disabled])');
-    if (field && editing) field.focus();
+    const field = $('rows').querySelector('tr.editor textarea:not([disabled])');
+    if (field && editing) {
+      field.focus();
+      // A new posting's cursor goes where its description is to be written.
+      if (editing.startsWith('new:') && !inserts.some((insert) => insert.id === editing)) field.setSelectionRange(11, 11);
+    }
   }
 
   function toggle(id) {
@@ -308,21 +343,19 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   /** Keep what an editor says, as an edit or a new posting, after checking it. */
   function keep(id) {
     const form = $('rows').querySelector(`tr.editor[data-editor="${CSS.escape(id)}"]`);
-    const value = (name) => form.querySelector(`[name=${name}]`);
-    const date = value('date').value;
-    const description = value('description').value.trim();
-    const amountField = value('amount');
-    const amount = amountField.disabled ? null : parseInput(amountField.value, style());
-    const other = value('other').disabled ? null : value('other').value.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { say('A date is needed.', true); return; }
-    if (!description) { say('A description is needed.', true); return; }
-    if (!amountField.disabled && (amount == null || amount === 0)) { say(`An amount is needed, positive when money comes into ${state.data.account}, negative when it goes out.`, true); return; }
-    if (other !== null && !other) { say('The other account is needed: where the money came from or went.', true); return; }
-    const insert = inserts.find((entry) => entry.id === id);
-    if (id.startsWith('new:')) {
-      const fresh = { id, date, description, amount, other };
+    const text = form.querySelector('textarea').value.replace(/\s+$/, '');
+    const read = readTransaction(text, state.data.account, style(), state.data.inclusive);
+    const isNew = id.startsWith('new:');
+    if (text.trim() && !read.header) { say('The first line needs a date: 2026-09-05 Description.', true); return; }
+    if (isNew && !text.trim()) { say('There is nothing to add. Remove it instead.', true); return; }
+    if (isNew && !read.touches) { say(`It does not post to ${state.data.account}, so it does not belong here.`, true); return; }
+    if (text.trim() && read.postings < 2) { say('It needs another posting: the account the money came from or went to.', true); return; }
+    if (text.trim() && read.off) { say(`It does not balance: its amounts add up to ${money(read.off)}.`, true); return; }
+    if (isNew) {
+      const fresh = { id, text };
       // Added to explain where the statement and journal part, it goes beside that posting.
-      if (from && from.id === id && rows().some((row) => row.id === from.row && row.date === date)) fresh.after = from.row;
+      if (from && from.id === id && rows().some((row) => row.id === from.row && row.date === read.date)) fresh.after = from.row;
+      const insert = inserts.find((entry) => entry.id === id);
       if (insert) Object.assign(insert, fresh); else inserts.push(fresh);
       ticked.add(id);
       if (from && from.id === id && expected[from.row] != null) {
@@ -332,14 +365,11 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       from = null;
     } else {
       const row = state.data.rows.find((entry) => entry.id === id);
-      const edit = {};
-      if (date !== row.date) edit.date = date;
-      if (description !== row.description) edit.description = description;
-      if (amount != null && amount !== row.amount) edit.amount = amount;
-      if (other && other !== row.other) edit.other = other;
-      if (Object.keys(edit).length) edits[id] = edit; else delete edits[id];
+      if (text === (row.text || '').replace(/\s+$/, '')) delete edits[id]; else edits[id] = { text };
+      if (!text.trim()) { ticked.delete(id); delete expected[id]; }
     }
     editing = null;
+    drafting = null;
     say('');
     hidePreview();
     drawRows();
@@ -369,8 +399,17 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const lines = [];
     for (const file of result.files) {
       const inserted = file.inserted || [];
-      lines.push(`<p><b>${escape(file.path)}</b>${file.changes.length ? `: ${file.changes.length} line${file.changes.length === 1 ? '' : 's'} would change` : ''}${inserted.length ? `${file.changes.length ? ',' : ':'} ${inserted.length} transaction${inserted.length === 1 ? '' : 's'} added` : ''}${file.appended ? `${file.changes.length || inserted.length ? ', and' : ':'} at the end:` : ''}</p>`);
+      const replaced = (file.replaced || []).length;
+      const said = [
+        file.changes.length && `${file.changes.length} line${file.changes.length === 1 ? '' : 's'} would change`,
+        replaced && `${replaced} transaction${replaced === 1 ? '' : 's'} rewritten`,
+        inserted.length && `${inserted.length} transaction${inserted.length === 1 ? '' : 's'} added`,
+      ].filter(Boolean);
+      lines.push(`<p><b>${escape(file.path)}</b>${said.length ? `: ${said.join(', ')}` : ''}${file.appended ? `${said.length ? ', and' : ':'} at the end:` : ''}</p>`);
       for (const entry of inserted) lines.push(`<pre class="add">${escape(`after line ${entry.line}:\n${entry.text}`)}</pre>`);
+      for (const entry of file.replaced || []) {
+        lines.push(`<pre><span class="del">${escape(entry.before.split('\n').map((line, at) => `${String(entry.line + at).padStart(6)}  ${line}`).join('\n'))}</span>\n<span class="add">${escape(entry.after ? entry.after.split('\n').map((line) => `        ${line}`).join('\n') : '        (deleted)')}</span></pre>`);
+      }
       const changes = file.changes.slice(0, 40).map((change) => `<span class="del">${escape(String(change.line).padStart(6))}  ${escape(change.before)}</span>\n<span class="add">${escape(String(change.line).padStart(6))}  ${escape(change.after)}</span>`);
       if (file.changes.length > 40) changes.push(`… and ${file.changes.length - 40} more`);
       if (changes.length) lines.push(`<pre>${changes.join('\n')}</pre>`);
@@ -428,10 +467,8 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     made += 1;
     editing = `new:${made}`;
     from = row ? { id: editing, row } : null;
+    drafting = template(date || statement().date || state.statementDate, state.data.account, amount, style());
     drawRows();
-    const form = $('rows').querySelector('tr.editor');
-    if (form && amount != null) form.querySelector('[name=amount]').value = money(amount).replace(` ${style().commodity}`, '').replace(style().commodity, '');
-    if (form && date) form.querySelector('[name=date]').value = date;
   }
 
   $('rows').addEventListener('click', (event) => {
@@ -439,9 +476,10 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (button) {
       if (button.dataset.edit) { editing = button.dataset.edit; drawRows(); }
       else if (button.dataset.keep) keep(button.dataset.keep);
+      else if (button.dataset.restore) { delete edits[button.dataset.restore]; drawRows(); }
       else if (button.dataset.drop) { inserts = inserts.filter((insert) => insert.id !== button.dataset.drop); ticked.delete(button.dataset.drop); delete expected[button.dataset.drop]; editing = null; drawRows(); }
       else if (button.dataset.undo) { delete edits[button.dataset.undo]; editing = null; drawRows(); }
-      else if (button.dataset.close) { editing = null; drawRows(); }
+      else if (button.dataset.close) { editing = null; drafting = null; drawRows(); }
       return;
     }
     if (event.target.closest('input') || event.target.closest('tr.editor')) return;
@@ -449,6 +487,10 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (tr) toggle(tr.dataset.id);
   });
   $('rows').addEventListener('input', (event) => {
+    if (event.target.tagName === 'TEXTAREA') {
+      $('reading').textContent = reading(event.target.value);
+      return;
+    }
     const id = event.target.dataset.expect;
     if (!id) return;
     const value = parseInput(event.target.value, style());
@@ -462,7 +504,12 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     drawSums();
   });
   $('rows').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && event.target.closest('tr.editor')) { event.preventDefault(); keep(event.target.closest('tr.editor').dataset.editor); }
+    // In the text, Enter is a new line; Ctrl+Enter (or Cmd+Enter) keeps it.
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && event.target.closest('tr.editor')) { event.preventDefault(); keep(event.target.closest('tr.editor').dataset.editor); }
+  });
+  $('notes').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-restore]');
+    if (button) { delete edits[button.dataset.restore]; hidePreview(); drawRows(); }
   });
   $('hints').addEventListener('click', (event) => {
     const add = event.target.closest('button[data-add]');
@@ -487,7 +534,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   root.addEventListener('keydown', (event) => {
     const typing = /^(INPUT|TEXTAREA)$/.test(event.target.tagName);
     if (event.key === 'Escape') {
-      if (editing) { editing = null; drawRows(); return; }
+      if (editing) { editing = null; drafting = null; drawRows(); return; }
       if (event.target === $('search')) { $('search').value = ''; drawRows(); return; }
     }
     if (typing) return;

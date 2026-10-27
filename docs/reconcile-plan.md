@@ -14,9 +14,10 @@ Two things changed while building it, both for correctness:
   `sourceName` is resolved against `host.files()` by its end, not by stripping a prefix.
 - **Added after:** a running balance on every posting, a statement balance typed beside any of
   them with the difference there (the first mismatch marked and explained, a matching one
-  written as an assertion on its posting), editing a posting in place, and adding a missing
-  one. Editing an amount writes an inferred amount out explicitly and moves the other side of
-  a two-posting transaction with it; anything more complex keeps its amount read-only.
+  written as an assertion on its posting), and editing or adding a transaction as its journal
+  text in a text box. The window reads the account's amount from the text as hledger would
+  (one amount left out is worked out), and the file's lines for the transaction are replaced
+  by the text; an emptied text deletes it.
 - **Not built:** Enter opening a transaction in `edit` at its line, which `edit` cannot do yet.
 
 A plugin that opens a window for checking one account against a bank or e-wallet statement:

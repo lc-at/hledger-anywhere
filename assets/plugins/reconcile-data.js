@@ -194,19 +194,40 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
 
 /**
  * The rows as hledger orders them, with their edits applied and new ones added: by date, then
- * in file order, with a new posting after the day's existing ones, since it is appended to the
- * end of the file. Each row gets `balance`, the account's balance after it, which is what a
- * statement prints beside each line and what a balance assertion on that posting would assert.
+ * in file order, with a new posting after the posting it was added beside, or after the day's
+ * others. Each row gets `balance`, the account's balance after it, which is what a statement
+ * prints beside each line and what a balance assertion on that posting would assert.
+ *
+ * An edit is the transaction's whole text, written by hand. Its postings to the account are one
+ * row, read from the text; an emptied text is a deleted transaction, and its rows go. When the
+ * account's amount cannot be worked out from the text alone, it is null, and so is every balance
+ * after it, until hledger has read it.
  */
 export function ordered(data, { edits = {}, inserts = [] } = {}) {
-  const rows = data.rows.map((row, at) => ({ ...row, ...pick(edits[row.id]), at, edited: Boolean(edits[row.id]) }));
-  // A new posting goes after the posting it was added beside, if it is on that day, which is where
-  // it is written; otherwise at the end of the file, after the day's others.
+  const rows = [];
+  const editedTransactions = new Set();
+  data.rows.forEach((row, at) => {
+    const transaction = transactionOf(row);
+    const edit = edits[row.id];
+    if (edit && edit.text != null) {
+      editedTransactions.add(transaction);
+      if (!edit.text.trim()) return;
+      const read = readTransaction(edit.text, data.account, data.style, data.inclusive);
+      rows.push({ ...row, date: read.date || row.date, description: read.description != null ? read.description : row.description, against: read.against, amount: read.amount, at, edited: true, unknown: read.amount == null });
+      return;
+    }
+    // A transaction edited through another of its rows is that row now.
+    if (data.rows.some((other) => other !== row && transactionOf(other) === transaction && edits[other.id] && edits[other.id].text != null)) return;
+    rows.push({ ...row, at, edited: false });
+  });
+  void editedTransactions;
   inserts.forEach((insert, at) => {
-    const beside = insert.after != null ? data.rows.findIndex((row) => row.id === insert.after && row.date === insert.date) : -1;
+    const read = readTransaction(insert.text || '', data.account, data.style, data.inclusive);
+    const date = read.date || insert.date;
+    const beside = insert.after != null ? data.rows.findIndex((row) => row.id === insert.after && row.date === date) : -1;
     rows.push({
-      id: insert.id, date: insert.date, description: insert.description, account: data.account, against: insert.other,
-      other: insert.other, amount: insert.amount, status: 'Unmarked', simple: true, inserted: true,
+      id: insert.id, date, description: read.description || '', account: data.account, against: read.against,
+      amount: read.amount, unknown: read.amount == null, status: 'Unmarked', inserted: true,
       at: beside >= 0 ? beside + 0.5 + at / 1000 : data.rows.length + at,
       where: { file: insert.file || null, first: 0, last: 0, occurrence: 0 },
     });
@@ -214,21 +235,67 @@ export function ordered(data, { edits = {}, inserts = [] } = {}) {
   rows.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : left.at - right.at));
   let balance = data.start ? data.start.balance : 0;
   for (const row of rows) {
-    balance += row.amount;
+    balance = balance == null || row.amount == null ? null : balance + row.amount;
     row.balance = balance;
   }
   return rows;
 }
 
-/** The fields an edit may change, as a row has them. */
-function pick(edit) {
-  if (!edit) return {};
-  const out = {};
-  if (edit.date) out.date = edit.date;
-  if (edit.description != null) out.description = edit.description;
-  if (edit.amount != null) out.amount = edit.amount;
-  if (edit.other) { out.other = edit.other; out.against = edit.other; }
-  return out;
+/** Which transaction a row is in: its file and first line. */
+function transactionOf(row) {
+  return `${row.where.file}:${row.where.first}`;
+}
+
+/**
+ * An amount as written in a journal, in the reconciled commodity's minor units, or null if it
+ * is in another commodity or cannot be read. A cost (`@`) and an assertion (`=`) are not part of
+ * the amount.
+ */
+export function readAmount(text, style) {
+  const plain = String(text).split(/\s=|^=/)[0].split('@')[0].trim();
+  if (!plain) return null;
+  const match = /^(-?)\s*([^\d\s.,+-][^\d\s-]*?|"[^"]+")?\s*(-?)\s*([\d][\d.,]*)\s*([^\d\s.,][^\s]*|"[^"]+")?$/.exec(plain);
+  if (!match) return null;
+  const commodity = (match[2] || match[5] || '').replace(/^"|"$/g, '');
+  if (commodity !== (style.commodity || '')) return null;
+  const minor = parseInput(match[4], style);
+  if (minor == null) return null;
+  return match[1] === '-' || match[3] === '-' ? -minor : minor;
+}
+
+/**
+ * What a transaction written by hand means for the account, without hledger: its date and
+ * description, the other accounts, and the sum of its postings to the account. An amount left
+ * out is worked out as hledger does, when it is the only one and the rest are in the account's
+ * commodity; anything more (costs, several commodities, two amounts left out) is `null`, for
+ * hledger to read on Save. `values` is each account posting's amount, written or worked out.
+ */
+export function readTransaction(text, account, style, inclusive = false) {
+  const lines = String(text || '').split('\n');
+  const headerAt = lines.findIndex((line) => line.trim() && !/^[;#*]/.test(line.trim()));
+  const header = headerAt >= 0 ? parseHeader(lines[headerAt]) : null;
+  const postings = [];
+  for (const line of lines.slice(headerAt + 1)) {
+    if (!/^[ \t]/.test(line) || line.trim().startsWith(';')) continue;
+    const parts = parsePosting(line);
+    if (!parts) continue;
+    const virtual = parts.open === '(';
+    postings.push({ account: parts.account, written: Boolean(parts.amount && !/^=/.test(parts.amount)), value: parts.amount && !/^=/.test(parts.amount) ? readAmount(parts.amount, style) : null, virtual, raw: parts.amount });
+  }
+  const ours = postings.filter((posting) => belongs(posting.account, account, inclusive));
+  const against = postings.filter((posting) => !belongs(posting.account, account, inclusive)).map((posting) => posting.account).join(', ');
+  const balancing = postings.filter((posting) => !posting.virtual);
+  const blanks = balancing.filter((posting) => !posting.written);
+  const readable = balancing.filter((posting) => posting.written).every((posting) => posting.value != null);
+  const values = ours.map((posting) => {
+    if (posting.written) return posting.value;
+    if (blanks.length !== 1 || !readable) return null;
+    return -balancing.filter((other) => other.written).reduce((sum, other) => sum + other.value, 0);
+  });
+  const amount = !header || values.some((value) => value == null) ? null : values.reduce((sum, value) => sum + value, 0);
+  // With every amount written and readable, they must add up to nothing, or hledger refuses it.
+  const off = !blanks.length && readable && balancing.length ? balancing.reduce((sum, posting) => sum + posting.value, 0) : 0;
+  return { date: header ? header.date : null, description: header ? header.description : null, against, amount, values, touches: ours.length > 0, header: Boolean(header), off, postings: balancing.length };
 }
 
 /**
@@ -240,6 +307,7 @@ export function checkpoints(rows, expected = {}) {
   const out = [];
   for (const row of rows) {
     if (expected[row.id] == null) continue;
+    if (row.balance == null) continue;
     out.push({ id: row.id, expected: expected[row.id], balance: row.balance, difference: expected[row.id] - row.balance });
   }
   return { points: out, first: out.find((point) => point.difference !== 0) || null };
@@ -256,10 +324,12 @@ export function summarize({ data, ticked, statementDate, statementBalance, edits
   const all = ordered(data, { edits, inserts });
   const inRange = all.filter((row) => !statementDate || row.date <= statementDate);
   const on = inRange.filter((row) => ticked.has(row.id));
-  const tickedTotal = on.reduce((sum, row) => sum + row.amount, 0);
-  const expected = opening + tickedTotal;
+  // An edit whose amount cannot be read yet leaves the totals unknown until it is saved.
+  const unknown = inRange.filter((row) => row.amount == null).length;
+  const tickedTotal = unknown ? null : on.reduce((sum, row) => sum + row.amount, 0);
+  const expected = unknown ? null : opening + tickedTotal;
   const outstanding = inRange.filter((row) => !ticked.has(row.id));
-  const difference = statementBalance == null ? null : statementBalance - expected;
+  const difference = statementBalance == null || expected == null ? null : statementBalance - expected;
   const tooEarly = Boolean(data.start && statementDate && statementDate < data.start.date);
   return {
     opening,
@@ -271,6 +341,7 @@ export function summarize({ data, ticked, statementDate, statementBalance, edits
     later: all.length - inRange.length,
     outstanding,
     tooEarly,
+    unknown,
     canFinish: difference === 0 && outstanding.length === 0 && !tooEarly && Boolean(statementDate),
   };
 }
@@ -285,6 +356,7 @@ export function hints(rows, ticked, difference, style) {
   const found = [];
   const say = (minor) => readable(minor, style);
   for (const row of rows) {
+    if (row.amount == null) continue;
     const on = ticked.has(row.id);
     if (!on && row.amount === difference) found.push({ id: row.id, reason: `not ticked, and exactly the difference (${say(difference)})` });
     else if (on && row.amount === -difference) found.push({ id: row.id, reason: `ticked, and exactly the difference (${say(-difference)}): is it on the statement?` });
@@ -334,13 +406,19 @@ export function formatHeader(header) {
  * posting), the gap after it, the amount text (with any assertion), and a comment.
  */
 export function parsePosting(line) {
-  const match = /^([ \t]+)(?:([*!])([ \t]*))?([([]?)(\S(?:.*?\S)?)([)\]]?)(?:(\t| {2,})(.*))?$/.exec(line);
-  if (!match || match[5].startsWith(';')) return null;
-  const rest = match[8] || '';
+  const head = /^([ \t]+)(?:([*!])([ \t]*))?(.*)$/.exec(line);
+  if (!head || !head[4] || head[4].startsWith(';')) return null;
+  // An account name ends at a tab or two spaces, which is what separates it from the amount; a
+  // single space is part of the name ("equity:opening balances").
+  const separator = /\t| {2,}/.exec(head[4]);
+  const name = (separator ? head[4].slice(0, separator.index) : head[4]).trimEnd();
+  const rest = separator ? head[4].slice(separator.index + separator[0].length) : '';
+  const bracket = /^([([])(.*)([)\]])$/.exec(name);
   const at = rest.indexOf(';');
   return {
-    indent: match[1], mark: match[2] || '', markGap: match[3] || '', open: match[4], account: match[5], close: match[6],
-    gap: match[7] || '', amount: (at >= 0 ? rest.slice(0, at) : rest).trim(), comment: at >= 0 ? rest.slice(at).trimEnd() : '',
+    indent: head[1], mark: head[2] || '', markGap: head[3] || '',
+    open: bracket ? bracket[1] : '', account: bracket ? bracket[2] : name, close: bracket ? bracket[3] : '',
+    gap: separator ? separator[0] : '', amount: (at >= 0 ? rest.slice(0, at) : rest).trim(), comment: at >= 0 ? rest.slice(at).trimEnd() : '',
   };
 }
 
@@ -365,9 +443,9 @@ function amountEnd(line) {
   return line.indexOf(parts.amount) + parts.amount.length;
 }
 
-/** A new transaction for the account, appended to the file: the account's side carries the amount. */
-export function insertText(insert, account, style, ticked) {
-  return `${insert.date} ${insert.description}\n  ${ticked ? '*' : ' '} ${account}    ${journalAmount(insert.amount, style)}\n    ${insert.other}\n`;
+/** The text a new posting starts from: a date, a description to write, the account and an amount. */
+export function template(date, account, minor, style) {
+  return `${date} \n    ${account}    ${minor == null ? '' : journalAmount(minor, style)}\n    `;
 }
 
 /** The transaction that proves the statement balance: one posting of nothing, asserting. */
@@ -379,104 +457,120 @@ export function assertionText(date, account, minor, style, inclusive = false) {
 /**
  * The text changes that record a reconciliation, for each file touched.
  *
- * `texts` maps a file path to its contents as the app has it. Each row whose wanted state
- * differs from its posting's own mark has its line found inside its transaction's lines, by
- * account and occurrence, and re-marked. With `finish`, the assertion is appended to the file
- * the account's latest posting is in. A row that cannot be found (a generated posting, or a
- * file that changed) is reported in `missing` rather than guessed at.
+ * `texts` maps a file path to its contents as the app has it. A transaction is changed as a
+ * block of lines, found where hledger said it is: replaced by an edit's text, re-marked where a
+ * tick changed (the reconciled account's postings only), and given an assertion on its last
+ * posting to the account when a typed running balance matches. A new transaction is written
+ * after the one it was added beside, or at the end; with `finish`, the statement's assertion
+ * goes last. Anything that cannot be done exactly is reported in `missing`, never guessed at.
  */
 export function plan({ data, texts, ticked, finish = null, edits = {}, inserts = [], expected = {} }) {
   const files = new Map();
   const missing = [];
-  const lines = (path) => {
+  const fileOf = (path) => {
     if (!files.has(path)) {
       if (texts[path] == null) return null;
-      files.set(path, { path, before: texts[path], lines: texts[path].split('\n'), changes: [], appended: '', inserted: [] });
+      files.set(path, { path, before: texts[path], lines: texts[path].split('\n'), changes: [], blocks: [], appended: '', inserted: [] });
     }
     return files.get(path);
   };
   const rows = ordered(data, { edits, inserts });
-  // Expected running totals that match are written as assertions on their postings; one that
-  // does not match is the person's note to find out why, and hledger would refuse it.
   const asserting = new Map(checkpoints(rows, expected).points.filter((point) => point.difference === 0).map((point) => [point.id, point.balance]));
-  const change = (file, at, after, id) => {
-    const before = file.lines[at];
-    if (after === before) return;
-    const earlier = file.changes.find((entry) => entry.line === at + 1);
-    if (earlier) earlier.after = after;
-    else file.changes.push({ line: at + 1, before, after, id });
-    file.lines[at] = after;
+  const sign = data.inclusive ? '=*' : '=';
+
+  /** The lines in a block that post to the account, in order. */
+  const ourLines = (block, exact = null) => block
+    .map((line, at) => ({ line, at, parts: /^[ \t]/.test(line) && !line.trim().startsWith(';') ? parsePosting(line) : null }))
+    .filter((entry) => entry.parts && (exact ? entry.parts.account === exact : belongs(entry.parts.account, data.account, data.inclusive)));
+
+  /** Put an assertion on a posting line, writing out an amount hledger would infer. */
+  const assertOn = (block, at, value, balance) => {
+    const parts = parsePosting(block[at]);
+    const written = parts.amount && !/^=/.test(parts.amount) ? parts.amount.replace(/\s*=.*$/, '') : null;
+    if (!written && value == null) return false;
+    const column = Math.max(0, ...block.map((line) => amountEnd(line)));
+    block[at] = formatPosting({ ...parts, amount: `${written || journalAmount(value, data.style)} ${sign} ${journalAmount(balance, data.style)}` }, column, parts);
+    return true;
   };
 
-  for (const row of rows.filter((entry) => !entry.inserted)) {
-    const wanted = ticked.has(row.id) ? 'Cleared' : 'Unmarked';
-    const remarkIt = !(row.status === wanted || (wanted === 'Unmarked' && row.status === 'Pending'));
-    const edit = edits[row.id] || null;
-    const assertTo = asserting.get(row.id);
-    if (!remarkIt && !edit && assertTo == null) continue;
-    if (row.generated) { missing.push({ id: row.id, why: 'generated by a rule, not written in the file' }); continue; }
-    const file = lines(row.where.file);
-    if (!file) { missing.push({ id: row.id, why: `${row.where.file} is not loaded` }); continue; }
-    // The transaction's posting lines, in order, comment lines skipped.
-    const header = row.where.first - 1;
-    const end = Math.max(row.where.last - 1, row.where.first);
-    const postings = [];
-    for (let index = row.where.first; index < end && index < file.lines.length; index += 1) {
-      const parts = parsePosting(file.lines[index]);
-      if (parts && !file.lines[index].trim().startsWith(';')) postings.push({ at: index, parts });
+  const groups = new Map();
+  for (const row of data.rows) {
+    if (!groups.has(transactionOf(row))) groups.set(transactionOf(row), []);
+    groups.get(transactionOf(row)).push(row);
+  }
+  for (const group of groups.values()) {
+    const editedRow = group.find((row) => edits[row.id] && edits[row.id].text != null);
+    const marks = editedRow ? (ticked.has(editedRow.id) ? [editedRow] : []) : group.filter((row) => {
+      const wanted = ticked.has(row.id) ? 'Cleared' : 'Unmarked';
+      return !(row.status === wanted || (wanted === 'Unmarked' && row.status === 'Pending'));
+    });
+    const assertRow = group.find((row) => asserting.has(row.id));
+    if (!editedRow && !marks.length && !assertRow) continue;
+    const first = group[0];
+    if (group.some((row) => row.generated)) { missing.push({ id: first.id, why: 'generated by a rule, not written in the file' }); continue; }
+    const file = fileOf(first.where.file);
+    if (!file) { missing.push({ id: first.id, why: `${first.where.file} is not loaded` }); continue; }
+    const start = first.where.first - 1;
+    const end = Math.max(first.where.last - 1, first.where.first);
+    const block = file.lines.slice(start, end);
+    if (!parseHeader(block[0] || '')) { missing.push({ id: first.id, why: 'its first line is not where hledger said it was' }); continue; }
+    let next;
+    if (editedRow) {
+      const text = edits[editedRow.id].text;
+      next = text.trim() ? text.replace(/\s+$/, '').split('\n') : [];
+      if (next.length && ticked.has(editedRow.id)) for (const entry of ourLines(next)) next[entry.at] = remark(next[entry.at], '*');
+      if (next.length && assertRow) {
+        const ours = ourLines(next);
+        const read = readTransaction(next.join('\n'), data.account, data.style, data.inclusive);
+        const last = ours[ours.length - 1];
+        if (!last || !assertOn(next, last.at, read.values[read.values.length - 1], asserting.get(assertRow.id))) {
+          missing.push({ id: editedRow.id, why: 'the edited transaction\'s amount cannot be worked out here, so its running balance cannot be asserted; Save it first' });
+          continue;
+        }
+      }
+    } else {
+      next = [...block];
+      for (const row of group) {
+        const own = ourLines(next, row.account)[row.where.occurrence];
+        if (!own) { missing.push({ id: row.id, why: 'its line was not found where hledger said it was' }); next = null; break; }
+        if (marks.includes(row)) next[own.at] = remark(next[own.at], ticked.has(row.id) ? '*' : '');
+        if (asserting.has(row.id)) assertOn(next, own.at, row.amount, asserting.get(row.id));
+      }
+      if (!next) continue;
     }
-    let seen = 0;
-    const own = postings.find((entry) => entry.parts.account === row.account && seen++ === row.where.occurrence);
-    if (!own) { missing.push({ id: row.id, why: 'its line was not found where hledger said it was' }); continue; }
-    const others = postings.filter((entry) => entry !== own);
-    const column = Math.max(0, ...postings.map((entry) => amountEnd(file.lines[entry.at])));
-
-    if (edit && (edit.date || edit.description != null)) {
-      const parsed = parseHeader(file.lines[header]);
-      if (!parsed) { missing.push({ id: row.id, why: 'its first line is not a transaction header' }); continue; }
-      if (edit.date && row.ownDate) { missing.push({ id: row.id, why: 'the posting has a date of its own' }); continue; }
-      change(file, header, formatHeader({ ...parsed, date: edit.date || parsed.date, description: edit.description != null ? edit.description : parsed.description }), row.id);
-    }
-    const parts = { ...own.parts };
-    if (remarkIt) parts.mark = wanted === 'Cleared' ? '*' : '';
-    const amountChanged = edit && edit.amount != null && edit.amount !== data.rows.find((entry) => entry.id === row.id).amount;
-    if ((amountChanged || (edit && edit.other)) && !row.simple) {
-      missing.push({ id: row.id, why: 'its amount and other account can only be changed in a transaction of two postings in one commodity' });
-      continue;
-    }
-    if (amountChanged || assertTo != null) {
-      // An amount hledger inferred is written out as it computed it; the transaction balances
-      // exactly as before, and an assertion can then follow it.
-      const amount = amountChanged || !parts.amount ? journalAmount(row.amount, data.style) : parts.amount.replace(/\s*=.*$/, '');
-      parts.amount = assertTo != null ? `${amount} ${data.inclusive ? '=*' : '='} ${journalAmount(assertTo, data.style)}` : amount;
-    }
-    // Only the mark changing is the common case, and touches nothing but the mark.
-    const onlyMark = parts.amount === own.parts.amount;
-    change(file, own.at, onlyMark ? remark(file.lines[own.at], parts.mark) : formatPosting(parts, column, own.parts), row.id);
-    if (row.simple && others.length === 1 && (amountChanged || (edit && edit.other))) {
-      const other = { ...others[0].parts };
-      if (edit.other) other.account = edit.other;
-      // The other side follows: negated if it was written, left to hledger if it was not.
-      if (amountChanged && other.amount) other.amount = journalAmount(-row.amount, data.style);
-      change(file, others[0].at, formatPosting(other, column, others[0].parts), row.id);
+    if (next.length === block.length) {
+      next.forEach((line, at) => {
+        if (line !== block[at]) file.changes.push({ line: start + at + 1, before: block[at], after: line, id: first.id });
+      });
+      for (let at = 0; at < next.length; at += 1) file.lines[start + at] = next[at];
+    } else {
+      file.blocks.push({ index: start, count: block.length, lines: next, line: start + 1, before: block.join('\n'), after: next.join('\n') });
     }
   }
   for (const file of files.values()) file.changes.sort((left, right) => left.line - right.line);
 
-  // New postings and the final assertion go at the end of the file, new ones first, so the
-  // assertion is checked after them.
   const lastFile = () => {
     const last = [...data.rows].reverse().find((row) => !row.generated && texts[row.where.file] != null);
     return last ? last.where.file : Object.keys(texts)[0];
   };
   for (const insert of inserts) {
-    const beside = insert.after != null ? data.rows.find((row) => row.id === insert.after && row.date === insert.date && !row.generated) : null;
+    const lines = String(insert.text || '').replace(/\s+$/, '').split('\n');
+    const read = readTransaction(lines.join('\n'), data.account, data.style, data.inclusive);
+    if (!read.header) { missing.push({ id: insert.id, why: 'a new transaction needs a first line with its date' }); continue; }
+    if (ticked.has(insert.id)) for (const entry of ourLines(lines)) lines[entry.at] = remark(lines[entry.at], '*');
+    if (asserting.has(insert.id)) {
+      const ours = ourLines(lines);
+      const last = ours[ours.length - 1];
+      if (!last || !assertOn(lines, last.at, read.values[read.values.length - 1], asserting.get(insert.id))) {
+        missing.push({ id: insert.id, why: 'the new transaction\'s amount cannot be worked out here, so its running balance cannot be asserted' });
+        continue;
+      }
+    }
+    const text = `${lines.join('\n')}\n`;
+    const beside = insert.after != null ? data.rows.find((row) => row.id === insert.after && row.date === read.date && !row.generated) : null;
     const path = beside ? beside.where.file : insert.file || lastFile();
-    const file = path ? lines(path) : null;
+    const file = path ? fileOf(path) : null;
     if (!file) { missing.push({ id: insert.id, why: 'there is no file to add it to' }); continue; }
-    let text = insertText(insert, data.account, data.style, ticked.has(insert.id));
-    const assertTo = asserting.get(insert.id);
-    if (assertTo != null) text = text.replace(/^(.*\n.*?)\n/, `$1 ${data.inclusive ? '=*' : '='} ${journalAmount(assertTo, data.style)}\n`);
     // Beside the transaction it explains, so hledger orders it where the statement has it.
     if (beside) file.inserted.push({ index: beside.where.last - 1, line: beside.where.last - 1, text });
     else file.appended += `${file.appended ? '\n' : ''}${text}`;
@@ -486,20 +580,32 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
   const assertion = finish ? assertionText(finish.date, data.account, finish.balance, data.style, data.inclusive) : '';
   if (finish) {
     const path = finish.file || lastFile();
-    const file = path ? lines(path) : null;
+    const file = path ? fileOf(path) : null;
     if (file) file.appended += `${file.appended ? '\n' : ''}${assertion}`;
     else missing.push({ id: null, why: `${path || 'the journal'} cannot be read here, so the assertion has nowhere to go` });
   }
   const out = [];
   for (const file of files.values()) {
-    if (!file.changes.length && !file.appended && !file.inserted.length) continue;
-    // Insertions last, from the bottom up, so the line numbers of the changes still hold.
+    if (!file.changes.length && !file.appended && !file.inserted.length && !file.blocks.length) continue;
+    // Replaced and inserted blocks last, from the bottom up, so every line number still holds.
     const lines = [...file.lines];
-    const order = file.inserted.map((entry, at) => ({ ...entry, at })).sort((left, right) => right.index - left.index || right.at - left.at);
-    for (const entry of order) lines.splice(entry.index, 0, '', ...entry.text.trimEnd().split('\n'));
+    const edits = [
+      ...file.blocks.map((entry, at) => ({ index: entry.index, count: entry.count, lines: entry.lines, at })),
+      ...file.inserted.map((entry, at) => ({ index: entry.index, count: 0, lines: ['', ...entry.text.trimEnd().split('\n')], at: 1000 + at })),
+    ].sort((left, right) => right.index - left.index || right.at - left.at);
+    for (const entry of edits) {
+      let count = entry.count;
+      // A deleted transaction takes one of the blank lines around it, so no double gap is left.
+      if (!entry.lines.length && lines[entry.index + count] === '' && (entry.index === 0 || lines[entry.index - 1] === '')) count += 1;
+      lines.splice(entry.index, count, ...entry.lines);
+    }
     let after = lines.join('\n');
     if (file.appended) after = `${after}${after.endsWith('\n') ? '' : '\n'}\n${file.appended}`;
-    out.push({ path: file.path, before: file.before, after, changes: file.changes, appended: file.appended, inserted: file.inserted.map(({ line, text }) => ({ line, text })) });
+    out.push({
+      path: file.path, before: file.before, after, changes: file.changes, appended: file.appended,
+      inserted: file.inserted.map(({ line, text }) => ({ line, text })),
+      replaced: file.blocks.map(({ line, before, after: written }) => ({ line, before, after: written })),
+    });
   }
   return { files: out, missing, assertion, asserted: asserting.size };
 }

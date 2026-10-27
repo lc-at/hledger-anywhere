@@ -413,13 +413,17 @@ moves to it. A typed balance that matches is written, on Save, as a
 balance assertion on that posting (`Assets:Bank  -50000 IDR = 150000 IDR`), so hledger checks
 it from then on; one that does not match is not written.
 
-**Editing and adding.** `e` (or ✎) edits a posting in place: its date and description, and in
-a transaction of two postings in one commodity its amount and other account; the other side
-follows, negated, so it stays balanced, and an amount hledger inferred is written out as it
-computed it. `n` (or Add a posting) adds a missing one, a bank fee or interest, as a new
-transaction of two at the end of the file. Nothing is written until Save or Finish, which
-show the exact lines first; hledger then checks the result, and if anything fails, including
-an assertion elsewhere in the journal the change would break, every file is put back.
+**Editing and adding.** `e` (or ✎) opens the transaction as it is written in the journal, in a
+text box: change anything, any number of postings, comments, tags, or empty it to delete the
+transaction (it can be restored until saved). Under the box, the window says what the text
+means for the account as it is typed, working out an amount left out as hledger does, and says
+so if it does not balance or has only one posting; the running balances follow it. `n` (or Add
+a posting) opens a new transaction's text from a template with the account and its amount.
+Ctrl+Enter keeps it. Nothing is written until Save or Finish, which show the exact lines
+first; hledger then checks the result, and if anything fails, including an assertion elsewhere
+in the journal the change would break, every file is put back. A text whose amount cannot be
+worked out without hledger (a cost, another commodity) is still written; its balances show `?`
+until then.
 
 If new transactions are entered without `*`, hledger's own `-U` and `-C` then show what is
 left to reconcile; the plugin does not depend on that.

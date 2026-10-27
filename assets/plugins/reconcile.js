@@ -86,7 +86,19 @@ async function readAccount(host, account, commodity) {
   const json = await host.hledger(`print ${quote(query)} -O json`);
   const data = readPrint(JSON.parse(json || '[]'), account, { inclusive, wanted: commodity });
   const paths = (typeof host.files === 'function' ? host.files() : []).map((file) => file.path);
-  if (data) for (const row of data.rows) row.where.file = fileFor(row.where.file, paths);
+  if (data) {
+    // Each row carries its transaction's text, as written, for the window's editor to start from.
+    const texts = new Map();
+    for (const row of data.rows) {
+      row.where.file = fileFor(row.where.file, paths);
+      if (!texts.has(row.where.file)) {
+        const text = typeof host.read === 'function' ? host.read(row.where.file) : null;
+        texts.set(row.where.file, text == null ? null : text.split('\n'));
+      }
+      const lines = texts.get(row.where.file);
+      row.text = lines ? lines.slice(row.where.first - 1, Math.max(row.where.last - 1, row.where.first)).join('\n').replace(/\s+$/, '') : null;
+    }
+  }
   return { data, query };
 }
 
@@ -167,7 +179,7 @@ export default {
       preview(request) {
         const result = work(request);
         return {
-          files: result.files.map((file) => ({ path: file.path, changes: file.changes, appended: file.appended, inserted: file.inserted })),
+          files: result.files.map((file) => ({ path: file.path, changes: file.changes, appended: file.appended, inserted: file.inserted, replaced: file.replaced })),
           missing: result.missing,
           assertion: result.assertion,
           writable: writableFiles(host, data),
@@ -209,9 +221,13 @@ export default {
         }
         data = (await readAccount(host, account, data.commodity)).data || data;
         const lines = result.files.reduce((sum, file) => sum + file.changes.length, 0);
+        const rewritten = result.files.reduce((sum, file) => sum + file.replaced.filter((block) => block.after).length, 0);
+        const deleted = result.files.reduce((sum, file) => sum + file.replaced.filter((block) => !block.after).length, 0);
         const added = (request.inserts || []).length;
         const done = [
           lines && `${lines} line${lines === 1 ? '' : 's'} changed`,
+          rewritten && `${rewritten} transaction${rewritten === 1 ? '' : 's'} rewritten`,
+          deleted && `${deleted} deleted`,
           added && `${added} posting${added === 1 ? '' : 's'} added`,
           result.asserted && `${result.asserted} running balance${result.asserted === 1 ? '' : 's'} asserted`,
         ].filter(Boolean).join(', ');

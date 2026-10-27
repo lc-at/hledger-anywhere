@@ -383,11 +383,15 @@
             ],
             [
               "e",
-              "edit the posting: date, description, amount"
+              "edit the transaction as journal text; empty deletes"
             ],
             [
               "n",
-              "add a posting the journal is missing"
+              "add a transaction the journal is missing"
+            ],
+            [
+              "Ctrl+Enter",
+              "keep an edit"
             ],
             [
               "a",

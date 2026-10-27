@@ -42,8 +42,12 @@ const { build, parseReport } = await import('../assets/plugins/chart.js');
 const { page: editPage } = await import('../assets/plugins/edit-window.js');
 const { page: reconcilePage } = await import('../assets/plugins/reconcile-window.js');
 const { readPrint: readReconcile } = await import('../assets/plugins/reconcile-data.js');
-const { RECONCILE_PRINT } = await import('./reconcile-fixtures.mjs');
+const { RECONCILE_JOURNAL, RECONCILE_PRINT } = await import('./reconcile-fixtures.mjs');
 const RECONCILE_DATA = readReconcile(RECONCILE_PRINT, 'Assets:Bank:Checking');
+// Each row carries its transaction's text, as the plugin gives it, for the editor.
+for (const row of RECONCILE_DATA.rows) {
+  row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
+}
 
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
 const MEASURED = ['reconcile.js', 'reconcile-data.js', 'reconcile-window.js', 'chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
@@ -148,7 +152,9 @@ const OPENER = `
         window.__lastPreview = request;
         return {
           files: [{ path: 'fixture.journal', changes: request.ticked.map((id, index) => ({ line: 9 + index, before: '    Assets:Bank:Checking', after: '  * Assets:Bank:Checking', id })),
-            appended: request.finish ? '2026-09-30 * Reconciled with statement\\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\\n' : '' }],
+            appended: request.finish ? '2026-09-30 * Reconciled with statement\\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\\n' : '',
+            replaced: Object.entries(request.edits || {}).map(([id, edit], at) => ({ line: 7 + at * 4, before: 'old text\\n    of it', after: edit.text })),
+            inserted: (request.inserts || []).map((insert) => ({ line: 24, text: insert.text })) }],
           missing: [],
           writable: [{ path: 'fixture.journal', writable: window.__writable }],
         };
@@ -1057,63 +1063,92 @@ async function reconcileRunning(tab) {
   const add = await tab.eval("!!document.querySelector('#hints button[data-add]')");
   check('a difference no posting explains offers to add one for it', add, await text('hints'));
   await tab.eval("document.querySelector('#hints button[data-add]').click()");
-  check('which opens a new posting with that amount and date', (await tab.eval("document.querySelector('tr.editor [name=amount]').value")) === '-75,000.00'
-    && (await tab.eval("document.querySelector('tr.editor [name=date]').value")) === '2026-09-05', await tab.eval("document.querySelector('tr.editor [name=amount]').value"));
-  await tab.eval("document.querySelector('tr.editor [name=description]').value = 'Bank fee'");
+  const area = () => tab.eval("document.querySelector('tr.editor textarea').value");
+  const typeIn = (value) => tab.eval(`(() => { const t = document.querySelector('tr.editor textarea'); t.value = ${JSON.stringify(value)}; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  check('which opens the text of a new transaction, with that amount and date, the cursor where its description goes',
+    (await area()) === '2026-09-05 \n    Assets:Bank:Checking    -75000.00 IDR\n    ' && (await tab.eval("document.activeElement.tagName === 'TEXTAREA' && document.activeElement.selectionStart === 11")), JSON.stringify(await area()));
+  check('and says what it lacks as it is typed', /needs another posting/.test(await text('reading')), await text('reading'));
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
-  check('a new posting needs its other account', /The other account is needed/.test(await text('status')), await text('status'));
-  await tab.eval("document.querySelector('tr.editor [name=other]').value = 'Expenses:Fees'");
-  await tab.eval("document.querySelector('tr.editor [name=other]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
+  check('so keeping it as it is is refused', /needs another posting/.test(await text('status')), await text('status'));
+  await typeIn('2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees    70000 IDR');
+  check('an amount that does not balance is said', /does not balance: its amounts add up to -5,000\.00 IDR/.test(await text('reading')), await text('reading'));
+  await typeIn('2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees');
+  check('and a whole one is read back as it would be written', (await text('reading')) === '2026-09-05: -75,000.00 IDR to Assets:Bank:Checking, against Expenses:Fees.', await text('reading'));
+  await tab.eval("document.querySelector('tr.editor textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))");
   const rows = () => tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].map((tr) => tr.children[2].textContent.trim().split('\\n')[0] + '=' + tr.children[4].textContent.trim()).join(' | ')");
-  check('Enter keeps it: it is ticked, marked new, and placed straight after the posting where they parted, the balances following',
+  check('Ctrl+Enter keeps it: it is ticked, marked new, and placed straight after the posting where they parted, the balances following',
     /Split[^|]*=5,675,000\.00 IDR \| Bank feenew[^|]*=5,600,000\.00 IDR \| Split[^|]*=5,595,000\.00 IDR \| After the statement[^|]*=5,592,500\.00 IDR/.test(await rows()), await rows());
   const feeRow = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Bank fee/.test(tr.textContent))");
   check('and the statement balance typed where they parted moves to it, where it now matches',
     (await cell(feeRow, 6)) === '✓' && (await cell(3, 6)) === '' && (await tab.eval("document.querySelectorAll('#rows tr.first').length")) === 0, `${await cell(feeRow, 6)} / ${await cell(3, 6)}`);
-  // Edit an existing posting: e on the first row, a new amount, kept.
+  // Edit a transaction as text: e on the first row.
   await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.key('j', { code: 'KeyJ', keyCode: 74, text: 'j' });
   await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
   await tab.key('e', { code: 'KeyE', keyCode: 69, text: 'e' });
-  check('e edits the posting in place', (await tab.eval("document.querySelector('tr.editor [name=description]').value")) === 'Coffee'
-    && !(await tab.eval("document.querySelector('tr.editor [name=amount]').disabled")), '');
-  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=amount]').value = '-25,000'; f.querySelector('[name=description]').value = 'Coffee beans'; f.querySelector('[data-keep]').click(); })()");
+  check('e opens the transaction as it is written in the journal', (await area()) === '2026-09-01 * Coffee\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking', JSON.stringify(await area()));
+  await typeIn('2026-09-01 * Coffee beans  ; for the office\n    Expenses:Food:Coffee    25000 IDR\n    Assets:Bank:Checking');
+  check('the reading follows the text, the amount worked out as hledger would', (await text('reading')) === '2026-09-01: -25,000.00 IDR to Assets:Bank:Checking, against Expenses:Food:Coffee.', await text('reading'));
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
   check('an edit changes the amount and every balance after it, and is marked',
     (await cell(0, 3)) === '-25,000.00 IDR' && (await cell(0, 4)) === '975,000.00 IDR' && /Coffee beansedited/.test(await cell(0, 2)) && /1 edit, 1 new/.test(await text('pending')),
     `${await cell(0, 3)} ${await cell(0, 4)} ${await text('pending')}`);
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
-  check('an edited posting can be undone', await tab.eval("!!document.querySelector('tr.editor [data-undo]')"));
+  check('an edit reopens with what was typed, and can be undone', /Coffee beans/.test(await area()) && (await tab.eval("!!document.querySelector('tr.editor [data-undo]')")), '');
   await tab.eval("document.querySelector('tr.editor [data-undo]').click()");
   check('and is as it was', (await cell(0, 3)) === '-21,000.00 IDR', await cell(0, 3));
-  // A posting in a transaction of several cannot have its amount changed here.
+  // A transaction with two postings to the account is edited whole.
   const split = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Split/.test(tr.textContent))");
   await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${split}].querySelector('button[data-edit]').click()`);
-  check('in a transaction of several postings, only the date and description can be changed',
-    (await tab.eval("document.querySelector('tr.editor [name=amount]').disabled")) && !(await tab.eval("document.querySelector('tr.editor [name=description]').disabled")), '');
+  check('a transaction of several postings is edited whole, comments and all', (await area()).includes('    ; a comment line\n    Assets:Bank:Checking    -4000 IDR\n    Assets:Bank:Checking'), JSON.stringify(await area()));
   await tab.key('Escape', { keyCode: 27 });
   check('Escape closes an editor', (await tab.eval("document.querySelectorAll('tr.editor').length")) === 0, '');
-  // n adds a posting; a bad one is refused, and one can be removed.
+  // Emptied, a transaction is deleted, and can be restored.
+  const pendingRow = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Pending transfer/.test(tr.textContent))");
+  await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${pendingRow}].querySelector('button[data-edit]').click()`);
+  await typeIn('');
+  check('emptying the text says it will delete the transaction', /Empty: the transaction will be deleted/.test(await text('reading')), await text('reading'));
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('kept, the transaction leaves the list and is listed to restore', !/Pending transfer/.test(await rows()) && /Deleted: 2026-09-03 Pending transfer/.test(await text('notes')) && /1 deleted/.test(await text('pending')), await text('notes'));
+  await tab.eval("document.querySelector('#notes button[data-restore]').click()");
+  check('and restore brings it back', /Pending transfer/.test(await rows()) && !/deleted/.test(await text('pending')), await text('pending'));
+  // n adds a posting; what it lacks is refused, and it can be removed.
   await tab.key('n', { code: 'KeyN', keyCode: 78, text: 'n' });
-  check('n adds a posting', (await tab.eval("document.querySelectorAll('tr.editor').length")) === 1, '');
-  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=description]').value = ''; f.querySelector('[data-keep]').click(); })()");
-  check('a new posting needs a description', /A description is needed/.test(await text('status')), await text('status'));
-  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=description]').value = 'x'; f.querySelector('[name=amount]').value = ''; f.querySelector('[data-keep]').click(); })()");
-  check('and an amount', /An amount is needed/.test(await text('status')), await text('status'));
-  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=date]').value = ''; f.querySelector('[data-keep]').click(); })()");
-  check('and a date', /A date is needed/.test(await text('status')), await text('status'));
+  check('n adds a posting', (await tab.eval("document.querySelectorAll('tr.editor').length")) === 1 && /^\d{4}-\d{2}-\d{2} \n {4}Assets:Bank:Checking {4}\n {4}$/.test(await area()), JSON.stringify(await area()));
+  await typeIn('');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('an empty new one is refused', /nothing to add/.test(await text('status')), await text('status'));
+  await typeIn('Bank fee\n    Assets:Bank:Checking    -1 IDR\n    Expenses:Fees');
+  check('one without a date line is said as it is typed', /first line needs a date/.test(await text('reading')), await text('reading'));
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('and refused', /first line needs a date/.test(await text('status')), await text('status'));
+  await typeIn('2026-09-05 Not ours\n    Expenses:Fees    1 IDR\n    Assets:Cash');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('and so is one that does not post to the account', /does not post to Assets:Bank:Checking/.test(await text('status')), await text('status'));
+  await typeIn('2026-09-05 Off\n    Assets:Bank:Checking    -1 IDR\n    Expenses:Fees    2 IDR');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('and one that does not balance', /does not balance/.test(await text('status')), await text('status'));
   await tab.eval("document.querySelector('tr.editor [data-close]').click()");
   const fee = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Bank fee/.test(tr.textContent))");
   await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${fee}].querySelector('button[data-edit]').click()`);
+  check('a new one reopens with its text', /Bank fee/.test(await area()), '');
   await tab.eval("document.querySelector('tr.editor [data-drop]').click()");
-  check('a new posting can be removed before it is written', !/Bank fee/.test(await rows()) && !/new/.test(await text('pending')), await text('pending'));
+  check('and can be removed before it is written', !/Bank fee/.test(await rows()) && !/new/.test(await text('pending')), await text('pending'));
   // Save sends the plugin the ticks, edits, new postings and typed balances together.
   await expect(3, '5,600,000');
   await tab.eval("document.querySelector('#hints button[data-add]').click()");
-  await tab.eval("(() => { const f = document.querySelector('tr.editor'); f.querySelector('[name=description]').value = 'Bank fee'; f.querySelector('[name=other]').value = 'Expenses:Fees'; f.querySelector('[data-keep]').click(); })()");
+  await typeIn('2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  await tab.eval("document.querySelector('#rows button[data-edit]').click()");
+  await typeIn('2026-09-01 * Coffee\n    Expenses:Food    21000 IDR  ; checked\n    Assets:Bank:Checking');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
   await tab.eval("document.getElementById('progress').click()");
   await tab.until("!document.getElementById('preview').hidden");
-  check('Save sends the new posting and the typed balances to be written with the marks',
-    await tab.eval("(() => { const r = window.__previewed.pop(); return r.inserts.length === 1 && r.inserts[0].amount === -7500000 && r.inserts[0].other === 'Expenses:Fees' && r.inserts[0].after === '5:Assets:Bank:Checking:0' && Object.keys(r.expected).length === 3 && r.expected[r.inserts[0].id] === 560000000 && !r.finish; })()"), await tab.eval('JSON.stringify(window.__previewed[window.__previewed.length - 1] || window.__lastPreview)'));
+  check('its preview shows the rewritten transaction and the added one', /1 transaction rewritten, 1 transaction added/.test(await text('preview')) && /; checked/.test(await text('preview')) && /after line 24:/.test(await text('preview')),
+    await text('preview'));
+  check('Save sends the new transaction\'s text and the typed balances to be written with the marks',
+    await tab.eval("(() => { const r = window.__previewed.pop(); return r.inserts.length === 1 && /Bank fee/.test(r.inserts[0].text) && r.inserts[0].after === '5:Assets:Bank:Checking:0' && Object.keys(r.expected).length === 3 && r.expected[r.inserts[0].id] === 560000000 && Object.keys(r.edits).length === 1 && !r.finish; })()"),
+    await tab.eval('JSON.stringify(window.__lastPreview)'));
   await tab.eval("document.getElementById('cancel').click()");
   // A hint is followed to its posting.
   await expect(3, '');

@@ -42,7 +42,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, formatHeader, formatPosting, hints, insertText, journalAmount, ordered, parseHeader, parsePosting, parseInput, plan, readPrint, readable, remark, summarize, toMinor } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, formatHeader, formatPosting, hints, journalAmount, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -930,9 +930,9 @@ const TREE_MONTHS = [
     account: 'Assets:Bank', inclusive: false, commodity: 'IDR', others: [], start: { date: '2025-12-31', balance: 30000000, description: 'opening' },
     style: { commodity: 'IDR', side: 'R', spaced: true, decimal: '.', precision: 2 },
     rows: [
-      { id: 'a', date: '2026-01-01', description: 'Buy ABCD', amount: -10000000, status: 'Unmarked', simple: true, other: 'Expenses:Stuff', against: 'Expenses:Stuff', where: {} },
-      { id: 'b', date: '2026-01-01', description: 'Buy food', amount: -5000000, status: 'Unmarked', simple: true, other: 'Expenses:Food', against: 'Expenses:Food', where: {} },
-      { id: 'c', date: '2026-01-01', description: 'Buy drinks', amount: -5000000, status: 'Unmarked', simple: true, other: 'Expenses:Food', against: 'Expenses:Food', where: {} },
+      { id: 'a', date: '2026-01-01', description: 'Buy ABCD', amount: -10000000, status: 'Unmarked', against: 'Expenses:Stuff', where: { file: 'x', first: 1, last: 4, occurrence: 0 } },
+      { id: 'b', date: '2026-01-01', description: 'Buy food', amount: -5000000, status: 'Unmarked', against: 'Expenses:Food', where: { file: 'x', first: 5, last: 8, occurrence: 0 } },
+      { id: 'c', date: '2026-01-01', description: 'Buy drinks', amount: -5000000, status: 'Unmarked', against: 'Expenses:Food', where: { file: 'x', first: 9, last: 12, occurrence: 0 } },
     ],
   };
   const rows = ordered(data);
@@ -947,11 +947,11 @@ const TREE_MONTHS = [
   const extra = partHint(rows, checkpoints(rows, { a: 20000000, c: 15000000 }), data.style);
   check('or points at a posting that is exactly the difference', extra.id === 'b' && /Buy food \(-50,000\.00 IDR\) is exactly that/.test(extra.text), extra.text);
   check('with nothing typed, nothing is said', partHint(rows, checkpoints(rows, {}), data.style) === null, '');
-  const edited = ordered(data, { edits: { b: { amount: -4500000, description: 'Buy food (corrected)' } }, inserts: [{ id: 'new:1', date: '2026-01-01', description: 'Fee', amount: -100000, other: 'Expenses:Fees' }] });
+  const edited = ordered(data, { edits: { b: { text: '2026-01-01 Buy food (corrected)\n    Expenses:Food    45000 IDR\n    Assets:Bank' } }, inserts: [{ id: 'new:1', text: '2026-01-01 Fee\n    Assets:Bank    -1000 IDR\n    Expenses:Fees' }] });
   check('an edit and a new posting change the running balances, the new one after the day\'s others',
     edited.map((row) => `${row.id}:${row.balance}`).join() === 'a:20000000,b:15500000,c:10500000,new:1:10400000' && edited[1].edited && edited[3].inserted,
     edited.map((row) => `${row.id}:${row.balance}`).join());
-  check('and so does the statement difference', summarize({ data, ticked: new Set(['a', 'b', 'c', 'new:1']), statementDate: '2026-01-31', statementBalance: 10400000, edits: { b: { amount: -4500000 } }, inserts: [{ id: 'new:1', date: '2026-01-01', description: 'Fee', amount: -100000, other: 'X' }] }).difference === 0, '');
+  check('and so does the statement difference', summarize({ data, ticked: new Set(['a', 'b', 'c', 'new:1']), statementDate: '2026-01-31', statementBalance: 10400000, edits: { b: { text: '2026-01-01 Buy food\n    Expenses:Food    45000 IDR\n    Assets:Bank' } }, inserts: [{ id: 'new:1', text: '2026-01-01 Fee\n    Assets:Bank    -1000 IDR\n    X' }] }).difference === 0, '');
 }
 
 {
@@ -961,47 +961,63 @@ const TREE_MONTHS = [
   const parts = parsePosting('  * Assets:Bank    -21000 IDR  ; why');
   check('a posting line is read in its parts', parts.mark === '*' && parts.account === 'Assets:Bank' && parts.amount === '-21000 IDR' && parts.comment === '; why'
     && parsePosting('    (Budget:Food)').account === 'Budget:Food' && parsePosting('    ; just a comment') === null, JSON.stringify(parts));
+  check('an account name ends at two spaces or a tab, whatever its length, and keeps its single spaces',
+    parsePosting('    A    5 IDR').account === 'A' && parsePosting('    A    5 IDR').amount === '5 IDR' && parsePosting('    equity:opening balances  -5 IDR').account === 'equity:opening balances'
+    && parsePosting('\tAssets:Bank\t-5 IDR').amount === '-5 IDR' && parsePosting('    [Savings:Goal]    5 IDR').open === '[', JSON.stringify(parsePosting('    A    5 IDR')));
   check('and written back with its amount ending where the transaction\'s others do, its comment kept',
     formatPosting({ ...parts, amount: '-25000.00 IDR' }, 40) === '  * Assets:Bank' + ' '.repeat(40 - 15 - 13) + '-25000.00 IDR  ; why'
     && formatPosting({ ...parsePosting('    Assets:Bank'), mark: '*' }, 0, parsePosting('    Assets:Bank')) === '  * Assets:Bank', formatPosting({ ...parts, amount: '-25000.00 IDR' }, 40));
-  check('a new posting is a transaction of two, the account\'s side carrying the amount and the mark',
-    insertText({ date: '2026-09-05', description: 'Bank fee', amount: -650000, other: 'Expenses:Fees' }, 'Assets:Bank', { commodity: 'IDR', side: 'R', spaced: true, decimal: '.', precision: 2 }, true)
-      === '2026-09-05 Bank fee\n  * Assets:Bank    -6500.00 IDR\n    Expenses:Fees\n', '');
+  const style = { commodity: 'IDR', side: 'R', spaced: true, decimal: '.', precision: 2 };
+  check('a new posting starts from a template: the date, a description to write, the account and its amount',
+    template('2026-09-05', 'Assets:Bank', -650000, style) === '2026-09-05 \n    Assets:Bank    -6500.00 IDR\n    ' && template('2026-09-05', 'Assets:Bank', null, style).endsWith('Assets:Bank    \n    '), '');
+  check('an amount is read as it is written, in the account\'s commodity only',
+    readAmount('-21,000.00 IDR', style) === -2100000 && readAmount('21000 IDR', style) === 2100000 && readAmount('-5 IDR = 100 IDR', style) === -500
+    && readAmount('10 USD @ 15000 IDR', style) === null && readAmount('IDR 5', style) === 500 && readAmount('$5', style) === null && readAmount('', style) === null, '');
+  const typed = readTransaction('2026-09-01 * Coffee and cake  ; c\n    Expenses:Coffee    15000 IDR\n    Expenses:Cake     9000 IDR  ; birthday\n    ; a note\n    Assets:Bank', 'Assets:Bank', style);
+  check('a transaction written by hand is read for the account: date, description, and an amount left out worked out',
+    typed.date === '2026-09-01' && typed.description === 'Coffee and cake' && typed.amount === -2400000 && typed.against === 'Expenses:Coffee, Expenses:Cake', JSON.stringify(typed));
+  check('two amounts left out, or one in another commodity, cannot be worked out without hledger',
+    readTransaction('2026-09-01 x\n    A    5 IDR\n    Assets:Bank\n    B', 'Assets:Bank', style).amount === null
+    && readTransaction('2026-09-01 x\n    A    5 USD\n    Assets:Bank', 'Assets:Bank', style).amount === null
+    && readTransaction('2026-09-01 x\n    A    5 IDR\n    (Budget)    3 IDR\n    Assets:Bank', 'Assets:Bank', style).amount === -500, '');
+  check('a transaction that does not balance, or has one posting, is noticed before hledger',
+    readTransaction('2026-09-01 x\n    A    5 IDR\n    Assets:Bank    -4 IDR', 'Assets:Bank', style).off === 100 && readTransaction('2026-09-01 x\n    Assets:Bank    -4 IDR\n    ', 'Assets:Bank', style).postings === 1
+    && readTransaction('2026-09-01 x\n    A    5 IDR\n    Assets:Bank', 'Assets:Bank', style).off === 0, '');
+  check('and a text with no date line, or no posting to the account, says so', !readTransaction('just words', 'Assets:Bank', style).header && !readTransaction('2026-09-01 x\n    A  1 IDR\n    B', 'Assets:Bank', style).touches, '');
 
   const data = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking');
-  const [coffee, salary, , split] = data.rows;
-  const edits = { [coffee.id]: { amount: -2500000, description: 'Coffee beans', other: 'Expenses:Groceries' }, [salary.id]: { date: '2026-09-04' } };
-  const inserts = [{ id: 'new:1', date: '2026-09-05', description: 'Bank fee', amount: -650000, other: 'Expenses:Fees' }];
+  const [coffee, salary, pending, split, splitTwo] = data.rows;
+  const edits = {
+    [coffee.id]: { text: '2026-09-01 * Coffee and a cake  ; bought together\n    Expenses:Food:Coffee    15000 IDR\n    Expenses:Food:Cake       9000 IDR  ; birthday\n    Assets:Bank:Checking' },
+    [pending.id]: { text: '' },
+  };
+  const inserts = [{ id: 'new:1', after: salary.id, text: '2026-09-02 Transfer fee\n    Assets:Bank:Checking    -6500 IDR\n    Expenses:Fees' }];
   const rowsNow = ordered(data, { edits, inserts });
-  const expected = { [coffee.id]: rowsNow.find((row) => row.id === coffee.id).balance, 'new:1': rowsNow.find((row) => row.id === 'new:1').balance, [split.id]: 1 };
-  const done = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set([coffee.id, salary.id, 'new:1']), edits, inserts, expected });
-  const after = done.files[0].after.split('\n');
-  check('an edit rewrites the header, writes out an inferred amount, and moves the other side with it',
-    after[6] === '2026-09-01 * Coffee beans' && /^ {4}Expenses:Groceries {2,}25000\.00 IDR$/.test(after[7]) && /^ {2}\* Assets:Bank:Checking {2,}-25000\.00 IDR = 975000\.00 IDR$/.test(after[8]),
-    after.slice(6, 9).join(' | '));
-  check('a date edit moves the transaction\'s date and nothing else', after[10] === '2026-09-04 * Salary' && after[11] === '  * Assets:Bank:Checking    5000000.00 IDR', after.slice(10, 12).join(' | '));
-  check('a new posting is appended, ticked and with its typed running balance asserted',
-    done.files[0].appended === '2026-09-05 Bank fee\n  * Assets:Bank:Checking    -6500.00 IDR = 5659500.00 IDR\n    Expenses:Fees\n' && done.asserted === 2,
-    JSON.stringify(done.files[0].appended));
-  check('a typed running balance that does not match is not written', !after.some((line) => line.includes('= 0.01 IDR')) && done.missing.length === 0, '');
-  const complex = plan({ data: { ...data, rows: data.rows.map((row) => (row.id === split.id ? { ...row, simple: false } : row)) }, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), edits: { [split.id]: { amount: -1 } } });
-  check('an amount in a transaction of several postings is not edited, and says why', /only be changed in a transaction of two postings/.test(complex.missing[0].why), JSON.stringify(complex.missing));
-  check('a date is not moved on a posting with a date of its own',
-    /a date of its own/.test(plan({ data: { ...data, rows: data.rows.map((row) => (row.id === coffee.id ? { ...row, ownDate: true } : row)) }, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), edits: { [coffee.id]: { date: '2026-09-02' } } }).missing[0].why), '');
-  const beside = [{ id: 'new:9', date: '2026-09-01', description: 'Card fee', amount: -150000, other: 'Expenses:Fees', after: coffee.id }];
-  const placed = ordered(data, { inserts: beside });
-  check('a posting added beside another is ordered straight after it, as the statement has it',
-    placed[1].id === 'new:9' && placed[1].balance === 97750000 && placed[2].balance === 597750000, placed.map((row) => row.id).join());
-  const besideDone = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(['new:9']), inserts: beside, expected: { 'new:9': 97750000 } });
-  const besideLines = besideDone.files[0].after.split('\n');
-  check('and is written straight after that transaction, its balance asserted, the rest of the file kept',
-    besideLines.slice(9, 13).join('|') === '|2026-09-01 Card fee|  * Assets:Bank:Checking    -1500.00 IDR = 977500.00 IDR|    Expenses:Fees'
-    && besideLines.slice(13).join('\n') === RECONCILE_JOURNAL.split('\n').slice(9).join('\n') && besideDone.files[0].inserted[0].line === 9 && !besideDone.files[0].appended,
-    besideLines.slice(8, 15).join(' | '));
-  check('one added for another day goes to the end instead', ordered(data, { inserts: [{ ...beside[0], date: '2026-09-02' }] })[2].id === 'new:9'
-    && plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), inserts: [{ ...beside[0], date: '2026-09-02' }] }).files[0].appended.startsWith('2026-09-02 Card fee'), '');
-  check('a transaction of two postings is simple, and its other account known', coffee.simple && coffee.other === 'Expenses:Food' && !data.rows[3].simple, JSON.stringify([coffee.simple, coffee.other, data.rows[3].simple]));
+  check('an edited transaction is read from its text, a deleted one is gone, and a new one sits after the posting it was added beside',
+    rowsNow.map((row) => `${row.description}:${row.balance}`).join() === 'Coffee and a cake:97600000,Salary:597600000,Transfer fee:596950000,Split:596550000,Split:596050000,After the statement:595800000',
+    rowsNow.map((row) => `${row.description}:${row.balance}`).join());
+  const expected = { [coffee.id]: rowsNow[0].balance, 'new:1': rowsNow[2].balance, [split.id]: 1 };
+  const done = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set([coffee.id, 'new:1']), edits, inserts, expected });
+  const after = done.files[0].after;
+  check('an edit replaces the transaction\'s lines with its text, the account\'s posting ticked and its worked-out amount asserted',
+    after.includes('2026-09-01 * Coffee and a cake  ; bought together\n    Expenses:Food:Coffee    15000 IDR\n    Expenses:Food:Cake       9000 IDR  ; birthday\n  * Assets:Bank:Checking  -24000.00 IDR = 976000.00 IDR\n') && done.files[0].replaced.length === 2,
+    JSON.stringify(after.split('\n').slice(5, 11)));
+  check('an emptied transaction is deleted, leaving no double blank line', !after.includes('Pending transfer') && !after.includes('\n\n\n'), '');
+  check('a new one is written straight after the transaction it was added beside, ticked and asserted',
+    after.includes('2026-09-02 * Salary\n    Assets:Bank:Checking    5000000.00 IDR\n    Income:Salary\n\n2026-09-02 Transfer fee\n  * Assets:Bank:Checking  -6500 IDR = 5969500.00 IDR\n    Expenses:Fees\n'), JSON.stringify(after.split('\n').slice(10, 18)));
+  check('a typed running balance that does not match is not written', !after.includes('= 0.01 IDR') && done.missing.length === 0 && done.asserted === 2, JSON.stringify(done.missing));
+  const unknown = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), edits: { [coffee.id]: { text: '2026-09-01 x\n    A    5 USD\n    Assets:Bank:Checking' } }, expected: { [coffee.id]: 1 } });
+  check('an edit whose amount cannot be read is written, and its balance not asserted', unknown.files[0].changes.length === 2 && unknown.asserted === 0 && !unknown.missing.length, JSON.stringify(unknown.files[0].changes));
+  check('nor counted: the balances after it are unknown until hledger reads it',
+    ordered(data, { edits: { [coffee.id]: { text: '2026-09-01 x\n    A    5 USD\n    Assets:Bank:Checking' } } }).every((row) => row.balance === null)
+    && summarize({ data, ticked: new Set(), statementDate: '2026-09-30', statementBalance: 0, edits: { [coffee.id]: { text: '2026-09-01 x\n    A    5 USD\n    Assets:Bank:Checking' } } }).difference === null, '');
+  const both = ordered(data, { edits: { [splitTwo.id]: { text: '2026-09-05 * Split\n    Expenses:Food    9000 IDR\n    Assets:Bank:Checking' } } });
+  check('editing one posting of a transaction with two to the account edits it all, as one row', both.filter((row) => row.description === 'Split').length === 1 && both.find((row) => row.description === 'Split').amount === -900000, '');
+  const moved = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL.replace('2026-09-01 * Coffee', 'something else') }, ticked: new Set([coffee.id]) });
+  check('a transaction not where hledger said is reported, not guessed', /not where hledger said/.test(moved.missing[0].why), JSON.stringify(moved.missing));
+  check('a new transaction without a date line is not written', /needs a first line with its date/.test(plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), inserts: [{ id: 'new:2', text: 'no date here' }] }).missing[0].why), '');
 }
+
 
 {
   check('reconcile reads an account and its flags', JSON.stringify(parseLine('mandiri --statement 2026-09-30 --balance "664,092.01"'))
@@ -1095,6 +1111,24 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false }
   check('and the window is handed the account as it is now, with a new fingerprint', right.data.rows.filter((row) => row.status === 'Cleared').length === 5 && right.fingerprint !== shownPrint, '');
   const stale = await link.apply({ ticked: all, finish: null, fingerprint: shownPrint });
   check('a window drawn from an older journal is refused and read again', /changed since this window was drawn/.test(stale.error || '') && stale.data, stale.error);
+}
+
+{
+  // A transaction rewritten as text, and one emptied, through the plugin's own save.
+  const { host, log, files } = reconcileHost();
+  await Reconcile.run('checking', host);
+  const link = Object.values(globalThis.__reconcileBridges).pop();
+  const rows = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking').rows;
+  const edits = {
+    [rows[0].id]: { text: '2026-09-01 * Coffee  ; checked\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking' },
+    [rows[5].id]: { text: '' },
+  };
+  const answer = await link.apply({ ticked: [], finish: null, edits, fingerprint: fingerprint(readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking')) });
+  check('a rewritten and a deleted transaction are written, and said in the terminal',
+    answer.ok && /saved, 1 line changed, 1 deleted/.test(log.said[log.said.length - 1]) && files['fixture.journal'].includes('2026-09-01 * Coffee  ; checked') && !files['fixture.journal'].includes('After the statement'),
+    log.said[log.said.length - 1]);
+  const preview = link.preview({ ticked: [], finish: null, edits: { [rows[3].id]: { text: '2026-09-05 * Split\n    Expenses:Food    9000 IDR\n    Assets:Bank:Checking' } } });
+  check('and a preview lists a transaction whose length changed as rewritten', preview.files[0].replaced.length === 1 && /Split/.test(preview.files[0].replaced[0].after), JSON.stringify(preview.files[0]));
 }
 
 {
