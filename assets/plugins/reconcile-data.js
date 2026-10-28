@@ -184,6 +184,9 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
       status: posting.pstatus && posting.pstatus !== 'Unmarked'
         ? posting.pstatus
         : (transaction.tstatus || 'Unmarked'),
+      // Whether this posting carries a mark of its own, or only inherits its transaction's.
+      // Un-ticking one that only inherited needs a mark of its own to say so.
+      ownMark: Boolean(posting.pstatus && posting.pstatus !== 'Unmarked'),
       generated: (posting.ptags || []).some(([name]) => name === '_generated-posting' || name === 'generated-posting'),
       ownDate: Boolean(posting.pdate),
       simple,
@@ -524,6 +527,18 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
   }
   for (const group of groups.values()) {
     const editedRow = group.find((row) => edits[row.id] && edits[row.id].text != null);
+    /**
+     * The mark to write on a posting the ticks disagree with.
+     *
+     * Ticking writes a cleared mark. Un-ticking removes it, unless the posting had none of its
+     * own and was only cleared by its transaction: removing a mark it never had would leave it
+     * cleared, so Save would report nothing and the row would come back ticked. Pending is
+     * hledger's honest state for that, and it overrides the transaction's mark for this posting.
+     */
+    const markFor = (row) => {
+      if (ticked.has(row.id)) return '*';
+      return row.ownMark ? '' : '!';
+    };
     const marks = editedRow ? (ticked.has(editedRow.id) ? [editedRow] : []) : group.filter((row) => {
       const wanted = ticked.has(row.id) ? 'Cleared' : 'Unmarked';
       return !(row.status === wanted || (wanted === 'Unmarked' && row.status === 'Pending'));
@@ -559,7 +574,7 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
       for (const row of group) {
         const own = ourLines(next, row.account)[row.where.occurrence];
         if (!own) { missing.push({ id: row.id, why: 'its line was not found where hledger said it was' }); next = null; break; }
-        if (marks.includes(row)) next[own.at] = remark(next[own.at], ticked.has(row.id) ? '*' : '');
+        if (marks.includes(row)) next[own.at] = remark(next[own.at], markFor(row));
         if (asserting.has(row.id)) assertOn(next, own.at, row.amount, asserting.get(row.id));
       }
       if (!next) continue;

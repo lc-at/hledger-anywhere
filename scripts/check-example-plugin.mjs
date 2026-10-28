@@ -987,6 +987,16 @@ const TREE_MONTHS = [
   check('a move beside a deletion deletes that transaction and moves only the other',
     !withDelete.after.includes('* Salary') && withDelete.after.includes('2026-09-04 * Coffee')
     && withDelete.replaced.length === 1, JSON.stringify(withDelete.replaced));
+
+  // Un-ticking a posting that was only cleared by its transaction. Removing a mark it never had
+  // would leave it cleared, so Save would report nothing and the row would come back ticked.
+  const clocked = readPrint(RECONCILE_PRINT.map((transaction) => (transaction.tindex === 2 ? { ...transaction, tstatus: 'Cleared' } : transaction)), 'Assets:Bank:Checking');
+  const unticked = written(plan({ data: clocked, texts, ticked: new Set(), finish: null }));
+  check('un-ticking a posting cleared by its transaction writes pending, so it is really not cleared',
+    unticked.changes.length === 1 && unticked.changes[0].before === '    Assets:Bank:Checking'
+    && unticked.changes[0].after === '  ! Assets:Bank:Checking', JSON.stringify(unticked.changes));
+  check('and that mark reads back as pending, so Save and the re-read agree',
+    readPrint([{ ...RECONCILE_PRINT[1], tstatus: 'Cleared', tpostings: RECONCILE_PRINT[1].tpostings.map((posting) => (posting.paccount === 'Assets:Bank:Checking' ? { ...posting, pstatus: 'Pending' } : posting)) }], 'Assets:Bank:Checking').rows[0].status === 'Pending', '');
 }
 
 {
