@@ -42,7 +42,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, formatHeader, formatPosting, hints, journalAmount, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, formatHeader, formatPosting, hints, journalAmount, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -987,6 +987,14 @@ const TREE_MONTHS = [
   check('a move beside a deletion deletes that transaction and moves only the other',
     !withDelete.after.includes('* Salary') && withDelete.after.includes('2026-09-04 * Coffee')
     && withDelete.replaced.length === 1, JSON.stringify(withDelete.replaced));
+
+  // A move must not date a posting before the point the balance was asserted at: the assertion
+  // says what the balance was that day, and a posting before it would be one it failed to count.
+  check('a move may not land before the asserted balance, and later dates are allowed',
+    moveRefusal(data, '2026-08-30') === 'before 2026-08-31, where this account is already asserted'
+    && moveRefusal(data, '2026-08-31') === null && moveRefusal(data, '2026-09-04') === null
+    && moveRefusal(data, '2027-01-01') === null && moveRefusal({ ...data, start: null }, '1999-01-01') === null,
+    `${moveRefusal(data, '2026-08-30')} / ${moveRefusal(data, '2026-08-31')}`);
 
   // Un-ticking a posting that was only cleared by its transaction. Removing a mark it never had
   // would leave it cleared, so Save would report nothing and the row would come back ticked.

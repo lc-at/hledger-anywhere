@@ -15,7 +15,7 @@
  * / searches, Ctrl+Enter keeps an edit, Escape clears the search or closes an editor.
  */
 
-import { checkpoints, hints, ordered, parseInput, readTransaction, readable, summarize, template } from './reconcile-data.js';
+import { checkpoints, hints, moveRefusal, ordered, parseInput, readTransaction, readable, summarize, template } from './reconcile-data.js';
 import { escape, isLight, mix } from './window-kit.js';
 
 /**
@@ -485,6 +485,8 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const row = rows().find((entry) => entry.id === id);
     if (!row || !date || row.date === date) return;
     if (readOnly()) { say('The journal is read-only, so nothing can be written: run open in the terminal to edit it.', true); return; }
+    const refused = moveRefusal(state.data, date);
+    if (refused) { say(`Cannot move it to ${date}: it is ${refused}.`, true); return; }
     if (id.startsWith('new:')) { say('A new posting takes its date from its text. Edit it to change the date.', true); return; }
     // Every row of the transaction moves with it, so one transaction cannot end up on two dates.
     // Moved back to the day it was written on, it is not a change at all.
@@ -602,12 +604,19 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const tr = event.target.closest('tr[data-id]');
     if (!tr) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    for (const other of $('rows').children) other.classList.toggle('drop', other === tr);
     const row = shown.find((entry) => entry.id === tr.dataset.id);
     const from = shown.find((entry) => entry.id === dragging);
-    if (row && from && row.date !== from.date) say(`move to ${row.date}`);
-    else if (row) say(`${row.date}, the date it already has`);
+    const refused = row ? moveRefusal(state.data, row.date) : null;
+    // The cursor says no on a target that will not take it, and the line under the table says why.
+    event.dataTransfer.dropEffect = refused ? 'none' : 'move';
+    for (const other of $('rows').children) other.classList.toggle('drop', other === tr && !refused);
+    if (row && refused) {
+      say(`cannot move to ${row.date}: it is ${refused}`, true);
+    } else if (row && from && row.date !== from.date) {
+      say(`move to ${row.date}`);
+    } else if (row) {
+      say(`${row.date}, the date it already has`);
+    }
   });
   $('rows').addEventListener('dragleave', (event) => {
     const tr = event.target.closest('tr[data-id]');

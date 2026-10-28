@@ -63,6 +63,16 @@ for (const row of RECONCILE_DATA_MARKED.rows) {
   row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
 }
 
+// The same journal with one transaction dated before the balance was asserted, which the editor
+// can produce and which a move must then refuse to aim at.
+const RECONCILE_PRINT_EARLY = RECONCILE_PRINT.map((transaction) => (
+  transaction.tindex === 2 ? { ...transaction, tdate: '2026-08-01' } : transaction
+));
+const RECONCILE_DATA_EARLY = readReconcile(RECONCILE_PRINT_EARLY, 'Assets:Bank:Checking');
+for (const row of RECONCILE_DATA_EARLY.rows) {
+  row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
+}
+
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
 const MEASURED = ['reconcile.js', 'reconcile-data.js', 'reconcile-window.js', 'chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
 /** The least each measured file's code may be executed, as a share of its source. */
@@ -225,7 +235,7 @@ function serve() {
       response.writeHead(200, { 'content-type': types['.html'] });
       const theme = url.searchParams.get('theme');
       response.end(reconcilePage({
-        data: url.searchParams.get('marked') ? RECONCILE_DATA_MARKED : RECONCILE_DATA,
+        data: url.searchParams.get('early') ? RECONCILE_DATA_EARLY : url.searchParams.get('marked') ? RECONCILE_DATA_MARKED : RECONCILE_DATA,
         colors: theme === 'dark' ? DARK : COLORS, token: 'check',
         files: [{ path: 'fixture.journal', writable: url.searchParams.get('writable') !== 'no' }],
         statementDate: '2026-09-30', statementBalance: url.searchParams.get('balance') || '', fingerprint: 'before',
@@ -1190,6 +1200,49 @@ async function reconcileMoving(tab) {
   })()`);
   check('Alt+Down moves the focused transaction to the next day with postings, and says where',
     keys.dates[0] === '2026-09-02' && /^Moved Coffee to 2026-09-02/.test(keys.status), JSON.stringify(keys));
+  // A transaction may be dated before the asserted balance, by the editor if nothing else, and
+  // dragging another onto it must then be refused: the assertion says what the balance was that
+  // day, so a posting before it is one the assertion did not count.
+  await tab.show('reconcile', 'dark', '&early=yes');
+  const guard = await tab.eval(`(() => {
+    const rows = [...document.querySelectorAll('#rows tr[data-id]')];
+    const dateOf = (tr) => tr.querySelector('td.date').textContent;
+    const early = rows.find((tr) => dateOf(tr) === '2026-08-01');
+    const other = rows.find((tr) => dateOf(tr) === '2026-09-02');
+    const box = new DataTransfer();
+    const fire = (node, type) => node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: box }));
+    fire(other, 'dragstart');
+    fire(early, 'dragover');
+    const over = {
+      said: document.getElementById('status').textContent,
+      lit: document.querySelectorAll('#rows tr.drop').length,
+      effect: box.dropEffect,
+      dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent),
+    };
+    fire(early, 'drop');
+    return { ...over, after: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent) };
+  })()`);
+  check('a drop before the asserted balance is refused, says why, and the row does not move',
+    /^cannot move to 2026-08-01: it is before 2026-08-31, where this account is already asserted$/.test(guard.said)
+    && guard.lit === 0 && guard.effect === 'none'
+    && JSON.stringify(guard.after) === JSON.stringify(guard.dates), JSON.stringify(guard));
+  // Later dates are allowed: the statement date is a filter, not a wall.
+  const later = await tab.eval(`(() => {
+    const rows = [...document.querySelectorAll('#rows tr[data-id]')];
+    const dateOf = (tr) => tr.querySelector('td.date').textContent;
+    const from = rows.find((tr) => dateOf(tr) === '2026-09-03');
+    const to = rows.find((tr) => dateOf(tr) === '2026-10-02');
+    const box = new DataTransfer();
+    const fire = (node, type) => node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: box }));
+    fire(from, 'dragstart');
+    fire(to, 'dragover');
+    fire(to, 'drop');
+    return { dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent), said: document.getElementById('status').textContent };
+  })()`);
+  check('and a move past the statement date is allowed, since Finish simply waits',
+    /^Moved Pending transfer to 2026-10-02/.test(later.said) && later.dates.filter((date) => date === '2026-10-02').length === 2,
+    JSON.stringify(later));
+
   // Read-only: the drag cannot start and the keyboard refuses with the message Save uses.
   await tab.show('reconcile', 'dark', '&writable=no');
   const locked = await tab.eval(`(() => {

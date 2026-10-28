@@ -268,6 +268,23 @@ export function ordered(data, { edits = {}, inserts = [], moved = {} } = {}) {
   return rows;
 }
 
+/**
+ * Why `date` is not a date this account's transactions can be moved to, or null if it is.
+ *
+ * A move rewrites a transaction's date, so it can put a posting anywhere in time. Before the
+ * point the account's balance was last asserted is the one place it must not go: the assertion
+ * says what the balance was on that day, and a posting dated before it would be a posting the
+ * assertion failed to count, so the running balances and the Finish arithmetic would disagree
+ * with the window. Later is allowed. A date after the statement date is simply not counted until
+ * the statement date moves past it, which the window already says, and a date in the future is a
+ * transaction hledger is happy to hold.
+ */
+export function moveRefusal(data, date) {
+  const start = data.start ? data.start.date : null;
+  if (start && date < start) return `before ${start}, where this account is already asserted`;
+  return null;
+}
+
 /** Which transaction a row is in: its file and first line. */
 function transactionOf(row) {
   return `${row.where.file}:${row.where.first}`;
