@@ -11,7 +11,8 @@ app says so when you add one.
 
 One repository is bundled and installed at every start, so it needs no installing at all:
 [`assets/plugins`](../assets/plugins), whose `chart` plugin opens each chart in a window of
-its own, whose `edit` plugin opens an editor, and which carries the colour themes. Read it as the worked example of
+its own, whose `edit` plugin opens an editor, whose `reconcile` plugin checks an account
+against a statement, and which carries the colour themes. Read it as the worked example of
 everything below. Anything you add yourself works exactly the same way:
 
 ```
@@ -23,14 +24,8 @@ Being bundled means the app provides it, not that it is part of the core: `plugi
 with everything else, and removing it works until the next visit, when the app installs it
 again and says so.
 
-## What a plugin is
-
-A plugin is code running in the app's own page, with the same reach as the page itself.
-That is what makes it able to draw, fetch and open windows, and it is why installing a
-repository is trusting it. Install repositories you would run code from.
-
-Plugins are read-only in the same sense the app is: the API below cannot change a
-journal, and neither can anything built on it.
+The API below cannot change a journal, and neither can anything built on it: only files
+an `open` granted can be written, through `host.save`.
 
 ## The repository manifest
 
@@ -120,7 +115,7 @@ promise, is reported as the plugin failing.
 | `host.remember(key, value)` | Remembers it, in the app's settings. |
 | `host.files()` | The loaded files, as an array of `{path, writable, main}`. `writable` is true only for files that came from an `open`ed folder; `main` marks the journal hledger reads. |
 | `host.read(path)` | One loaded file's contents, or `null`. |
-| `host.save(path, contents)` | Writes a file back to the folder an `open` granted. Resolves with `{ok: true}` or `{error: "..."}` — it never rejects. Refuses if the file changed on disk since it was opened. |
+| `host.save(path, contents)` | Writes a file back to the folder an `open` granted. Resolves with `{ok: true}` or `{error: "..."}`, and never rejects. Refuses if the file changed on disk since it was opened. |
 
 `host.hledger` accepts anything the command line accepts, and is bound by the same rules:
 `add` and `import` are refused, and `-o` may not write over a loaded file. A command that
@@ -132,43 +127,33 @@ visitor granted write access to with `open`: everything else is read-only, and a
 a read-only path reports an error rather than writing somewhere the app has no handle
 for.
 
-Two things worth knowing:
+Four things worth knowing:
 
-- **A window is a blank document until you write to it.** Opening it early and writing
-  "loading" is better than a window that appears with nothing in it; `chart` in
-  [`assets/plugins`](../assets/plugins) does exactly that, and then writes the real page.
-- **`host.colors()` makes a window look like the app.** The bundled chart plugin uses it for
-  its background, its text, its bars and its gridlines, so it is gruvbox when the terminal
-  is gruvbox and cream when the terminal is cream.
-
-- **`-O csv` is usually what you want.** It is the only hledger output that keeps
-  accounts, periods and amounts apart without parsing a laid-out table.
 - **Open the window before you await anything.** A window opened after an `await` is
   blocked by the browser, which is why `host.window` returns a handle to fill in later.
+- **A window is a blank document until you write to it.** Open it early, write "loading",
+  then write the real page. `chart` does exactly that.
+- **`host.colors()` makes a window look like the app**, so it is gruvbox when the terminal
+  is gruvbox and cream when it is cream.
+- **`-O csv` is usually what you want.** It is the only hledger output that keeps accounts,
+  periods and amounts apart without parsing a laid-out table.
 
-## What the bundled plugin shows
+## What the bundled plugins show
 
-[`assets/plugins/chart.js`](../assets/plugins/chart.js) is the worked example: a window of its
-own, drawn with `host.window`, `host.hledger` and `host.colors`. Three techniques in it are
-worth copying:
+[`assets/plugins/chart.js`](../assets/plugins/chart.js) is the worked example of a window:
+`host.window`, `host.hledger` and `host.colors`. Three techniques in it are worth copying.
 
-- **Two modules.** The plugin decides *what to ask hledger*; `chart-window.js` decides *what to
-  draw*. The plugin imports the drawing to write the first page, and the window imports the
-  same file to redraw, so a chart type is one function from data to markup and both sides agree.
-- **Draw the first chart into the page**, rather than leaving it to the script. A window that
-  shows nothing until a module loads shows nothing if the module does not.
+- **Two modules.** The plugin decides what to ask hledger; `chart-window.js` decides what to
+  draw. Both import the same file, so a chart type is one function from data to markup.
 - **A window can ask for more.** The plugin leaves a function on the opener
-  (`window.__chartBridges[token]`) that runs another hledger command and returns the parsed
-  result, and the page carries its token. That is how clicking a mark charts its account on
-  its own, without the window needing an API of its own.
-- **Vendor what the window needs.** The chart window loads D3 from `vendor/d3/` beside the
-  plugin, by absolute URL built from `import.meta.url`. A window is a `blob:` document, so a
-  relative path in it resolves against nothing, and a repository may live anywhere: everything
-  the window needs travels with the plugin that opens it.
-- **Give the keyboard what the pointer has.** Every mark in a chart window that stands for an
-  account or a day can be reached with Tab and opened with Enter, and the keys are written
-  under the chart. A window with no
-  controls still has to be usable without a mouse.
+  (`window.__chartBridges[token]`) that runs another command, and the page carries the
+  token. That is how clicking a mark charts its account without the window having an API.
+- **Vendor what the window needs.** A window is a `blob:` document, so relative paths
+  resolve against nothing. The chart window loads D3 by an absolute URL built from
+  `import.meta.url`, so everything travels with the plugin that opens it.
+- **Give the keyboard what the pointer has.** Every mark that stands for an account or a
+  day can be reached with Tab and opened with Enter, and the keys are written under the
+  chart. A window with no controls still has to be usable without a mouse.
 
 ## Colour themes
 
