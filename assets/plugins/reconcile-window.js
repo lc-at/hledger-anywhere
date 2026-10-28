@@ -84,6 +84,9 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th { text-align:left; color:${colors.dim}; font-weight:400; border-bottom:1px solid ${colors.dim}55; padding:4px 6px; position:sticky; top:0; background:${colors.background}; z-index:1; }
   td { padding:4px 6px; border-bottom:1px solid ${colors.dim}22; vertical-align:top; }
+  /* Where the day changes, a heavier rule than the hairline between postings. Drawn on the cells
+     rather than the row, since a table row's own border does not paint in border-collapse mode. */
+  tr.day td { border-top:2px solid ${colors.dim}88; }
   td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   td.tick { width:24px; text-align:center; }
   /* A date on two lines costs a row twice the height and reads worse. */
@@ -143,7 +146,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div id="status" role="status"></div>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
-  <div class="table"><table><thead><tr><th class="tick" aria-label="ticked"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <div class="table"><table><thead><tr><th class="tick" aria-label="cleared" title="a ticked line is cleared: Save writes the mark"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
   <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks all shown · / searches</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
@@ -220,7 +223,7 @@ export function mount(root = document) {
     const cell = (name, value, extra = '', hint = '') => `<div class="${extra}"${hint ? ` title="${escape(hint)}"` : ''}><span>${name}</span><b>${escape(value)}</b></div>`;
     $('sums').innerHTML = [
       cell('Opening', money(now.opening), '', 'the balance this account was last proven to have'),
-      cell(`Ticked (${now.tickedCount})`, money(now.tickedTotal), '', 'the ticked postings added up'),
+      cell(`Cleared (${now.tickedCount})`, money(now.tickedTotal), '', 'the lines ticked as cleared, added up; Save writes the cleared mark on each'),
       cell('Journal', money(now.expected), '', 'opening plus the ticked postings: what the journal says you have'),
       cell('Statement', balance == null ? 'type it above' : money(balance), '', 'the closing balance you typed'),
       cell('Difference', now.difference == null ? '-' : money(now.difference), `difference${now.difference === 0 ? ' zero' : ''}`, 'statement less journal: zero when they agree'),
@@ -305,7 +308,7 @@ export function mount(root = document) {
     const deleted = Object.values(edits).filter((edit) => !edit.text.trim()).length;
     const changed = Object.keys(edits).length - deleted;
     const parts = [
-      marks && `${marks} mark${marks === 1 ? '' : 's'}`,
+      marks && `${marks} to clear`,
       changed && `${changed} edit${changed === 1 ? '' : 's'}`,
       deleted && `${deleted} deleted`,
       inserts.length && `${inserts.length} new`,
@@ -322,12 +325,12 @@ export function mount(root = document) {
     $('sub').textContent = `${data.rows.length} postings in ${data.commodity || 'its commodity'}, ${since}${others}. ${files}`;
   }
 
-  function rowHtml(row, later) {
+  function rowHtml(row, later, newDay = false) {
     const point = expected[row.id] != null && row.balance != null ? expected[row.id] - row.balance : null;
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
     const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
-    return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}" aria-selected="${ticked.has(row.id)}">
+    return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
 <td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${escape(row.date)}</td>
 <td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">${PENCIL}</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
@@ -378,8 +381,13 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (editing && editing.startsWith('new:') && !inserts.some((insert) => insert.id === editing)) {
       html.push(editorHtml({ id: editing, inserted: true, text: drafting || template(statement().date || state.statementDate, state.data.account, null, style()) }));
     }
+    // A day boundary gets a heavier rule than the hairline between postings, so the eye can
+    // find where one day's postings end. It is decided here, where the order is known, rather
+    // than guessed at in CSS.
+    let previous = null;
     for (const row of shown) {
-      html.push(rowHtml(row, date && row.date > date));
+      html.push(rowHtml(row, date && row.date > date, previous !== null && row.date !== previous));
+      previous = row.date;
       if (editing === row.id) html.push(editorHtml(row));
     }
     $('rows').innerHTML = html.join('');

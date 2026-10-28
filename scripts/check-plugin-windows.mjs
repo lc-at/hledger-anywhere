@@ -1027,6 +1027,30 @@ async function reconciling(tab) {
       `${await text('sub')} ${tab.errors.join(' | ')}`);
   }
   check('it opens at the opening balance, asking for the statement', /Opening\s*1,000,000\.00 IDR/i.test(await text('sums')) && /Statement\s*type it above/i.test(await text('sums')), await text('sums'));
+  // Where one day's postings end and the next begin, a heavier rule than the hairline between
+  // postings, so the eye can find the day boundaries in a long list.
+  const days = await tab.eval(`(() => {
+    const trs = [...document.querySelectorAll('#rows tr[data-id]')];
+    const marked = trs.map((tr, at) => ({ date: tr.querySelector('td.date').textContent, day: tr.classList.contains('day'), at }));
+    const first = trs[0].querySelector('td');
+    const boundary = trs.find((tr) => tr.classList.contains('day'));
+    return {
+      dates: marked.map((entry) => entry.date),
+      markedAt: marked.filter((entry) => entry.day).map((entry) => entry.at),
+      firstIsMarked: marked[0].day,
+      boundaryTop: boundary ? parseFloat(getComputedStyle(boundary.querySelector('td')).borderTopWidth) : 0,
+      ordinaryTop: parseFloat(getComputedStyle(trs[0].querySelector('td')).borderTopWidth),
+    };
+  })()`);
+  check('a heavier rule marks where the day changes, and not before the first row',
+    JSON.stringify(days.markedAt) === JSON.stringify([1, 2, 3, 5]) && days.firstIsMarked === false, JSON.stringify(days));
+  check('and it is visibly heavier than the ordinary hairline',
+    days.boundaryTop > days.ordinaryTop && days.boundaryTop >= 2, `${days.boundaryTop} vs ${days.ordinaryTop}`);
+  // Ticking a line is what cleared means: the count and the summary say so in hledger's word.
+  check('the column and the summary are the cleared ones, not a private word for them',
+    (await tab.eval("document.querySelector('thead th').getAttribute('aria-label')")) === 'cleared'
+    && /cleared \(0\)/i.test(await text('sums')), await text('sums'));
+
   // Someone opening this for the first time sees a table and empty boxes, so the one thing to
   // do first is said out loud, and the cursor is already where that happens.
   check('opening it says what to do first, and puts the cursor there',
@@ -1085,7 +1109,7 @@ async function reconciling(tab) {
   check('with everything written, there is nothing left to save', (await tab.eval("document.getElementById('progress').disabled")) && (await text('pending')) === '', await text('pending'));
   await tab.eval("window.__refuse = 'hledger refused the result, so the files were put back as they were: Balance assertion failed'");
   await tickRow(0);
-  check('and a change says so beside Save', /unsaved: 1 mark/.test(await text('pending')), await text('pending'));
+  check('and a change says so beside Save', /unsaved: 1 to clear/.test(await text('pending')), await text('pending'));
   await tab.eval("document.getElementById('progress').click()");
   await tab.until("!document.getElementById('preview').hidden");
   await tab.eval("document.getElementById('apply').click()");
