@@ -3,10 +3,9 @@
 
     python3 scripts/make-icons.py
 
-A terminal prompt: an amber chevron and an underscore on black, the same colours
-the terminal itself uses. Drawn rather than exported so the icons can be
-regenerated if the palette ever changes, and kept simple enough to stay legible at
-16 pixels, which is where a favicon actually lives.
+A ledger: three entry rules with a rule under the last one, white on black. Black
+and white rather than the terminal's accent, so the mark does not change meaning
+when the theme does. Drawn rather than exported, so it can be redrawn at every size.
 
 Outputs into assets/icons/, which Trunk copies to /icons/:
 
@@ -19,66 +18,89 @@ Outputs into assets/icons/, which Trunk copies to /icons/:
 from PIL import Image, ImageDraw
 
 BACKGROUND = (0, 0, 0)
-ACCENT = (255, 159, 28)  # --term-accent
+INK = (255, 255, 255)
 
 # The mark sits inside the middle 80%, so the same file works as a maskable icon
 # on Android without its corners being cropped.
 INSET = 0.20
 
+# The mark, in fractions of its own box: two entries, then a total under a rule.
+# Each entry is a long "account" bar and a short "amount" bar on the right. Two
+# entries rather than three, so the gaps survive a 16 pixel favicon.
+ROWS = (0.00, 0.30)
+AMOUNT_LEFT = 0.70
+RULE_TOP = 0.62
+TOTAL_TOP = 0.84
+TOTAL_LEFT = 0.42
+
 
 def draw(size: int) -> Image.Image:
     image = Image.new("RGB", (size, size), BACKGROUND)
-    draw = ImageDraw.Draw(image)
+    pen = ImageDraw.Draw(image)
 
+    box = size - 2 * INSET * size
     left = INSET * size
-    right = size - INSET * size
-    # Fractions of the box, so every size is the same mark rather than a redraw.
-    width = max(2, int(size * 0.075))
+    # Bars are at least one pixel, so the mark survives a 16 pixel favicon.
+    thick = max(1, round(box * 0.16))
 
-    # The chevron: two strokes meeting in the middle of its own box.
-    chevron_right = left + (right - left) * 0.42
-    middle = (left + right) / 2
-    draw.line([(left, left), (chevron_right, middle)], fill=ACCENT, width=width, joint="curve")
-    draw.line([(chevron_right, middle), (left, right)], fill=ACCENT, width=width, joint="curve")
+    def bar(x0: float, x1: float, top: float) -> None:
+        y = left + box * top
+        pen.rectangle(
+            [(left + box * x0, y), (left + box * x1 - 1, y + thick - 1)],
+            fill=INK,
+        )
 
-    # The underscore beside it.
-    bar_top = right - width
-    draw.rectangle(
-        [(left + (right - left) * 0.62, bar_top), (right, right)],
-        fill=ACCENT,
-    )
+    for row in ROWS:
+        bar(0.0, 0.52, row)
+        bar(AMOUNT_LEFT, 1.0, row)
+    # The rule, thinner than a bar, and the total sitting under it.
+    rule = max(1, round(thick * 0.5))
+    y = left + box * RULE_TOP
+    pen.rectangle([(left, y), (left + box - 1, y + rule - 1)], fill=INK)
+    bar(TOTAL_LEFT, 1.0, TOTAL_TOP)
     return image
 
 
 def svg() -> str:
     """The same mark as the PNGs, in a 100-unit box."""
     left = INSET * 100
-    right = 100 - INSET * 100
-    width = 8
-    chevron_right = left + (right - left) * 0.42
-    middle = (left + right) / 2
-    bar_left = left + (right - left) * 0.62
-    bar_top = right - width
-    amber = "#ff9f1c"
+    box = 100 - 2 * INSET * 100
+    thick = box * 0.16
+    rule = thick * 0.5
+
+    bars = []
+
+    def bar(x0: float, x1: float, top: float, height: float) -> None:
+        bars.append(
+            f'    <rect x="{left + box * x0:.1f}" y="{left + box * top:.1f}" '
+            f'width="{box * (x1 - x0):.1f}" height="{height:.1f}"/>'
+        )
+
+    for row in ROWS:
+        bar(0.0, 0.52, row, thick)
+        bar(AMOUNT_LEFT, 1.0, row, thick)
+    bar(0.0, 1.0, RULE_TOP, rule)
+    bar(TOTAL_LEFT, 1.0, TOTAL_TOP, thick)
+    shapes = "\n".join(bars)
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="hledger-anywhere">
   <rect width="100" height="100" rx="22" fill="#000000"/>
-  <path d="M{left:.1f},{left:.1f} L{chevron_right:.1f},{middle:.1f} L{left:.1f},{right:.1f}"
-        fill="none" stroke="{amber}" stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="{bar_left:.1f}" y="{bar_top:.1f}" width="{right - bar_left:.1f}" height="{width}" fill="{amber}"/>
+  <g fill="#ffffff">
+{shapes}
+  </g>
 </svg>
 """
 
 
 def main() -> None:
-    for size in (16, 32, 48, 180, 192, 512):
-        name = {
-            16: "favicon-16.png",
-            32: "favicon-32.png",
-            48: "favicon-48.png",
-            180: "apple-touch-icon.png",
-            192: "icon-192.png",
-            512: "icon-512.png",
-        }[size]
+    names = {
+        16: "favicon-16.png",
+        32: "favicon-32.png",
+        48: "favicon-48.png",
+        180: "apple-touch-icon.png",
+        192: "icon-192.png",
+        512: "icon-512.png",
+    }
+    for size, name in names.items():
         path = f"assets/icons/{name}"
         draw(size).save(path, "PNG", optimize=True)
         print(f"wrote {path}")

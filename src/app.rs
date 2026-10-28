@@ -317,15 +317,24 @@ impl App {
     /// line is live: without clearing it first, a message would be appended to
     /// what the user is typing.
     fn announce(&self, text: &str) {
-        self.remember_chatter(text);
+        let text = self.wrapped(text);
+        self.remember_chatter(&text);
         self.screen.write("\r\u{1b}[K");
-        self.screen.write(&terminal::to_terminal_text(text));
+        self.screen.write(&terminal::to_terminal_text(&text));
         if !text.ends_with('\n') {
             self.screen.write("\r\n");
         }
         if !self.busy.get() {
             self.prompt();
         }
+    }
+
+    /// The app's own words, broken to fit the terminal.
+    ///
+    /// hledger laid its reports out itself, so they go straight to the screen and never
+    /// come through here: wrapping one would break its columns.
+    fn wrapped(&self, text: &str) -> String {
+        terminal::wrap_to(text, self.columns())
     }
 
     /// What the prompt says right now: the journal being read, then `$ `.
@@ -481,7 +490,7 @@ impl App {
     /// Print the app's own words: not searchable, because they are not what the
     /// user asked to see.
     fn say(&self, text: &str) {
-        self.remember_chatter(text);
+        self.remember_chatter(&self.wrapped(text));
         self.block(text, None);
     }
 
@@ -511,7 +520,7 @@ impl App {
 
     /// Print a block, in `style` when given.
     fn block(&self, text: &str, style: Option<&str>) {
-        let text = terminal::to_terminal_text(text);
+        let text = terminal::to_terminal_text(&self.wrapped(text));
         if let Some(style) = style {
             self.screen.write(style);
         }
@@ -834,8 +843,8 @@ impl App {
         let Some(line) = taken else {
             // An empty line is a command too, and the one a terminal is most
             // often given: it prints a fresh prompt line, as a shell does.
-            // Redrawing in place would be invisible, the prompt is already there
-            //, so pressing Enter appeared to do nothing.
+            // Redrawing in place would be invisible, the prompt is already there,
+            // so pressing Enter appeared to do nothing.
             self.screen.write("\r\n");
             self.prompt();
             return;
@@ -1102,7 +1111,7 @@ impl App {
     /// Take back the folder an earlier `open` was granted.
     ///
     /// A reload leaves the stored handle in place but the browser drops its write
-    /// permission back to "ask", and asking needs a gesture — so this is the
+    /// permission back to "ask", and asking needs a gesture, so this is the
     /// gesture. The request goes out synchronously, from the command the keystroke
     /// produced, for the same reason the folder picker does.
     fn reopen(self: &Rc<App>) {
@@ -1366,7 +1375,7 @@ impl App {
     /// Run a plugin command, in the page, with the app's own API.
     ///
     /// The plugin decides what happens. The app lends it a way to run hledger, a way to
-    /// print, its own settings, and — through `files`/`read`/`save` — read and write the
+    /// print, its own settings, and (through `files`/`read`/`save`) read and write the
     /// files an `open` made editable.
     fn run_plugin(self: &Rc<App>, plugin: plugins::PluginInfo, line: &str) {
         let (_, arguments) = terminal::split_first_token(line);
@@ -1502,7 +1511,7 @@ impl App {
         read.forget();
 
         // save(path, contents): write one loaded file back to the folder it came
-        // from. Resolves with `{ok: true}` or `{error: "..."}` — never rejects, so
+        // from. Resolves with `{ok: true}` or `{error: "..."}` and never rejects, so
         // a plugin reads a single shape.
         let app = Rc::clone(self);
         let save = Closure::<dyn FnMut(String, String) -> Promise>::new(
@@ -2599,8 +2608,8 @@ async fn boot(app: Rc<App>) {
 
             // A folder opened on a previous visit: if the browser still grants
             // write access, read it fresh from disk so it is editable again.
-            // Usually it does not — a reload drops the permission back to "ask",
-            // and only a gesture can restore it — so the handle is kept for
+            // Usually it does not: a reload drops the permission back to "ask",
+            // and only a gesture can restore it, so the handle is kept for
             // `reopen` and the terminal says so.
             if let Some(root) = handle {
                 if fs_access::query_write(&root).await
@@ -2634,9 +2643,10 @@ async fn boot(app: Rc<App>) {
         }
     }
 
-    app.screen.write(&terminal::to_terminal_text(&terminal::welcome(
-        &crate::hledger_info::describe(),
-    )));
+    let columns = app.columns();
+    let banner = terminal::welcome(&crate::hledger_info::describe(), columns);
+    app.screen
+        .write(&terminal::to_terminal_text(&terminal::wrap_to(&banner, columns)));
     app.say(&state);
 
     // Compile the engine now, so the first real command is not the thing waiting

@@ -35,9 +35,14 @@ body.drop-target #terminal {
   outline-offset: -2px;
 }
 
+/* A little air between the text and the window edge; without it the first column
+ * of text sits against the glass. The space is an inset on this element rather than
+ * padding inside it: the fit addon measures this box to work out how many columns
+ * fit, so padding would be handed back as columns and the terminal would overflow.
+ * The body behind it is already the terminal's background, so the air is invisible. */
 #terminal {
   position: fixed;
-  inset: 0;
+  inset: 10px 12px;
   background: var(--term-bg);
 }
 

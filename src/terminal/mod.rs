@@ -8,7 +8,7 @@
 
 // Natively this module exists for its tests: the only code that uses it is
 // wasm-gated, so its items look unused to `cargo test`'s build.
-#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#![cfg_attr(not(target_arch = "wasm32"), allow(dead_code, unused_imports))]
 
 #[cfg(target_arch = "wasm32")]
 pub mod view;
@@ -29,89 +29,6 @@ pub const DEFAULT_FONT: u32 = 14;
 // that backticks and capitals were carrying, in the form a terminal user already
 // reads without thinking about it.
 
-/// Bold. Used for anything the user can type.
-const BOLD: &str = "\u{1b}[1m";
-/// Dim, as the app ships with it: faint, in the terminal's own foreground colour.
-const DEFAULT_DIM: &str = "\u{1b}[2m";
-/// Red, for failures.
-pub const RED: &str = "\u{1b}[31m";
-/// Dim red, for the exit status of a command that failed.
-pub const DIM_RED: &str = "\u{1b}[2;31m";
-/// The accent colour the rest of the interface uses, as a 256-colour amber.
-pub const DEFAULT_ACCENT: &str = "\u{1b}[38;5;214m";
-/// Back to normal.
-pub const RESET: &str = "\u{1b}[0m";
-
-thread_local! {
-    /// The escapes the app writes its own accent and asides in.
-    ///
-    /// A theme replaces these. They live here rather than being passed to every message
-    /// function, because none of those functions care where the colour came from, and
-    /// threading a theme through all of them would be noise.
-    static STYLE: std::cell::RefCell<(String, String)> =
-        std::cell::RefCell::new((DEFAULT_ACCENT.to_string(), DEFAULT_DIM.to_string()));
-}
-
-/// Paint the app's own text in a theme's colours.
-///
-/// Both arguments are the escape that starts the colour, so a theme can be any colour a
-/// terminal understands, not only the ones this file knows how to build.
-pub fn set_style(accent: String, dim: String) {
-    STYLE.with(|style| *style.borrow_mut() = (accent, dim));
-}
-
-/// The escape that starts the app's accent colour, for a whole line of its own.
-pub fn accent_escape() -> String {
-    STYLE.with(|style| style.borrow().0.clone())
-}
-
-/// The escape that starts the app's dim colour, for a whole line of its own.
-pub fn dim_escape() -> String {
-    STYLE.with(|style| style.borrow().1.clone())
-}
-
-/// A command, or any other text worth the user's eye.
-pub fn bold(text: &str) -> String {
-    format!("{BOLD}{text}{RESET}")
-}
-
-/// An aside: how to use something, or what just happened.
-pub fn dim(text: &str) -> String {
-    format!("{}{text}{RESET}", dim_escape())
-}
-
-/// The accent colour, for the prompt's marker and little else.
-pub fn accent(text: &str) -> String {
-    format!("{}{text}{RESET}", accent_escape())
-}
-
-/// What a line looks like once the terminal has rendered it.
-///
-/// The app records what it printed so that searching the scrollback can skip its own
-/// messages. Those records have to be the *visible* text, because that is what
-/// xterm's buffer holds: an escape sequence in the record would never match the
-/// screen and the messages would start being searchable again.
-pub fn plain(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut characters = text.chars().peekable();
-    while let Some(character) = characters.next() {
-        if character != '\u{1b}' {
-            out.push(character);
-            continue;
-        }
-        // CSI: parameters and intermediates, then a final byte in @ to ~. Anything
-        // else after an escape is a two-character sequence, which is dropped too.
-        if let Some('[') = characters.next() {
-            for next in characters.by_ref() {
-                if ('\u{40}'..='\u{7e}').contains(&next) {
-                    break;
-                }
-            }
-        }
-    }
-    out
-}
-
 /// The next font size in `direction` (+1 bigger, -1 smaller), clamped.
 pub fn step_font(current: u32, direction: i32) -> u32 {
     let step = 2;
@@ -122,13 +39,6 @@ pub fn step_font(current: u32, direction: i32) -> u32 {
     };
     next.clamp(MIN_FONT, MAX_FONT)
 }
-
-/// The largest stdout written to the terminal, in bytes.
-///
-/// `hledger print` on a real journal is tens of megabytes, and writing that to
-/// xterm.js stalls the tab for minutes. Cutting it is a visible, explainable lie;
-/// freezing is not.
-pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// hledger's commands, for completion. Not exhaustive, completion is a
 /// convenience, and anything missing can still be typed out.
@@ -204,105 +114,6 @@ const FLAGS: [&str; 32] = [
     "--weekly",
     "--yearly",
 ];
-
-/// What a typed line means.
-///
-/// A few words are the app's own: loading files, the terminal itself, and the account
-/// it can read. Everything else is hledger's, verbatim, which is the point of putting a
-/// real CLI in a browser.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Command<'a> {
-    /// Open the file picker and mount the files chosen.
-    Upload,
-    /// Open a directory on disk through the File System Access API, keeping the
-    /// paths and the handles so its files can be edited.
-    Open,
-    /// Take back the folder an earlier `open` was granted, re-granting write
-    /// access after a reload dropped it.
-    Reopen,
-    /// Show or change which uploaded file is the journal.
-    Journal(Option<&'a str>),
-    /// Wipe the screen.
-    Clear,
-    /// The app's own help: everything for no argument, one command's page for a word.
-    Help(Option<&'a str>),
-    /// Load a small built-in journal, so the app can be tried without one.
-    Demo,
-    /// `/term`, find `term` in the scrollback, or the last term when blank.
-    Search(Option<&'a str>),
-    /// `n` / `N`, repeat the last search, forwards / backwards.
-    SearchAgain(bool),
-    /// `download <path>`, save a file hledger wrote in the last run.
-    Download(Option<&'a str>),
-    /// `alias` lists them; `alias name=expansion` sets one.
-    Alias(Option<&'a str>),
-    /// `unalias name` removes one.
-    Unalias(Option<&'a str>),
-    /// `font [size]` shows or sets the terminal font size.
-    Font(Option<&'a str>),
-    /// `screenreader [on|off]` shows or sets the accessibility tree.
-    ScreenReader(Option<&'a str>),
-    /// `plugins` lists the installed plugins; `add`, `remove` and `reload` change them.
-    Plugins(Option<&'a str>),
-    /// `settings` shows what is remembered; `export` and `import` move it between visits.
-    Settings(Option<&'a str>),
-    /// `theme [name]` lists the themes on offer, or selects one.
-    Theme(Option<&'a str>),
-    /// Everything else is hledger's, verbatim.
-    Hledger(&'a str),
-}
-
-/// Classify a line.
-///
-/// Only four words are the app's; the rest belong to hledger, which is why the
-/// fallback case is the interesting one. `journal` collides with hledger's own
-/// `journal` command, and the app's reading wins: with no journal configured, the
-/// hledger report of that name could not run anyway.
-pub fn classify(line: &str) -> Command<'_> {
-    let trimmed = line.trim();
-    let (head, rest) = match trimmed.split_once(char::is_whitespace) {
-        Some((head, rest)) => (head, rest.trim()),
-        None => (trimmed, ""),
-    };
-    // A question mark after a word asks for that word's help: `open?` explains the
-    // app's own command, `chart?` a plugin's, and `balance?` asks hledger itself with
-    // `--help`. On its own, `?` is the overview.
-    if head == "?" {
-        // `? open` is accepted as well as `open?`: one is the question first, the
-        // other the command first, and both read as "tell me about this".
-        return Command::Help(rest.split_whitespace().next());
-    }
-    if let Some(word) = head.strip_suffix('?')
-        && !word.is_empty()
-        && !word.contains('?')
-    {
-        return Command::Help(Some(word));
-    }
-    match head {
-        "upload" => Command::Upload,
-        "open" => Command::Open,
-        "reopen" => Command::Reopen,
-        "journal" => Command::Journal((!rest.is_empty()).then_some(rest)),
-        "clear" => Command::Clear,
-        "demo" => Command::Demo,
-        "download" => Command::Download((!rest.is_empty()).then_some(rest)),
-        "alias" => Command::Alias((!rest.is_empty()).then_some(rest)),
-        "font" => Command::Font((!rest.is_empty()).then_some(rest)),
-        "screenreader" => Command::ScreenReader((!rest.is_empty()).then_some(rest)),
-        "plugins" => Command::Plugins((!rest.is_empty()).then_some(rest)),
-        "settings" => Command::Settings((!rest.is_empty()).then_some(rest)),
-        "theme" => Command::Theme((!rest.is_empty()).then_some(rest)),
-        "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
-        // Vim's vocabulary, because it is the one people already know for
-        // scrolling back through output. `n` and `N` are not hledger commands, so
-        // nothing is shadowed; `/` alone repeats the last search.
-        "find" => Command::Search((!rest.trim().is_empty()).then_some(rest)),
-        "n" => Command::SearchAgain(false),
-        "N" => Command::SearchAgain(true),
-        _ if trimmed.starts_with('/') => Command::Search(Some(trimmed[1..].trim())),
-        _ => Command::Hledger(trimmed),
-    }
-}
 
 /// The line the user is editing.
 ///
@@ -752,41 +563,6 @@ impl Editor {
     }
 }
 
-/// Lay candidates out in columns, the way a shell lists them.
-///
-/// Column-major, like `ls`: each column is a run down the list, so reading down and
-/// then across finds things in alphabetical order. The widest item decides how many
-/// columns fit, and when only one does, one per line, so nothing is ever cut.
-pub fn format_columns(items: &[String], width: usize) -> Vec<String> {
-    if items.is_empty() {
-        return Vec::new();
-    }
-    let gap = 2;
-    let widest = items
-        .iter()
-        .map(|item| item.chars().count())
-        .max()
-        .unwrap_or(0);
-    let per_row = ((width + gap) / (widest + gap)).max(1);
-    let rows = items.len().div_ceil(per_row);
-
-    let mut lines = Vec::with_capacity(rows);
-    for row in 0..rows {
-        let mut line = String::new();
-        for column in 0..per_row {
-            let Some(item) = items.get(column * rows + row) else {
-                break;
-            };
-            if column > 0 {
-                line.push_str(&" ".repeat(gap));
-            }
-            line.push_str(&format!("{item:<widest$}"));
-        }
-        lines.push(line.trim_end().to_string());
-    }
-    lines
-}
-
 /// What completion did, so the caller knows whether to print the options.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Completion {
@@ -811,267 +587,6 @@ pub const FUZZY_LIMIT: usize = 12;
 
 /// The shortest token worth matching fuzzily: one letter matches almost everything.
 const FUZZY_MINIMUM: usize = 2;
-
-/// Every word completion can offer: the app's commands, hledger's, the common
-/// flags, and the uploaded file paths.
-/// The commands the app answers to itself. Everything else is hledger's.
-///
-/// One list, because three things have to agree about it: completion offers these
-/// first, the `?` help is expected to describe them, and the README is expected to
-/// document them. Tests check the last two against this.
-pub const COMMANDS: &[&str] = &[
-    "upload",
-    "open",
-    "reopen",
-    "journal",
-    "clear",
-    "?",
-    "demo",
-    "download",
-    "alias",
-    "unalias",
-    "font",
-    "screenreader",
-    "plugins",
-    "settings",
-    "theme",
-    "find",
-];
-
-/// The words a line can start with: the app's own commands, then hledger's reports.
-///
-/// In that order rather than alphabetically, because this is also the list Tab shows on
-/// an empty line, and the app's own commands are the ones worth learning first.
-pub fn starting_words() -> Vec<String> {
-    let mut all: Vec<String> = COMMANDS.iter().map(|word| (*word).to_string()).collect();
-    all.extend(HLEDGER_COMMANDS.iter().map(|word| (*word).to_string()));
-    all
-}
-
-/// Where the words Tab offers come from, gathered by the caller, which is the only side that
-/// knows what has arrived: accounts load in the background, and plugins at runtime.
-#[derive(Default)]
-pub struct Sources {
-    /// Every plugin's word, which can start a line as the app's own commands can.
-    pub plugins: Vec<String>,
-    /// The plugin that owns this line, if one does, and the words it said it takes.
-    pub owner: Option<(String, Vec<String>)>,
-    /// The loaded file paths.
-    pub paths: Vec<String>,
-    pub accounts: Vec<String>,
-    pub aliases: Vec<String>,
-}
-
-/// What Tab can offer at the cursor, and the heading for the list it shows.
-///
-/// The start of a line takes a command: the app's, hledger's, or a plugin's. After a plugin's
-/// word, the words that plugin takes come first, and right after the word they are all that is
-/// offered: `chart <Tab>` lists the questions chart answers, not three hundred flags and
-/// accounts. Further along, and after any other command, it is flags, accounts and paths.
-/// A plugin's words are offered on its own lines only, not after every command.
-pub fn completion(before: &[String], token: &str, sources: &Sources) -> (Vec<String>, String) {
-    if before.is_empty() {
-        let mut words = starting_words();
-        words.extend(sources.plugins.iter().cloned());
-        return (words, "Commands you can run:".to_string());
-    }
-    let mut words = Vec::new();
-    let mut heading = "Flags, accounts and paths:".to_string();
-    if let Some((name, takes)) = &sources.owner {
-        words.extend(takes.iter().cloned());
-        if before.len() == 1 && token.is_empty() && !takes.is_empty() {
-            return (words, format!("What {name} takes ({name}? says what each one does):"));
-        }
-        heading = format!("What {name} takes, then accounts and flags:");
-    }
-    words.extend(argument_words(&sources.paths));
-    words.extend(sources.accounts.iter().cloned());
-    if sources.owner.is_none() {
-        words.extend(sources.aliases.iter().cloned());
-    }
-    (words, heading)
-}
-
-/// The words that can follow: report and query flags, then the loaded file paths.
-///
-/// Accounts, aliases and plugin words are added by the caller, which is the only side
-/// that knows whether they have arrived yet.
-pub fn argument_words(paths: &[String]) -> Vec<String> {
-    let mut all: Vec<String> = FLAGS.iter().map(|word| (*word).to_string()).collect();
-    all.extend(paths.iter().cloned());
-    all
-}
-
-/// Whether two characters are the same letter, whatever their case.
-fn same_ignoring_case(left: char, right: char) -> bool {
-    left == right || left.to_lowercase().eq(right.to_lowercase())
-}
-
-/// Whether `candidate` starts with `token`, ignoring case.
-///
-/// An empty token matches everything, which is what makes a bare Tab list the
-/// commands rather than doing nothing.
-pub fn starts_with_ignoring_case(candidate: &str, token: &str) -> bool {
-    let mut letters = candidate.chars();
-    token
-        .chars()
-        .all(|wanted| letters.next().is_some_and(|found| same_ignoring_case(found, wanted)))
-}
-
-/// As much as every value agrees on, ignoring case, spelled the first value's way.
-///
-/// The spelling matters: completing `EXP` against `expenses:food` and
-/// `expenses:rent` should leave `expenses:`, not `EXPenses:`.
-fn common_prefix_ignoring_case(values: &[&String]) -> String {
-    let Some(first) = values.first() else {
-        return String::new();
-    };
-    let mut shared = first.chars().count();
-    for value in values.iter().skip(1) {
-        shared = shared.min(
-            first
-                .chars()
-                .zip(value.chars())
-                .take_while(|(a, b)| same_ignoring_case(*a, *b))
-                .count(),
-        );
-    }
-    first.chars().take(shared).collect()
-}
-
-/// The names that come closest to `token` without starting with it.
-///
-/// "Closest" is a subsequence match, scored so that the useful ones come first: a
-/// name that contains the token as a run beats one with the letters scattered, a
-/// letter that starts a word (`:` in an account path, say) is worth more than one in
-/// the middle, and between equals the shorter name wins. Sorted best first, and
-/// capped, because a list nobody reads is not help.
-pub fn fuzzy_matches(token: &str, candidates: &[String], limit: usize) -> Vec<String> {
-    let needle: Vec<char> = token.chars().collect();
-    if needle.len() < FUZZY_MINIMUM {
-        return Vec::new();
-    }
-    let mut scored: Vec<(i32, &String)> = candidates
-        .iter()
-        .filter_map(|candidate| fuzzy_score(&needle, candidate).map(|score| (score, candidate)))
-        .collect();
-    scored.sort_by(|(left, a), (right, b)| right.cmp(left).then_with(|| a.cmp(b)));
-
-    let mut best: Vec<String> = Vec::new();
-    for (_, candidate) in scored {
-        if !best.iter().any(|seen| seen == candidate) {
-            best.push(candidate.clone());
-        }
-        if best.len() == limit {
-            break;
-        }
-    }
-    best
-}
-
-/// How well `token` matches `candidate` as a subsequence, or `None` if it does not.
-fn fuzzy_score(needle: &[char], candidate: &str) -> Option<i32> {
-    let letters: Vec<char> = candidate.to_lowercase().chars().collect();
-    let wanted: Vec<char> = needle.iter().flat_map(|c| c.to_lowercase()).collect();
-    let mut score = 0;
-    let mut cursor = 0;
-    let mut previous: Option<usize> = None;
-    for letter in &wanted {
-        let found = cursor + letters[cursor..].iter().position(|c| c == letter)?;
-        // Letters next to each other are a better sign than letters far apart.
-        let expected = previous.map_or(0, |index| index + 1);
-        score -= found as i32 - expected as i32;
-        if found == 0 || starts_a_word(&letters, found) {
-            score += 8;
-        }
-        previous = Some(found);
-        cursor = found + 1;
-    }
-    // A run of the token inside the name is the strongest sign of all.
-    if wanted.len() <= letters.len()
-        && letters.windows(wanted.len()).any(|window| window == wanted.as_slice())
-    {
-        score += 20;
-    }
-    // Between equals, the shorter name is the likelier one.
-    score -= letters.len() as i32 / 4;
-    Some(score)
-}
-
-/// Whether the letter at `index` begins a word: the start of the name, or just after
-/// a separator. Account names are paths, so `f` in `expenses:food` starts one.
-fn starts_a_word(letters: &[char], index: usize) -> bool {
-    matches!(
-        letters.get(index.wrapping_sub(1)),
-        None | Some(':') | Some('-') | Some('_') | Some(' ') | Some('.') | Some('/')
-    )
-}
-
-/// stdout as it should be shown, and a note when it had to be cut.
-pub fn visible_output(stdout: &str) -> (String, Option<String>) {
-    if stdout.len() <= MAX_OUTPUT_BYTES {
-        return (stdout.to_string(), None);
-    }
-    // Cut on a line boundary where there is one nearby, so the last line shown is
-    // not half a number.
-    let mut cut = MAX_OUTPUT_BYTES;
-    while cut > 0 && !stdout.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    let window = &stdout[..cut];
-    if let Some(index) = window.rfind('\n') {
-        cut = index + 1;
-    }
-    let megabytes = stdout.len() as f64 / (1024.0 * 1024.0);
-    (
-        stdout[..cut].to_string(),
-        Some(format!(
-            "[output truncated after {} MB of {megabytes:.1} MB, `-o out.csv` writes the \
-             whole thing, and `download out.csv` saves it]",
-            MAX_OUTPUT_BYTES / (1024 * 1024)
-        )),
-    )
-}
-
-/// Normalise text for a terminal.
-///
-/// xterm.js, like a real terminal, starts a new line only on `\r\n`: a bare `\n`
-/// moves down without returning to the left margin, which turns a report into a
-/// staircase. The engine's output uses `\n`, so it is converted here rather than
-/// being written raw.
-pub fn to_terminal_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        match character {
-            '\n' => out.push_str("\r\n"),
-            '\r' => {
-                out.push('\r');
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                    out.push('\n');
-                }
-            }
-            _ => out.push(character),
-        }
-    }
-    out
-}
-
-/// The bytes that redraw the prompt line in place.
-///
-/// A terminal has no DOM to update: the line is redrawn by returning the cursor
-/// to the start of it, clearing to the end, writing the prompt and the line, and
-/// then moving the cursor back left over however many characters follow it. That
-/// is what a shell does, and it is why the editor itself is only data.
-pub fn prompt_redraw(prompt: &str, line: &str, cursor: usize) -> String {
-    let tail = line.chars().count().saturating_sub(cursor);
-    let mut out = format!("\r\u{1b}[K{prompt}{line}");
-    if tail > 0 {
-        out.push_str(&format!("\u{1b}[{tail}D"));
-    }
-    out
-}
 
 /// A small journal to try the app on, for a first visit with nothing to upload.
 ///
@@ -1386,247 +901,6 @@ pub fn output_over(paths: &[String], argv: &[String]) -> Option<String> {
     None
 }
 
-/// What `theme` prints: the themes on offer, and which one is in use.
-pub fn theme_list(themes: &[(String, String)], current: &str) -> String {
-    let mut text = format!("{}\r\n", bold("Themes"));
-    let width = themes
-        .iter()
-        .map(|(name, _)| name.chars().count())
-        .max()
-        .unwrap_or(0)
-        .max(current.chars().count());
-    for (name, from) in themes {
-        let marker = if name == current { "*" } else { " " };
-        let running = if name == current {
-            format!(" {}", dim("(in use)"))
-        } else {
-            String::new()
-        };
-        text.push_str(&format!(
-            " {} {}  {}{running}\r\n",
-            accent(marker),
-            bold(&format!("{name:<width$}")),
-            dim(from)
-        ));
-    }
-    text.push_str(&format!(
-        "\r\n{} selects one and keeps it; plugin themes come from the repositories you install.\r\n",
-        bold("theme <name>")
-    ));
-    text
-}
-
-/// What `theme <name>` prints when a theme is applied.
-pub fn theme_applied(name: &str, from: &str) -> String {
-    format!(
-        "Theme {}{}. {}\r\n",
-        bold(name),
-        if from.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", dim(from))
-        },
-        dim("The terminal, the page behind it, and the app's own text.")
-    )
-}
-
-/// What `theme` says about a name nothing offers.
-pub fn theme_usage(name: &str, available: &[String]) -> String {
-    format!(
-        "There is no theme called {}. {}\r\n",
-        bold(name),
-        if available.is_empty() {
-            "None are installed: {} lists them.".to_string()
-        } else {
-            format!("{} lists them; available now: {}.", bold("theme"), available.join(", "))
-        }
-    )
-}
-
-/// What `plugins` prints: what is installed, and the repositories it came from.
-/// A plugin's summary, for one that took a word hledger also answers to.
-pub fn shadowing_note(name: &str, summary: &str) -> String {
-    format!("{summary}; hledger {name} still runs hledger's own")
-}
-
-pub fn plugin_list(installed: &[(String, String)], repositories: &[(String, bool)]) -> String {
-    let mut text = String::new();
-    if installed.is_empty() {
-        text.push_str(
-            "No plugins are installed. A plugin adds commands, and comes from a repository \
-             you name.\r\n",
-        );
-    } else {
-        text.push_str(&format!(
-            "{}, {}\r\n",
-            bold(&count(installed.len(), "plugin", "plugins")),
-            dim("installed")
-        ));
-        for (name, summary) in installed {
-            text.push_str(&format!(
-                "  {}  {}\r\n",
-                bold(&format!("{name:<14}")),
-                dim(summary)
-            ));
-        }
-    }
-
-    if repositories.is_empty() {
-        text.push_str(&format!(
-            "\r\nAdd one with {}.\r\n",
-            bold("plugins add <url or path>")
-        ));
-    } else {
-        text.push_str(&format!("\r\n{}\r\n", bold("Repositories")));
-        for (repository, bundled) in repositories {
-            text.push_str(&format!(
-                "  {repository}{}\r\n",
-                if *bundled {
-                    format!("  {}", dim("bundled"))
-                } else {
-                    String::new()
-                }
-            ));
-        }
-        text.push_str(&format!(
-            "\r\n{} reads them again; {} forgets one.\r\n",
-            bold("plugins reload"),
-            bold("plugins remove <url>")
-        ));
-    }
-    text
-}
-
-/// What `plugins add` prints when a repository has been read.
-pub fn plugin_installed(url: &str, registered: &[String], refused: &[String]) -> String {
-    let mut text = String::new();
-    if registered.is_empty() {
-        text.push_str(&format!("{} has no plugin this app can use.\r\n", bold(url)));
-    } else {
-        text.push_str(&format!(
-            "Read {} from {}: {}.\r\n",
-            count(registered.len(), "plugin", "plugins"),
-            bold(url),
-            registered
-                .iter()
-                .map(|name| bold(name))
-                .collect::<Vec<String>>()
-                .join(", ")
-        ));
-    }
-    for complaint in refused {
-        text.push_str(&format!("  {} {complaint}\r\n", dim("refused:")));
-    }
-    // Said once, when a repository is added: a plugin is code running in this page.
-    text.push_str(&format!(
-        "{}\r\n",
-        dim("A plugin is code running in this page, so install repositories you trust.")
-    ));
-    text
-}
-
-/// What `plugins remove` prints.
-pub fn plugin_removed(url: &str, count_: usize) -> String {
-    if count_ == 0 {
-        format!("Nothing was installed from {}.\r\n", bold(url))
-    } else {
-        format!(
-            "Forgot {} that came from {}.\r\n",
-            count(count_, "plugin", "plugins"),
-            bold(url)
-        )
-    }
-}
-
-/// What `plugins remove` adds when the repository came with the app.
-pub fn bundled_returns(url: &str) -> String {
-    format!(
-        "{}\r\n",
-        dim(&format!(
-            "{url} is bundled: it is installed again on the next visit."
-        ))
-    )
-}
-
-/// What `plugins` says about something that is not one of its own arguments.
-pub fn plugin_usage(word: &str) -> String {
-    format!(
-        "{} is not a plugins command. {} lists what is installed, {} reads a repository, \
-         and {} forgets one.\r\n",
-        bold(word),
-        bold("plugins"),
-        bold("plugins add <url or path>"),
-        bold("plugins remove <url>")
-    )
-}
-
-/// What `settings` prints: what is remembered, and how to move it.
-pub fn settings_list(rows: &[(String, String)]) -> String {
-    let mut text = format!(
-        "{}, {}\r\n",
-        bold("Settings"),
-        dim("remembered between visits")
-    );
-    let width = rows
-        .iter()
-        .map(|(label, _)| label.chars().count())
-        .max()
-        .unwrap_or(0);
-    for (label, value) in rows {
-        text.push_str(&format!(
-            "  {}  {}\r\n",
-            bold(&format!("{label:<width$}")),
-            value
-        ));
-    }
-    text.push_str(&format!(
-        "\r\n{} writes them to a file you can keep, and {} reads one back, \
-         opening the file picker for it.\r\n",
-        bold("settings export"),
-        bold("settings import")
-    ));
-    text
-}
-
-/// What `settings export` says once the file is on its way to the browser.
-pub fn settings_exported(path: &str, bytes: usize) -> String {
-    format!(
-        "Wrote {} ({}). Check your downloads; it carries everything above, plugin settings \
-         and repositories included.\r\n",
-        bold(path),
-        bytes_label(bytes)
-    )
-}
-
-/// What `settings import` says: what it applied, and what it could not use.
-pub fn settings_imported(applied: &[String], dropped: &[String]) -> String {
-    let mut text = if applied.is_empty() {
-        "Nothing was applied.\r\n".to_string()
-    } else {
-        format!(
-            "Applied {}: {}.\r\n",
-            count(applied.len(), "setting", "settings"),
-            applied.join(", ")
-        )
-    };
-    for complaint in dropped {
-        text.push_str(&format!("  {} {complaint}\r\n", dim("could not use:")));
-    }
-    text
-}
-
-/// What `settings` says about an argument it does not know.
-pub fn settings_usage(word: &str) -> String {
-    format!(
-        "{} is not a settings command. {} shows them, {} writes them to a file, and {} \
-         reads one back.\r\n",
-        bold(word),
-        bold("settings"),
-        bold("settings export"),
-        bold("settings import <path>")
-    )
-}
-
 /// What `alias name=expansion` means.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AliasEdit {
@@ -1638,8 +912,8 @@ pub enum AliasEdit {
 
 /// Read an `alias` argument.
 ///
-/// The first `=` separates name from expansion, so an expansion may contain `=`
-///, queries do, and the name may not contain spaces, because that is what makes
+/// The first `=` separates name from expansion, so an expansion may contain `=`,
+/// as queries do, and the name may not contain spaces, because that is what makes
 /// it a name.
 pub fn parse_alias(text: &str) -> AliasEdit {
     let Some((name, expansion)) = text.split_once('=') else {
@@ -1713,30 +987,6 @@ pub fn expand_alias(
 /// A chain of aliases is useful; two that point at each other are a loop, and a loop has to
 /// end somewhere.
 const MAX_ALIAS_DEPTH: usize = 8;
-
-/// What the terminal prints when `alias` is given the list of them.
-pub fn alias_list(aliases: &[(String, String)]) -> String {
-    if aliases.is_empty() {
-        return format!(
-            "No aliases yet. {} makes {} run {}.\r\n",
-            bold("alias bal=balance --tree"),
-            bold("bal"),
-            bold("balance --tree")
-        );
-    }
-    let mut text = format!("{}:\r\n", bold("Aliases"));
-    for (name, expansion) in aliases {
-        text.push_str(&format!("  {name} = {expansion}\r\n"));
-    }
-    text.push_str(&format!("Remove one with {}.\r\n", bold("unalias <name>")));
-    text
-}
-
-/// The note printed when a command was expanded, so it is never a surprise that
-/// something other than what was typed ran.
-pub fn alias_note(name: &str, expansion: &str) -> String {
-    format!("[{name} {} {expansion}]", dim("runs"))
-}
 
 /// The most recent history entry before `from` that contains `query`.
 ///
@@ -1853,84 +1103,6 @@ pub fn isearch_prompt(query: &str, failed: bool) -> String {
     format!("{} {}: ", dim(label), bold(query))
 }
 
-/// What the terminal prints after a run that wrote files.
-///
-/// Writing instead of printing is what `-o` is for, and the file only exists
-/// inside the run's in-memory mount, so saying where it went matters more than
-/// usual: without this the command looks like it did nothing.
-/// A path as something the user can type back.
-///
-/// Quoted when it has a space in it, because every command the app suggests is one
-/// the user can paste straight back in: `download "spaced name.journal"`, not
-/// `download spaced name.journal`, which would be two arguments and refused.
-pub fn quoted(path: &str) -> String {
-    if path.chars().any(char::is_whitespace) {
-        format!("\"{path}\"")
-    } else {
-        path.to_string()
-    }
-}
-
-pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
-    let mut text = String::from("[");
-    for (index, (path, bytes, replaced)) in files.iter().enumerate() {
-        if index > 0 {
-            text.push(';');
-        }
-        text.push_str(&format!(
-            "{}{} {path} ({})",
-            if index > 0 { " " } else { "" },
-            if *replaced { "changed" } else { "wrote" },
-            bytes_label(*bytes)
-        ));
-    }
-    let names: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
-    text.push_str(&format!(
-        ". Take a copy with {} while this visit lasts]",
-        bold(&format!(
-            "download {}",
-            quoted(names.first().copied().unwrap_or(""))
-        ))
-    ));
-    text
-}
-
-/// A size as a person would say it.
-fn bytes_label(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    let bytes = bytes as f64;
-    if bytes >= MB {
-        format!("{:.1} MB", bytes / MB)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes / KB)
-    } else {
-        format!("{bytes:.0} bytes")
-    }
-}
-
-/// What the terminal prints for `download` with no argument.
-pub fn download_list(files: &[String]) -> String {
-    if files.is_empty() {
-        // "Written" rather than "downloaded": the file is in the engine's
-        // filesystem and has not been saved anywhere yet.
-        return format!(
-            "Nothing has been written yet. {} on a command writes a file, for example {}.\r\n",
-            bold("-o FILE"),
-            bold("balance -O csv -o balance.csv")
-        );
-    }
-    let mut text = String::from("Written by commands this session:\r\n");
-    for path in files {
-        text.push_str(&format!("  {path}\r\n"));
-    }
-    text.push_str(&format!(
-        "Save one with {}.\r\n",
-        bold("download <path>")
-    ));
-    text
-}
-
 /// Read an on/off argument, accepting the spellings people actually type.
 pub fn parse_switch(text: &str) -> Result<bool, String> {
     match text.trim().to_lowercase().as_str() {
@@ -1967,173 +1139,15 @@ pub fn font_size(text: &str) -> Result<u32, String> {
     }
 }
 
-/// The prompt: what is being read, and a marker to type after.
-///
-/// A bare `$ ` said nothing, and the journal being read is the one piece of the
-/// terminal's state that is easy to lose track of. The name is dimmed so it recedes,
-/// and the marker carries the accent colour so the eye finds the line to type on.
-pub fn prompt_for(main: Option<&str>) -> String {
-    let label = match main {
-        Some(path) => {
-            let name = path.rsplit('/').next().unwrap_or(path);
-            if name.is_empty() {
-                "no journal".to_string()
-            } else {
-                name.to_string()
-            }
-        }
-        None => "no journal".to_string(),
-    };
-    format!("{} {} ", dim(&label), accent("»"))
-}
+// The pieces live next door, re-exported so `terminal::bold` and the rest are still one
+// namespace to the rest of the app.
+mod commands;
+mod messages;
+mod text;
 
-/// What the terminal prints after loading the demo.
-pub fn demo_loaded(files: usize, main: &str) -> String {
-    format!(
-        "Loaded the sample journal ({files} files), reading {}.\r\n",
-        bold(main)
-    )
-}
-
-/// A count and its noun, spelled for the count.
-pub fn count(n: usize, singular: &str, plural: &str) -> String {
-    if n == 1 {
-        format!("1 {singular}")
-    } else {
-        format!("{n} {plural}")
-    }
-}
-
-/// The greeting, and the only place the app explains itself before a journal is
-/// loaded.
-///
-/// It says three things and stops: what this is, that nothing leaves the tab, and
-/// the four things worth typing first. Someone arriving at an empty terminal has no
-/// idea what it takes, so this is worth more than a version string.
-pub fn welcome(engine: &str) -> String {
-    let mut text = String::new();
-    text.push_str(&format!(
-        "  {}  {}\r\n",
-        bold("hledger-anywhere"),
-        dim(engine)
-    ));
-    text.push_str(&format!(
-        "  {}\r\n\r\n",
-        dim("A terminal for hledger, running entirely in this tab.")
-    ));
-    text.push_str("  Drop journal files on this window, or type:\r\n");
-    // The starters come from the help table rather than a second copy of the list, so
-    // the banner cannot describe a command differently from the page that command
-    // opens. A word with no entry is skipped rather than showing a blank row.
-    for word in ["upload", "open", "demo", "?"] {
-        let Some(entry) = crate::help::find(word) else {
-            continue;
-        };
-        text.push_str(&format!(
-            "    {}  {}\r\n",
-            bold(&format!("{:<11}", entry.usage)),
-            dim(entry.summary)
-        ));
-    }
-    text
-}
-
-/// What the terminal says when there is nothing to report a journal from.
-///
-/// Separate from the greeting because the greeting is written once the cache has been
-/// read: whether a journal is loaded is not known before that, and saying there is none
-/// and then resuming one is a lie told quickly.
-pub fn no_journal() -> String {
-    format!("{}\r\n", dim("No journal is loaded yet."))
-}
-
-/// What the terminal prints when files came back from a previous visit.
-pub fn resumed(count: usize, main: &str) -> String {
-    format!(
-        "Resumed {count} files, reading {}. Type {} to list or change them.\r\n",
-        bold(main),
-        bold("journal")
-    )
-}
-
-/// What the terminal prints when a folder is remembered but its write access has
-/// to be granted again.
-///
-/// A browser drops a directory handle's write permission when the page reloads and
-/// will only give it back on a gesture, so the app has to ask for one by name.
-pub fn folder_remembered() -> String {
-    format!(
-        "Your folder is remembered. Type {} to grant write access again and read it \
-         from disk, or {} to choose another.\r\n",
-        bold("reopen"),
-        bold("open")
-    )
-}
-
-/// What the terminal prints after files arrive, from wherever they came.
-///
-/// `source` is the verb: files are uploaded, dropped or read from a folder, and saying
-/// "Uploaded" after `open` would be a lie about where they went.
-pub fn files_arrived(
-    source: &str,
-    loaded: &[String],
-    skipped: &[(String, String)],
-    main: Option<&str>,
-) -> String {
-    let noun = count(loaded.len(), "file", "files");
-    let mut text = format!("{source} {noun}.\r\n");
-    for path in loaded {
-        text.push_str(&format!("  {path}\r\n"));
-    }
-    for (path, reason) in skipped {
-        text.push_str(&format!("  {} {path}: {reason}\r\n", dim("skipped")));
-    }
-    match main {
-        Some(main) => text.push_str(&format!(
-            "Reading {}. Type {} for a report, or {} for the rest.\r\n",
-            bold(main),
-            bold("balance"),
-            bold("?")
-        )),
-        None => text.push_str(&format!(
-            "{}\r\n",
-            dim(
-                "None of those is a journal (.journal, .hledger or .j), so hledger has \
-                 nothing to read yet."
-            )
-        )),
-    }
-    text
-}
-
-/// What the terminal prints for `journal` with no argument.
-pub fn file_list(files: &[String], main: Option<&str>) -> String {
-    if files.is_empty() {
-        return format!(
-            "No journal files are loaded. Drop them on this window, or type {}.\r\n",
-            bold("upload")
-        );
-    }
-    let noun = count(files.len(), "file", "files");
-    let mut text = format!("{noun} loaded:\r\n");
-    for path in files {
-        let marker = if Some(path.as_str()) == main {
-            accent("*")
-        } else {
-            " ".to_string()
-        };
-        text.push_str(&format!(" {marker} {path}\r\n"));
-    }
-    text.push_str(&format!(
-        "{} {} {} {}.\r\n",
-        dim("Marked"),
-        accent("*"),
-        dim("is the file hledger reads. Change it with"),
-        bold("journal <path>")
-    ));
-    text
-}
-
+pub use commands::*;
+pub use messages::*;
+pub use text::*;
 
 #[cfg(test)]
 mod tests {
@@ -2827,12 +1841,47 @@ mod tests {
     }
 
     #[test]
+    fn the_apps_own_words_are_wrapped_and_nothing_else_is() {
+        // A line that fits is returned exactly, spacing and all: the banner lines up its
+        // command column with runs of spaces, and collapsing those would ruin it.
+        let aligned = "upload      add journal files";
+        assert_eq!(wrap_to(aligned, 40), aligned);
+        assert_eq!(wrap_to("", 40), "");
+
+        // Too long, and it breaks at the spaces rather than in the middle of a word.
+        let wrapped = wrap_to("the statement and the journal part at this line", 20);
+        for line in wrapped.split("\r\n") {
+            assert!(line.chars().count() <= 20, "over the width: {line:?}");
+        }
+        assert!(!wrapped.contains("statem\n"), "{wrapped:?}");
+        assert!(
+            wrapped.split_whitespace().collect::<Vec<_>>().join(" ")
+                == "the statement and the journal part at this line",
+            "wrapping lost or reordered words: {wrapped:?}"
+        );
+
+        // Escape sequences take no columns and are carried through untouched.
+        let styled = bold("hledger-anywhere") + "  " + &dim("a terminal for hledger");
+        let kept = wrap_to(&styled, 100);
+        assert_eq!(kept, styled);
+        let narrow = wrap_to(&styled, 22);
+        for line in narrow.split("\r\n") {
+            assert!(plain(line).chars().count() <= 22, "{line:?}");
+        }
+        assert_eq!(narrow.matches(BOLD).count(), 1, "the bold escape was split");
+
+        // Blank lines stay blank, and line breaks already there are kept.
+        assert_eq!(wrap_to("one\r\n\r\ntwo", 40), "one\r\n\r\ntwo");
+        assert!(wrap_to("a few words that will not fit", 0).lines().count() > 1);
+    }
+
+    #[test]
     fn what_the_terminal_says_has_no_backticks_and_no_em_dashes() {
         // Two house rules, of the kind that rot silently: a command in a message is
         // bold rather than quoted, and there are no em dashes in anything the user
         // reads. Every message the terminal can produce is sampled here.
         let samples = [
-            welcome("1.52.4"),
+            welcome("1.52.4", 100),
             crate::help::overview(&[], 100),
             prompt_for(None),
             prompt_for(Some("2024.journal")),
@@ -2924,7 +1973,7 @@ mod tests {
 
     #[test]
     fn banners_say_what_is_loaded_and_what_to_do() {
-        let cold = welcome("1.52.4");
+        let cold = welcome("1.52.4", 100);
         let visible = plain(&cold);
         assert!(visible.contains("1.52.4"), "{visible}");
         assert!(visible.contains("upload"), "{visible}");
@@ -2939,6 +1988,39 @@ mod tests {
             cold.contains(BOLD) && cold.contains(&dim_escape()),
             "{cold:?}"
         );
+
+        // Flush left, like the messages and the prompt that follow it. An indented
+        // banner above a flush-left "No journal is loaded yet." was the complaint.
+        for line in visible.lines() {
+            assert!(
+                !line.starts_with(' '),
+                "the banner is indented: {line:?}"
+            );
+        }
+        // And it ends with a blank line, so the status under it is its own thing.
+        assert!(visible.ends_with("\r\n\r\n") || visible.ends_with("\n\n"), "{visible:?}");
+
+        // The command summaries line up in one column.
+        let starts: Vec<usize> = ["upload", "open", "demo", "?"]
+            .iter()
+            .filter_map(|word| {
+                let entry = crate::help::find(word)?;
+                let line = visible
+                    .lines()
+                    .find(|line| line.starts_with(entry.usage) && line.contains(entry.summary))?;
+                line.find(entry.summary)
+            })
+            .collect();
+        assert_eq!(starts.len(), 4, "{visible}");
+        assert!(
+            starts.windows(2).all(|pair| pair[0] == pair[1]),
+            "the command column is ragged: {visible}"
+        );
+
+        // Narrow enough and each description drops under its command rather than
+        // wrapping into the gutter, so no line runs past the screen by padding.
+        let narrow = plain(&welcome("1.52.4", 24));
+        assert!(narrow.contains("upload\r\n  add journal files"), "{narrow}");
 
         let back = plain(&resumed(3, "books/hledger.journal"));
         assert!(back.contains("Resumed 3 files"), "{back}");
