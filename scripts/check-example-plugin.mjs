@@ -5,7 +5,7 @@
 // arguments into a command and a CSV into data, and the window's job is turning that data into a
 // model of what to draw, and both are functions.
 //
-// What cannot be checked here is the drawing and the interacting — real SVG, a tooltip, a wheel
+// What cannot be checked here is the drawing and the interacting: real SVG, a tooltip, a wheel
 // zoom, a click that asks hledger again. Those are verified in a browser.
 //
 // The CSVs below are copied from the shipped engine, not invented:
@@ -955,6 +955,33 @@ const TREE_MONTHS = [
 }
 
 {
+  // A real journal has postings with no commodity in them, and naming one in the summary left
+  // an empty name in the window's sentence: "postings in  are not part of this".
+  const amount = (commodity, mantissa) => ({ acommodity: commodity, aquantity: { decimalMantissa: mantissa, decimalPlaces: 2 }, astyle: { ascommodityside: 'R', ascommodityspaced: true, asdecimalmark: '.', asprecision: 2 } });
+  const transaction = (index, commodities) => ({
+    tindex: index, tdate: `2026-07-0${(index % 9) + 1}`, tdescription: `Number ${index}`, tstatus: 'Unmarked',
+    tsourcepos: [{ sourceName: '/fixture.journal', sourceLine: index * 3 }, { sourceName: '/fixture.journal', sourceLine: index * 3 + 2 }],
+    tpostings: [
+      { paccount: 'Assets:Bank', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: commodities.map(([name, mantissa]) => amount(name, mantissa)), pbalanceassertion: null },
+      { paccount: 'Expenses:Food', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: [amount('IDR', -1000)], pbalanceassertion: null },
+    ],
+  });
+  const mixed = readPrint([transaction(1, [['IDR', 1000]]), transaction(2, [['IDR', 1000], ['', 5]]), transaction(3, [['IDR', 1000], ['USD', 900]])], 'Assets:Bank');
+  check('a posting with no commodity is not reported as another commodity',
+    mixed.others.join() === 'USD' && !mixed.others.includes(''), JSON.stringify(mixed.others));
+
+  // Finding which transactions an edit speaks for is done once, not by rescanning every row for
+  // every row: on an account with thousands of postings that scan made a tick take seconds.
+  const many = Array.from({ length: 3000 }, (_, index) => transaction(index + 1, [['IDR', 1000]]));
+  const big = readPrint(many, 'Assets:Bank');
+  const began = performance.now();
+  const listed = ordered(big, {});
+  const spent = performance.now() - began;
+  check('a few thousand postings are ordered quickly, so a tick is not a wait',
+    listed.length === 3000 && spent < 500, `${Math.round(spent)}ms for ${listed.length} rows`);
+}
+
+{
   check('a transaction header is read in its parts and written back exactly',
     formatHeader(parseHeader('2026-09-05=2026-09-06 * (123) Shop | lunch  ; note: x')) === '2026-09-05=2026-09-06 * (123) Shop | lunch  ; note: x'
     && parseHeader('2026-09-05 * Shop  ; c').description === 'Shop' && formatHeader({ ...parseHeader('2026-09-05 Shop'), date: '2026-09-07' }) === '2026-09-07 Shop', '');
@@ -1151,7 +1178,8 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false }
 {
   const { host, log } = reconcileHost();
   await Reconcile.run('nothing-like-it', host);
-  check('an account that is not there is said, with no window', log.said[0] === 'reconcile: no account matches nothing-like-it.' && !log.pages.length, log.said[0]);
+  check('an account that is not there is said, with no window, and where to look',
+    /^reconcile: no account matches nothing-like-it\. Type accounts to list them\.$/.test(log.said[0]) && !log.pages.length, log.said[0]);
   const page = reconcilePage({ data: readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking'), colors: COLORS, token: 't', files: [{ path: 'x', writable: false }], statementDate: '2026-09-30', statementBalance: '</script>', fingerprint: '', module: 'm.js' });
   check('the page escapes what it is given and says when nothing can be written', !page.includes('</script>"') && page.includes('id="progress" disabled'), '');
 }

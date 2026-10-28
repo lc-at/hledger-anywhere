@@ -4,7 +4,7 @@
  * Shared by both sides of the plugin. The plugin imports `page` to write the window;
  * the window imports `mount` to draw it. The data travels in a JSON block, the editor
  * arrives as a classic script from beside this plugin, and the window calls back through
- * a bridge on its opener — the same shape the chart window uses.
+ * a bridge on its opener, the same shape the chart window uses.
  */
 
 import { FALLBACK_COLORS, escape, isLight, mix } from './window-kit.js';

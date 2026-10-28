@@ -193,7 +193,7 @@ function writtenFiles(root, mounted) {
   const record = (path, file) => {
     const contents = new TextDecoder('utf-8').decode(file.data ?? new Uint8Array(0));
     // Files under data/ are the uploaded ones: only worth reporting if the run
-    // changed them. Anything else the run created is news by definition , 
+    // changed them. Anything else the run created is news by definition,
     // including a file at the mount root, which is where a relative `-o` lands.
     const uploaded = path.startsWith('data/') ? path.slice('data/'.length) : null;
     if (uploaded === null || mounted.get(uploaded) !== contents) {

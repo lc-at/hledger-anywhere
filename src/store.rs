@@ -225,7 +225,7 @@ impl Store {
     /// without picking the folder again.
     pub async fn save_handle(&self, root: &FileSystemDirectoryHandle) -> Result<(), idb::Error> {
         // The store has a key path, so the key belongs *in* the record. Passing it
-        // beside the value instead — `put(value, Some(key))` — makes the browser
+        // beside the value instead, `put(value, Some(key))`, makes the browser
         // extract the key from the value with the key path and throw `DataError`
         // when it does not match, which is how an earlier version of this saved
         // nothing at all and left every reopened visit read-only.

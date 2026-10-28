@@ -16,7 +16,7 @@
  *
  * Shared by both sides of the plugin. The plugin imports `page` to write the window; the window
  * imports `mount` to draw it. Everything that decides what a chart shows is a plain function
- * from data to a model — `modelFor`, `viewOf` — which is why it can be tested without a
+ * from data to a model (`modelFor`, `viewOf`), which is why it can be tested without a
  * browser, and only `mount` touches the DOM.
  *
  * The balance data is one row per series and one column per period, which is what hledger's

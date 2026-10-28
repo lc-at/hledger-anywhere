@@ -3,8 +3,8 @@
  * report of their own.
  *
  * The window is a `blob:` document, so D3 arrives as the vendored UMD build in a classic
- * script and is read from `window.d3`. Everything that does not need the DOM — the register
- * and tree parsers, the aggregations, the Sankey layout, the table and the headline — is
+ * script and is read from `window.d3`. Everything that does not need the DOM (the register
+ * and tree parsers, the aggregations, the Sankey layout, the table and the headline) is
  * exported and tested in node.
  *
  * Two families of chart:
@@ -306,7 +306,7 @@ function shortName(account) {
  * Income flowing into each kind of spending, and what was left.
  *
  * Read from `balance income expenses --depth 2`: one row per income source and expense
- * category. Asking hledger for those two trees is what keeps the picture honest — a transfer
+ * category. Asking hledger for those two trees is what keeps the picture honest: a transfer
  * between two asset accounts is in neither, so it cannot be mistaken for income or spending.
  *
  * Income is negative in hledger's sign convention and is turned around here. The two sides

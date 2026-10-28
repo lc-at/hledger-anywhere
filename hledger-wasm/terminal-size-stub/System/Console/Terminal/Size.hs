@@ -38,8 +38,8 @@ data Window a = Window
 --
 -- A dimension that is missing or nonsense falls back to hledger's own default
 -- (see @Hledger.Utils.IO@), and only when *neither* is set is the answer
--- 'Nothing'. Requiring both would make a caller that knows only its width — which
--- is the interesting half, since that is what reports are laid out to — report
+-- 'Nothing'. Requiring both would make a caller that knows only its width (which
+-- is the interesting half, since that is what reports are laid out to) report
 -- "unknown" and get 80 columns regardless.
 size :: Integral n => IO (Maybe (Window n))
 size = do

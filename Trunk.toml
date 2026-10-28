@@ -14,7 +14,17 @@ open = false
 # assets/wasm is watched so that installing a new engine, which
 # scripts/fetch-hledger-wasm.sh does, is copied into dist without having to
 # notice that the file that changed is the one nothing else watches.
-watch = ["src", "assets/css", "assets/js", "assets/wasm", "index.html"]
+# assets/plugins and assets/icons are watched for the same reason: without them an
+# edit to a plugin was never copied, and the served app kept running the old one.
+watch = [
+    "src",
+    "assets/css",
+    "assets/icons",
+    "assets/js",
+    "assets/plugins",
+    "assets/wasm",
+    "index.html",
+]
 
 # Resolve assets/wasm/hledger.wasm before every build/serve. The script is
 # intentionally non-fatal: without the artifact the app still builds and runs, and

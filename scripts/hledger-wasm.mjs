@@ -4,8 +4,8 @@
 //
 // The same `assets/wasm/hledger.wasm` the app serves, executed under Node's WASI
 // implementation. That makes it possible to check what a report actually
-// contains, its exact JSON, its exit code, whether a flag does anything at all
-//, in a second, instead of booting a browser and reading it off a panel.
+// contains, its exact JSON, its exit code and whether a flag does anything at
+// all, in a second, instead of booting a browser and reading it off a panel.
 //
 // It is deliberately the *shipped* module rather than a locally installed
 // hledger: the point is to test the engine the app will run, at the version the

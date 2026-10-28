@@ -3,7 +3,7 @@
 //
 // scripts/check-example-plugin.mjs checks what can be checked without a browser: commands,
 // parsers, models, layouts. What it cannot reach is the half of the plugin that touches the
-// DOM — the renderers, the tooltip, the legend, the keys, saving, drill-down — and that half
+// DOM (the renderers, the tooltip, the legend, the keys, saving, drill-down), and that half
 // is most of the code. This drives headless Chrome over the DevTools protocol against the
 // window `page()` writes, with input events a person would make, and measures how much of the
 // plugin's code the run executed.
@@ -19,6 +19,9 @@
 // Run with: node scripts/check-plugin-windows.mjs
 // Chrome is found on PATH (google-chrome, chromium) or named with CHROME=/path/to/chrome.
 // Node 22 or later, for its built-in WebSocket.
+//
+// On a machine with no fonts of its own, a bundled fontconfig is used if one is around; a
+// Chrome that cannot find its shared libraries needs LD_LIBRARY_PATH pointing at them.
 
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import inspector from 'node:inspector/promises';
@@ -251,12 +254,47 @@ function findChrome() {
   return null;
 }
 
+/**
+ * Fonts for a machine that has none of its own.
+ *
+ * Without a font every piece of text lays out 0 pixels high, so elements are found but cannot
+ * be clicked and the run fails somewhere unrelated. A host with fonts is left alone; otherwise
+ * a bundled fontconfig is used if one is around, which is what agent-browser installs.
+ */
+function fontEnvironment() {
+  if (process.env.FONTCONFIG_FILE) return {};
+  for (const directory of ['/usr/share/fonts', '/usr/local/share/fonts']) {
+    try {
+      if (readdirSync(directory).length) return {};
+    } catch {
+      // no such directory: keep looking
+    }
+  }
+  const deps = join(process.env.HOME || '', '.local/share/agent-browser-deps/builds');
+  let builds = [];
+  try {
+    builds = readdirSync(deps).sort().reverse();
+  } catch {
+    return {};
+  }
+  for (const build of builds) {
+    const configuration = join(deps, build, 'etc-fonts/fonts.conf');
+    try {
+      statSync(configuration);
+      return { FONTCONFIG_FILE: configuration, FONTCONFIG_PATH: join(deps, build, 'etc-fonts'), XDG_DATA_HOME: join(deps, build) };
+    } catch {
+      // not this one
+    }
+  }
+  return {};
+}
+
 async function launch(chrome, profile) {
   const child = spawn(chrome, [
     '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
     '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
     `--user-data-dir=${profile}`, '--window-size=1100,900', 'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  ], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...fontEnvironment() } });
   const url = await new Promise((resolve, reject) => {
     let seen = '';
     const timer = setTimeout(() => reject(new Error(`Chrome did not start:\n${seen}`)), 30000);
@@ -418,15 +456,25 @@ class Tab {
     await sleep(60);
   }
 
-  /** The centre of the first element matching a selector, in page coordinates. */
+  /**
+   * The centre of the first element matching a selector, in page coordinates.
+   *
+   * It waits for the element to have a size. A node that has just been unhidden, or drawn into
+   * a chart still being laid out, measures 0x0 for a moment, and the centre of nothing is its
+   * corner, which is somewhere else on the page: the click then lands on whatever is behind it
+   * and the run fails later, somewhere unrelated to the cause. Failing here says so instead.
+   */
   async centre(selector, pick = 'first') {
-    return this.eval(`(() => {
+    const box = await this.until(`(() => {
       const all = [...document.querySelectorAll(${JSON.stringify(selector)})];
       const node = ${pick === 'last' ? 'all[all.length - 1]' : 'all[0]'};
       if (!node) return null;
       const box = node.getBoundingClientRect();
+      if (!box.width || !box.height) return null;
       return [box.left + box.width / 2, box.top + box.height / 2];
     })()`);
+    if (!box) throw new Error(`nothing with a size matches ${selector}`);
+    return box;
   }
 
   tip() {
@@ -967,8 +1015,14 @@ async function reconciling(tab) {
       `${await text('sub')} ${tab.errors.join(' | ')}`);
   }
   check('it opens at the opening balance, asking for the statement', /Opening\s*1,000,000\.00 IDR/i.test(await text('sums')) && /Statement\s*type it above/i.test(await text('sums')), await text('sums'));
+  // Someone opening this for the first time sees a table and empty boxes, so the one thing to
+  // do first is said out loud, and the cursor is already where that happens.
+  check('opening it says what to do first, and puts the cursor there',
+    /closing balance your statement shows/.test(await text('next')) && (await tab.eval('document.activeElement.id')) === 'balance', await text('next'));
   check('a posting after the statement date is faded, and said', (await tab.eval("document.querySelectorAll('#rows tr.later').length")) === 1 && /1 later posting, after the statement date/.test(await text('notes')), await text('notes'));
   await type('balance', '5,670,000');
+  check('and the line follows the state, counting what is left to account for',
+    /4,670,000\.00 IDR still to account for/.test(await text('next')), await text('next'));
   check('with the statement balance typed, the difference is there', (await difference()) === '4,670,000.00 IDR', await difference());
   await tickRow(0);
   await tickRow(1);
@@ -994,6 +1048,8 @@ async function reconciling(tab) {
   await type('balance', '5,670,000');
   await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
   check('a ticks every posting shown up to the date', (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await difference()) === '0.00 IDR', '');
+  check('and at zero the line says the totals match and Finish is the move',
+    /totals match/.test(await text('next')) && /Finish/.test(await text('next')), await text('next'));
   await tab.key('/', { code: 'Slash', keyCode: 191, text: '/' });
   await tab.send('Input.insertText', { text: 'coffee' });
   await sleep(100);
@@ -1223,6 +1279,16 @@ let failure = null;
 try {
   await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
   const tab = await Tab.open(cdp, base);
+  // Said once, here, rather than as a click that misses its target later.
+  const lineHeight = await tab.eval(`(() => {
+    const probe = document.createElement('span');
+    probe.textContent = 'Reconcile 123';
+    document.body.append(probe);
+    const height = probe.getBoundingClientRect().height;
+    probe.remove();
+    return height;
+  })()`);
+  if (!lineHeight) throw new Error('text lays out 0 pixels high, so this machine has no fonts Chrome can use: install one, or set FONTCONFIG_FILE');
   await everyChartDraws(tab);
   await theLineChart(tab);
   await zooming(tab);
