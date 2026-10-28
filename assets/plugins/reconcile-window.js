@@ -18,6 +18,18 @@
 import { checkpoints, hints, ordered, parseInput, readTransaction, readable, summarize, template } from './reconcile-data.js';
 import { escape, isLight, mix } from './window-kit.js';
 
+/**
+ * The edit control's mark: a pencil, drawn rather than typed.
+ *
+ * A character would need the font to have a picture of a pencil, and the marks people's
+ * fonts do have for this are inconsistent and were not wanted. It is stroked in
+ * `currentColor`, so it takes the button's colour and therefore the theme's, and it is
+ * hidden from assistive technology because the button already carries the name.
+ */
+const PENCIL = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">'
+  + '<path d="M4 20h4L20 8a2.83 2.83 0 0 0-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>'
+  + '</svg>';
+
 /** The whole document, with the data in a JSON block and the page to be mounted. */
 export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module }) {
   const payload = JSON.stringify({ data, colors, token, files, accounts, statementDate, statementBalance, fingerprint }).replace(/</g, '\\u003c');
@@ -56,9 +68,14 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   button { font:inherit; color:${colors.foreground}; background:${soft}; border:1px solid ${colors.dim}66; border-radius:4px; padding:5px 12px; cursor:pointer; }
   button.primary { background:${colors.accent}; color:${colors.background}; border-color:${colors.accent}; font-weight:600; }
   button:disabled { opacity:.45; cursor:not-allowed; }
-  /* A word rather than a glyph: it says what it does, it does not depend on the font
-     having a picture of a pencil, and it looks the same in either theme. Small and
-     nowrap, so the column stays as tight as the icon was. */
+  /* The edit control sits beside the description rather than in a column of its own. A whole
+     column for one small mark cost width on every row, and on a narrow window that width is
+     what pushed the difference off the screen. Quiet until it is wanted. */
+  button.edit { background:none; border:none; padding:0; color:${colors.dim};
+    cursor:pointer; vertical-align:-2px; line-height:0; }
+  button.edit:hover, button.edit:focus-visible { color:${colors.foreground}; }
+  button.edit svg { display:block; }
+  /* The restore link beside a deleted posting keeps the word, since it is not an icon. */
   button.icon { background:none; border:none; padding:0 2px; color:${colors.dim}; font-size:11px; white-space:nowrap; }
   button.icon:hover { color:${colors.foreground}; text-decoration:underline; }
   /* Narrow, the table is wider than the window: let it scroll rather than cutting the
@@ -126,7 +143,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div id="status" role="status"></div>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
-  <div class="table"><table><thead><tr><th class="tick" aria-label="ticked"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th><th aria-label="edit"></th></tr></thead><tbody id="rows"></tbody></table></div>
+  <div class="table"><table><thead><tr><th class="tick" aria-label="ticked"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
   <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks all shown · / searches</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
@@ -312,11 +329,10 @@ export function mount(root = document) {
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
     return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}" aria-selected="${ticked.has(row.id)}">
 <td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${escape(row.date)}</td>
-<td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}<br><span class="against">${escape(row.against || '')}</span></td>
+<td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">${PENCIL}</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
 <td class="n expect"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
-<td class="n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td>
-<td><button class="icon" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button></td></tr>`;
+<td class="n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
   }
 
   /** What a transaction's text means for the account, said under the editor as it is typed. */
@@ -345,7 +361,7 @@ export function mount(root = document) {
     const text = textOf(row);
     const readable = text != null;
     const height = Math.min(16, Math.max(4, (text || '').split('\n').length + 1));
-    return `<tr class="editor" data-editor="${escape(row.id)}"><td></td><td colspan="7"><div class="editing">
+    return `<tr class="editor" data-editor="${escape(row.id)}"><td></td><td colspan="6"><div class="editing">
 <textarea name="text" rows="${height}" spellcheck="false" aria-label="the transaction, as journal text"${readable ? '' : ' disabled'}>${escape(text || '')}</textarea>
 <p class="reading" id="reading">${escape(readable ? reading(text) : 'Its file cannot be read here, so it cannot be edited; use edit in the terminal.')}</p>
 <div class="buttons"><button class="primary" data-keep="${escape(row.id)}"${readable ? '' : ' disabled'}>Keep</button>
