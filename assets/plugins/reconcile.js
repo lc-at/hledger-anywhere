@@ -41,7 +41,7 @@ export function parseLine(args) {
     else if (flag === '--balance') out.balance = value();
     else if (flag === '--commodity' || flag === '--cur') out.commodity = value();
     else if (word.startsWith('--')) return { error: `${word} is not something reconcile takes. It takes an account, --statement YYYY-MM-DD, --balance AMOUNT and --commodity NAME.` };
-    else if (out.account) return { error: `one account at a time: ${out.account} or ${word}?` };
+    else if (out.account) return { error: `one account at a time, so ${out.account} or ${word}? A name with a space in it needs quotes.` };
     else out.account = word;
   }
   if (!out.account) return { error: 'which account? For example: reconcile assets:bank:checking. Tab completes account names.' };
@@ -62,9 +62,9 @@ export function resolveAccount(word, accounts) {
   // `mandiri` matches Assets:Mandiri and Assets:Mandiri:Now5782, and means the first.
   const tops = matches.filter((name) => !matches.some((other) => other !== name && name.startsWith(`${other}:`)));
   if (tops.length === 1) return { account: tops[0] };
-  if (!matches.length) return { error: `no account matches ${word}.` };
+  if (!matches.length) return { error: `no account matches ${word}. Type accounts to list them.` };
   const shown = tops.slice(0, 8).join(', ');
-  return { error: `${word} matches ${tops.length} accounts: ${shown}${tops.length > 8 ? ', ...' : ''}. Name one.` };
+  return { error: `${word} matches ${tops.length} accounts: ${shown}${tops.length > 8 ? ', ...' : ''}. Name one, or the whole path.` };
 }
 
 /**

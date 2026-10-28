@@ -148,7 +148,9 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
   }
   const sample = found.flatMap(({ posting }) => posting.pamount || []).find((amount) => amount.acommodity === commodity);
   const style = styleOf(sample || { acommodity: commodity });
-  const others = [...counts.keys()].filter((name) => name !== commodity).sort();
+  // A posting with no commodity (a bare number, or one hledger could not name) is not another
+  // commodity worth reporting: naming it would print an empty name in the window's summary.
+  const others = [...counts.keys()].filter((name) => name && name !== commodity).sort();
 
   const rows = [];
   let start = null;
@@ -205,22 +207,24 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
  */
 export function ordered(data, { edits = {}, inserts = [] } = {}) {
   const rows = [];
-  const editedTransactions = new Set();
+  // Which transactions an edit speaks for, found once rather than per row: a transaction with
+  // two postings to the account would otherwise rescan every row to find its sibling.
+  const edited = new Set();
+  for (const row of data.rows) {
+    if (edits[row.id] && edits[row.id].text != null) edited.add(transactionOf(row));
+  }
   data.rows.forEach((row, at) => {
-    const transaction = transactionOf(row);
     const edit = edits[row.id];
     if (edit && edit.text != null) {
-      editedTransactions.add(transaction);
       if (!edit.text.trim()) return;
       const read = readTransaction(edit.text, data.account, data.style, data.inclusive);
       rows.push({ ...row, date: read.date || row.date, description: read.description != null ? read.description : row.description, against: read.against, amount: read.amount, at, edited: true, unknown: read.amount == null });
       return;
     }
     // A transaction edited through another of its rows is that row now.
-    if (data.rows.some((other) => other !== row && transactionOf(other) === transaction && edits[other.id] && edits[other.id].text != null)) return;
+    if (edited.has(transactionOf(row))) return;
     rows.push({ ...row, at, edited: false });
   });
-  void editedTransactions;
   inserts.forEach((insert, at) => {
     const read = readTransaction(insert.text || '', data.account, data.style, data.inclusive);
     const date = read.date || insert.date;

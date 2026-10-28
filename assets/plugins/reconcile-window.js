@@ -37,12 +37,16 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   input { font:inherit; color:${colors.foreground}; background:${softer}; border:1px solid ${colors.dim}66; border-radius:4px; padding:5px 8px; }
   input:disabled { opacity:.5; }
   input:focus-visible, button:focus-visible, tr:focus-visible { outline:2px solid ${colors.accent}; outline-offset:1px; }
-  .sums { display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:1px; background:${colors.dim}44; border-radius:6px; overflow:hidden; margin:0 0 10px; }
+  .sums { display:flex; flex-wrap:wrap; gap:1px; background:${colors.dim}44; border-radius:6px; overflow:hidden; margin:0 0 10px; }
+  .sums div { flex:1 1 150px; }
   .sums div { background:${colors.background}; padding:8px 10px; }
   .sums span { display:block; font-size:11px; color:${colors.dim}; text-transform:uppercase; letter-spacing:.04em; }
   .sums b { font-variant-numeric:tabular-nums; font-weight:600; }
+  /* The difference is the number the whole window is for, so it is the loud one. */
+  .sums .difference { background:${softer}; }
   .sums .difference b { font-size:20px; }
   .sums .difference.zero b { color:${colors.accent}; }
+  .sums .difference.zero span::after { content:' matches'; }
   .note, .hints p { font-size:13px; margin:4px 0; }
   .hints p { color:${colors.foreground}; border-left:2px solid ${colors.accent}; padding-left:8px; cursor:default; }
   .hints button { margin-left:8px; padding:1px 8px; font-size:12px; }
@@ -54,12 +58,21 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   button:disabled { opacity:.45; cursor:not-allowed; }
   button.icon { background:none; border:none; padding:0 4px; color:${colors.dim}; }
   button.icon:hover { color:${colors.foreground}; }
+  /* Narrow, the table is wider than the window: let it scroll rather than cutting the
+     last columns off, which is where the edit button and the difference live. */
+  .table { overflow-x:auto; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th { text-align:left; color:${colors.dim}; font-weight:400; border-bottom:1px solid ${colors.dim}55; padding:4px 6px; position:sticky; top:0; background:${colors.background}; z-index:1; }
   td { padding:4px 6px; border-bottom:1px solid ${colors.dim}22; vertical-align:top; }
   td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   td.tick { width:24px; text-align:center; }
-  td.expect input { width:120px; text-align:right; padding:2px 6px; font-variant-numeric:tabular-nums; }
+  /* A date on two lines costs a row twice the height and reads worse. */
+  td.date, th.date { white-space:nowrap; width:1%; }
+  /* An optional column of boxes should not outshine the postings themselves: it is a line
+     until it is used, and only the row under the pointer or the cursor shows it. */
+  td.expect input { width:110px; text-align:right; padding:2px 6px; font-variant-numeric:tabular-nums;
+    background:none; border-color:transparent; }
+  tr:hover td.expect input, td.expect input:hover, td.expect input:focus { background:${softer}; border-color:${colors.dim}66; }
   td.delta.off { color:${colors.accent}; font-weight:600; }
   td.delta.ok { color:${colors.dim}; }
   tr { cursor:pointer; }
@@ -83,6 +96,10 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   #status { font-size:13px; margin:8px 0; min-height:1.5em; }
   #status.error { color:${colors.accent}; }
   .keys { color:${colors.dim}; font-size:12px; margin-top:16px; }
+  /* The one line that says what to do next. It changes as the work moves on. */
+  #next { font-size:13px; margin:0 0 12px; padding:8px 10px; border-left:2px solid ${colors.accent}; background:${softer}; }
+  #next b { font-weight:600; }
+  .readonly { color:${colors.dim}; }
 </style></head>
 <body><main>
   <h1>reconcile ${escape(data.account)}</h1>
@@ -92,6 +109,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
     <label>Statement closing balance<input type="text" id="balance" inputmode="decimal" placeholder="as the statement says it" value="${escape(statementBalance || '')}" autocomplete="off"></label>
   </div>
   <div class="sums" id="sums"></div>
+  <p id="next"></p>
   <div id="notes"></div>
   <div class="hints" id="hints"></div>
   <div class="tools">
@@ -105,8 +123,8 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div id="status" role="status"></div>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
-  <table><thead><tr><th class="tick" aria-label="ticked"></th><th>Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n">Statement balance</th><th class="n">Difference</th><th aria-label="edit"></th></tr></thead><tbody id="rows"></tbody></table>
-  <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks every posting shown · / searches · Ctrl+Enter keeps an edit · Esc closes</p>
+  <div class="table"><table><thead><tr><th class="tick" aria-label="ticked"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th><th aria-label="edit"></th></tr></thead><tbody id="rows"></tbody></table></div>
+  <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks all shown · / searches</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
 <script type="module">import { mount } from ${JSON.stringify(module)}; mount();</script>
@@ -179,13 +197,13 @@ export function mount(root = document) {
   function drawSums() {
     const now = sums();
     const { balance } = statement();
-    const cell = (name, value, extra = '') => `<div class="${extra}"><span>${name}</span><b>${escape(value)}</b></div>`;
+    const cell = (name, value, extra = '', hint = '') => `<div class="${extra}"${hint ? ` title="${escape(hint)}"` : ''}><span>${name}</span><b>${escape(value)}</b></div>`;
     $('sums').innerHTML = [
-      cell('Opening', money(now.opening)),
-      cell(`Ticked (${now.tickedCount})`, money(now.tickedTotal)),
-      cell('Expected', money(now.expected)),
-      cell('Statement', balance == null ? 'type it above' : money(balance)),
-      cell('Difference', now.difference == null ? '-' : money(now.difference), `difference${now.difference === 0 ? ' zero' : ''}`),
+      cell('Opening', money(now.opening), '', 'the balance this account was last proven to have'),
+      cell(`Ticked (${now.tickedCount})`, money(now.tickedTotal), '', 'the ticked postings added up'),
+      cell('Journal', money(now.expected), '', 'opening plus the ticked postings: what the journal says you have'),
+      cell('Statement', balance == null ? 'type it above' : money(balance), '', 'the closing balance you typed'),
+      cell('Difference', now.difference == null ? '-' : money(now.difference), `difference${now.difference === 0 ? ' zero' : ''}`, 'statement less journal: zero when they agree'),
     ].join('');
     const notes = [];
     if (now.tooEarly) notes.push(`The statement date is before ${state.data.start.date}, where this account's balance is already asserted.`);
@@ -227,6 +245,25 @@ export function mount(root = document) {
     $('finish').disabled = !now.canFinish;
     $('finish').textContent = writable ? 'Finish' : 'Finish (copy the assertion)';
     $('finish').title = now.canFinish ? 'mark the ticked postings and assert the statement balance' : 'at a difference of zero, with every posting up to the date ticked';
+    $('next').innerHTML = nextStep(now, balance, writable);
+  }
+
+  /**
+   * The one line that says what to do now. A window of numbers and empty boxes says nothing to
+   * someone opening it for the first time, and the state it is in is exactly what decides the
+   * next move, so it is written from that rather than left as a fixed paragraph.
+   */
+  function nextStep(now, balance, writable) {
+    const readOnly = writable ? '' : ` <span class="readonly">The journal is read-only, so nothing can be written: run <b>open</b> in the terminal to edit it.</span>`;
+    if (now.tooEarly) return 'Set the statement date after the balance already asserted below.';
+    if (balance == null) return `Type the closing balance your statement shows, then tick the lines the statement has.${readOnly}`;
+    if (now.difference == null) return `Tick the lines your statement shows.${readOnly}`;
+    if (now.difference !== 0) {
+      return `Tick the lines your statement shows. <b>${escape(money(now.difference))}</b> still to account for${now.tickedCount ? '' : ', and nothing is ticked yet'}.${readOnly}`;
+    }
+    if (now.outstanding.length) return `The totals match, but ${now.outstanding.length} posting${now.outstanding.length === 1 ? ' is' : 's are'} dated on or before the statement and not ticked. See below.`;
+    if (!writable) return 'The totals match. Finish shows the assertion to copy into the journal yourself.';
+    return 'The totals match. <b>Finish</b> marks the ticked postings and writes the balance assertion.';
   }
 
   /** What Save would write, in words: nothing to say when there is nothing to write. */
@@ -259,7 +296,7 @@ export function mount(root = document) {
     const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
     return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}" aria-selected="${ticked.has(row.id)}">
-<td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td>${escape(row.date)}</td>
+<td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${escape(row.date)}</td>
 <td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}<br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
 <td class="n expect"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
@@ -548,6 +585,14 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     else if (event.key === '/') { event.preventDefault(); $('search').focus(); }
   });
 
+  // The statement balance is the first thing to type when it was not given, so the cursor is
+  // already there. Otherwise the postings are, and the keys do something straight away.
+  const balanceGiven = $('balance').value.trim() !== '';
+  $('balance').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); moveFocus(0); }
+  });
+
   drawSub();
   drawRows();
+  if (balanceGiven) moveFocus(0); else $('balance').focus();
 }
