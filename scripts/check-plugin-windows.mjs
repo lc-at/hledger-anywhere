@@ -1149,6 +1149,27 @@ async function reconcileRunning(tab) {
   check('an edit changes the amount and every balance after it, and is marked',
     (await cell(0, 3)) === '-25,000.00 IDR' && (await cell(0, 4)) === '975,000.00 IDR' && /Coffee beansedited/.test(await cell(0, 2)) && /1 edit, 1 new/.test(await text('pending')),
     `${await cell(0, 3)} ${await cell(0, 4)} ${await text('pending')}`);
+  // The per-row control is a word, not a glyph: a pencil needed a font to have a picture
+  // of a pencil, said nothing a screen reader could use that the label did not already
+  // say, and reads differently in each theme. What matters is the name, so the name is
+  // asserted here rather than the character that used to be drawn.
+  const editControl = await tab.eval(`(() => {
+    const button = document.querySelector('#rows button[data-edit]');
+    button.focus();
+    return {
+      text: button.textContent.trim(),
+      label: button.getAttribute('aria-label'),
+      title: button.getAttribute('title'),
+      ascii: /^[ -~]+$/.test(button.textContent.trim()),
+      focusable: document.activeElement === button,
+      header: document.querySelector('thead th[aria-label="edit"]') !== null,
+      width: Math.round(button.getBoundingClientRect().width),
+    };
+  })()`);
+  check('the edit control is a word that says what it does, and is reachable',
+    editControl.text === 'edit' && editControl.label === 'edit' && editControl.title === 'edit (e)'
+    && editControl.ascii && editControl.focusable && editControl.header && editControl.width < 48,
+    JSON.stringify(editControl));
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
   check('an edit reopens with what was typed, and can be undone', /Coffee beans/.test(await area()) && (await tab.eval("!!document.querySelector('tr.editor [data-undo]')")), '');
   await tab.eval("document.querySelector('tr.editor [data-undo]').click()");

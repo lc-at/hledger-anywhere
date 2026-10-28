@@ -56,8 +56,11 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   button { font:inherit; color:${colors.foreground}; background:${soft}; border:1px solid ${colors.dim}66; border-radius:4px; padding:5px 12px; cursor:pointer; }
   button.primary { background:${colors.accent}; color:${colors.background}; border-color:${colors.accent}; font-weight:600; }
   button:disabled { opacity:.45; cursor:not-allowed; }
-  button.icon { background:none; border:none; padding:0 4px; color:${colors.dim}; }
-  button.icon:hover { color:${colors.foreground}; }
+  /* A word rather than a glyph: it says what it does, it does not depend on the font
+     having a picture of a pencil, and it looks the same in either theme. Small and
+     nowrap, so the column stays as tight as the icon was. */
+  button.icon { background:none; border:none; padding:0 2px; color:${colors.dim}; font-size:11px; white-space:nowrap; }
+  button.icon:hover { color:${colors.foreground}; text-decoration:underline; }
   /* Narrow, the table is wider than the window: let it scroll rather than cutting the
      last columns off, which is where the edit button and the difference live. */
   .table { overflow-x:auto; }
@@ -301,7 +304,7 @@ export function mount(root = document) {
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
 <td class="n expect"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
 <td class="n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td>
-<td><button class="icon" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">✎</button></td></tr>`;
+<td><button class="icon" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button></td></tr>`;
   }
 
   /** What a transaction's text means for the account, said under the editor as it is typed. */
