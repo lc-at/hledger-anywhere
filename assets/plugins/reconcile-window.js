@@ -209,6 +209,18 @@ export function mount(root = document) {
       cell('Difference', now.difference == null ? '-' : money(now.difference), `difference${now.difference === 0 ? ' zero' : ''}`, 'statement less journal: zero when they agree'),
     ].join('');
     const notes = [];
+    // Why the list starts where it does, and how much of it is already done. Without this a
+    // journal whose balance was last asserted months ago opens on months of finished work
+    // and looks stuck there.
+    const done = (() => {
+      const cleared = rows().filter((row) => row.status === 'Cleared');
+      return cleared.length ? { count: cleared.length, last: cleared[cleared.length - 1].date } : null;
+    })();
+    if (done && state.data.start) {
+      notes.push(`The list starts at ${state.data.start.date}, where this account's balance was last asserted. ${done.count} posting${done.count === 1 ? '' : 's'} up to ${done.last} ${done.count === 1 ? 'is' : 'are'} already cleared and ticked. Finish writes a new assertion, so the next reconcile starts where this one ended.`);
+    } else if (done) {
+      notes.push(`${done.count} posting${done.count === 1 ? ' is' : 's are'} already cleared and ticked, up to ${done.last}.`);
+    }
     if (now.tooEarly) notes.push(`The statement date is before ${state.data.start.date}, where this account's balance is already asserted.`);
     if (now.difference === 0 && now.outstanding.length) {
       notes.push(`${now.outstanding.length} posting${now.outstanding.length === 1 ? ' is' : 's are'} dated on or before the statement but not ticked. A balance assertion counts every posting up to its date, so tick ${now.outstanding.length === 1 ? 'it' : 'them'}, set the statement date earlier, or give ${now.outstanding.length === 1 ? 'it' : 'them'} the date the bank shows.`);
@@ -597,5 +609,17 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
 
   drawSub();
   drawRows();
-  if (balanceGiven) moveFocus(0); else $('balance').focus();
+  // Open where the work is. A journal last asserted months ago lists months of postings that
+  // are already cleared and ticked, and starting at the top of those makes the window look as
+  // though nothing has been done. The rows stay, because the running balances need them, but
+  // the view starts at the first one still to do.
+  const firstLeft = shown.findIndex((row) => !ticked.has(row.id));
+  const left = firstLeft > 0 ? firstLeft : 0;
+  // Focus before scrolling: focusing the balance field scrolls back to the top, so doing it
+  // afterwards would undo the scroll below.
+  if (balanceGiven) moveFocus(left); else $('balance').focus();
+  if (left > 0) {
+    const tr = [...$('rows').children].find((element) => element.dataset.id === shown[left].id);
+    if (tr && typeof tr.scrollIntoView === 'function') tr.scrollIntoView({ block: 'center' });
+  }
 }

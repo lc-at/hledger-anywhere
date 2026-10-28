@@ -52,6 +52,17 @@ for (const row of RECONCILE_DATA.rows) {
   row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
 }
 
+// The same journal with its first two transactions marked, which is how most journals are
+// kept: a `*` on the transaction line, and no mark on the postings under it. Used to check
+// that the window opens on work already done as done, rather than as a backlog.
+const RECONCILE_PRINT_MARKED = RECONCILE_PRINT.map((transaction) => (
+  transaction.tindex === 2 || transaction.tindex === 3 ? { ...transaction, tstatus: 'Cleared' } : transaction
+));
+const RECONCILE_DATA_MARKED = readReconcile(RECONCILE_PRINT_MARKED, 'Assets:Bank:Checking');
+for (const row of RECONCILE_DATA_MARKED.rows) {
+  row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
+}
+
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
 const MEASURED = ['reconcile.js', 'reconcile-data.js', 'reconcile-window.js', 'chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
 /** The least each measured file's code may be executed, as a share of its source. */
@@ -211,7 +222,8 @@ function serve() {
       response.writeHead(200, { 'content-type': types['.html'] });
       const theme = url.searchParams.get('theme');
       response.end(reconcilePage({
-        data: RECONCILE_DATA, colors: theme === 'dark' ? DARK : COLORS, token: 'check',
+        data: url.searchParams.get('marked') ? RECONCILE_DATA_MARKED : RECONCILE_DATA,
+        colors: theme === 'dark' ? DARK : COLORS, token: 'check',
         files: [{ path: 'fixture.journal', writable: url.searchParams.get('writable') !== 'no' }],
         statementDate: '2026-09-30', statementBalance: url.searchParams.get('balance') || '', fingerprint: 'before',
         module: '/plugins/reconcile-window.js',
@@ -1097,6 +1109,42 @@ async function reconciling(tab) {
   check('and copying says what happened', /Copied|Copying was not allowed/.test(await text('status')), await text('status'));
 }
 
+// A journal kept by marking transactions, with its balance last asserted a while back: the
+// window has to show that finished work as done, say where the list starts, and open at what is
+// left. It gets a window of its own because it opens in a different state from the rest.
+async function reconcileAlreadyCleared(tab) {
+  await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
+  const opened = await tab.eval(`(() => ({
+    on: document.querySelectorAll('#rows tr.on').length,
+    total: document.querySelectorAll('#rows tr[data-id]').length,
+    notes: document.getElementById('notes').innerText,
+    focus: document.activeElement.dataset ? document.activeElement.dataset.id : null,
+    firstLeft: [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => !tr.classList.contains('on')).dataset.id,
+  }))()`);
+  check('a marked transaction shows its postings as already cleared, at open',
+    opened.on === 2 && opened.total === 6, JSON.stringify(opened));
+  check('and the window says where the list starts and how much of it is done',
+    /starts at 2026-08-31/.test(opened.notes) && /2 postings up to 2026-09-02 are already cleared/.test(opened.notes), opened.notes);
+  check('and it opens on the first posting still to do, not on the finished ones',
+    opened.focus === opened.firstLeft, `${opened.focus} vs ${opened.firstLeft}`);
+  // The rule that makes an assertion trustworthy still holds: at a difference of zero, Finish
+  // waits for the postings before the statement date that are not ticked. Ticking the marked
+  // ones by default must not become a way of finishing on a partial month.
+  const zero = await tab.eval(`(() => {
+    const balance = document.getElementById('balance');
+    balance.value = '5,979,000';
+    balance.dispatchEvent(new Event('input', { bubbles: true }));
+    return {
+      difference: document.querySelector('#sums .difference b').textContent.trim(),
+      disabled: document.getElementById('finish').disabled,
+      notes: document.getElementById('notes').innerText,
+    };
+  })()`);
+  check('at a zero difference Finish still waits for the postings left unticked',
+    zero.difference === '0.00 IDR' && zero.disabled && /3 postings are dated on or before the statement but not ticked/.test(zero.notes),
+    JSON.stringify(zero));
+}
+
 async function reconcileRunning(tab) {
   const text = (id) => tab.eval(`document.getElementById('${id}').innerText`);
   const cell = (row, column) => tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${row}].children[${column}].textContent.trim()`);
@@ -1324,6 +1372,7 @@ try {
   await theEditor(tab);
   await reconciling(tab);
   await reconcileRunning(tab);
+  await reconcileAlreadyCleared(tab);
   await coverage.collect(tab);
   coverage.merge((await self.post('Profiler.takePreciseCoverage')).result);
 

@@ -865,9 +865,39 @@ const TREE_MONTHS = [
   check('it reads amounts exactly, in minor units at the commodity\'s precision',
     data.style.precision === 2 && data.rows[0].amount === -2100000 && data.rows[1].amount === 500000000, data.rows.map((row) => row.amount).join());
   check('an inferred amount is read as hledger computed it', data.rows[4].amount === -500000 && data.rows[4].where.occurrence === 1, JSON.stringify(data.rows[4]));
-  check('a posting\'s own mark is read, not its transaction\'s', data.rows[0].status === 'Unmarked' && data.rows[2].status === 'Pending', data.rows.map((row) => row.status).join());
+  check('an unmarked posting of an unmarked transaction is unmarked, and a posting\'s own mark is read',
+    data.rows[0].status === 'Unmarked' && data.rows[2].status === 'Pending', data.rows.map((row) => row.status).join());
   check('and where each is written: the file and the transaction\'s lines', data.rows[0].where.file === 'fixture.journal' && data.rows[0].where.first === 7 && data.rows[0].where.last === 10, JSON.stringify(data.rows[0].where));
   check('quantities convert to any precision', toMinor({ mantissa: 21000, places: 0 }, 2) === 2100000 && toMinor({ mantissa: 1234567, places: 4 }, 2) === 12346 && toMinor({ mantissa: -15, places: 1 }, 0) === -2, '');
+
+  // A posting is cleared when its own mark says so, or when its transaction is marked and
+  // the posting says nothing. hledger agrees: on a journal whose transactions are marked,
+  // `register --cleared` lists the postings and `--uncleared` lists none, so reading only
+  // the posting's own mark made a window report a year of finished work as still to do.
+  {
+    const one = (status, postingStatus, at = 1) => ({
+      tindex: at, tdate: '2026-09-01', tdescription: `x${at}`, tstatus: status,
+      tsourcepos: [{ sourceName: '/f.journal', sourceLine: at * 3 - 2 }, { sourceName: '/f.journal', sourceLine: at * 3 }],
+      tpostings: [
+        { paccount: 'Assets:Bank:Checking', pstatus: postingStatus, pdate: null, ptags: [], pamount: [{ acommodity: 'IDR', aquantity: { decimalMantissa: -1000, decimalPlaces: 2 }, astyle: { ascommodityside: 'R', ascommodityspaced: true, asdecimalmark: '.', asprecision: 2 } }], pbalanceassertion: null },
+        { paccount: 'Expenses:Food', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: [{ acommodity: 'IDR', aquantity: { decimalMantissa: 1000, decimalPlaces: 2 }, astyle: { ascommodityside: 'R', ascommodityspaced: true, asdecimalmark: '.', asprecision: 2 } }], pbalanceassertion: null },
+      ],
+    });
+    const statusOf = (status, postingStatus) => readPrint([one(status, postingStatus)], 'Assets:Bank:Checking').rows[0].status;
+    check('a marked transaction clears its postings, which is how most journals are kept',
+      statusOf('Cleared', 'Unmarked') === 'Cleared', statusOf('Cleared', 'Unmarked'));
+    check('a posting that marks itself keeps its own answer, either way',
+      statusOf('Cleared', 'Pending') === 'Pending' && statusOf('Unmarked', 'Cleared') === 'Cleared',
+      `${statusOf('Cleared', 'Pending')} ${statusOf('Unmarked', 'Cleared')}`);
+    check('and nothing marked stays unmarked', statusOf('Unmarked', 'Unmarked') === 'Unmarked', statusOf('Unmarked', 'Unmarked'));
+    // The consequence that matters: a journal kept by marking transactions opens with that
+    // work already ticked, so the window shows what is left rather than all of it.
+    const marked = readPrint([one('Cleared', 'Unmarked', 1), one('Cleared', 'Unmarked', 2)], 'Assets:Bank:Checking');
+    const ticked = new Set(marked.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+    check('so a journal kept that way opens with its finished work already ticked',
+      ticked.size === marked.rows.length && summarize({ data: marked, ticked, statementDate: '2026-09-30', statementBalance: 9800000 }).outstanding.length === 0,
+      `${ticked.size} of ${marked.rows.length}`);
+  }
 
   const style = data.style;
   check('an amount is written for the journal without grouping, and read with it',

@@ -174,7 +174,16 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
       account: posting.paccount,
       against: transaction.tpostings.filter((other) => other !== posting).map((other) => other.paccount).join(', '),
       amount: amount ? toMinor(quantityOf(amount), style.precision) : 0,
-      status: posting.pstatus || 'Unmarked',
+      // A posting is cleared when its own mark says so, or when its transaction is marked
+      // and the posting says nothing of its own. That is hledger's rule, not a choice: in a
+      // journal whose transactions are marked, `register --cleared` lists them and
+      // `--uncleared` lists none of them, so ignoring the transaction's mark made this
+      // window report a whole year of cleared postings as still to do. A posting that marks
+      // itself (`*` or `!`) keeps its own answer, which is what the marks this plugin
+      // writes are, so a half-reconciled transaction still reads correctly.
+      status: posting.pstatus && posting.pstatus !== 'Unmarked'
+        ? posting.pstatus
+        : (transaction.tstatus || 'Unmarked'),
       generated: (posting.ptags || []).some(([name]) => name === '_generated-posting' || name === 'generated-posting'),
       ownDate: Boolean(posting.pdate),
       simple,
