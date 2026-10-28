@@ -165,7 +165,10 @@ const OPENER = `
         window.__previewed.push(request);
         window.__lastPreview = request;
         return {
-          files: [{ path: 'fixture.journal', changes: request.ticked.map((id, index) => ({ line: 9 + index, before: '    Assets:Bank:Checking', after: '  * Assets:Bank:Checking', id })),
+          files: [{ path: 'fixture.journal', changes: [
+            ...Object.entries(request.moved || {}).slice(0, 1).map(([id, date]) => ({ line: 7, before: '2026-09-01 * Coffee', after: date + ' * Coffee', id })),
+            ...request.ticked.map((id, index) => ({ line: 9 + index, before: '    Assets:Bank:Checking', after: '  * Assets:Bank:Checking', id })),
+          ],
             appended: request.finish ? '2026-09-30 * Reconciled with statement\\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\\n' : '',
             replaced: Object.entries(request.edits || {}).map(([id, edit], at) => ({ line: 7 + at * 4, before: 'old text\\n    of it', after: edit.text })),
             inserted: (request.inserts || []).map((insert) => ({ line: 24, text: insert.text })) }],
@@ -1136,6 +1139,80 @@ async function reconciling(tab) {
 // A journal kept by marking transactions, with its balance last asserted a while back: the
 // window has to show that finished work as done, say where the list starts, and open at what is
 // left. It gets a window of its own because it opens in a different state from the rest.
+// Moving a transaction changes its date, so it appears on a new day in a list that is ordered
+// by date. A drag and Alt+arrow are the same action, and neither writes anything until Save.
+async function reconcileMoving(tab) {
+  await tab.show('reconcile', 'dark');
+  const before = await tab.eval("[...document.querySelectorAll('#rows td.date')].map((td) => td.textContent)");
+  const drag = await tab.eval(`(() => {
+    const rows = [...document.querySelectorAll('#rows tr[data-id]')];
+    const from = rows[0];
+    const to = rows[2];
+    const box = new DataTransfer();
+    const fire = (node, type, extra = {}) => node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: box, ...extra }));
+    fire(from, 'dragstart');
+    const over = fire(to, 'dragover');
+    const target = document.getElementById('status').textContent;
+    const lit = document.querySelectorAll('#rows tr.drop').length;
+    fire(to, 'drop');
+    fire(from, 'dragend');
+    return {
+      dropped: over === false, target, lit,
+      dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent),
+      status: document.getElementById('status').textContent,
+      pending: document.getElementById('pending').textContent,
+    };
+  })()`);
+  check('a drag names the day it would move the transaction to, and lights the target',
+    drag.target === 'move to 2026-09-03' && drag.lit === 1 && drag.dropped === true, JSON.stringify({ target: drag.target, lit: drag.lit }));
+  check('and dropping it re-dates the transaction, so the row appears under that day',
+    drag.dates[0] === '2026-09-02' && drag.dates.includes('2026-09-03') && drag.dates.join() !== before.join(),
+    `${before.join()} -> ${drag.dates.join()}`);
+  check('and it says so, and counts as a pending date change',
+    /^Moved Coffee to 2026-09-03/.test(drag.status) && /1 date changed/.test(drag.pending), `${drag.status} / ${drag.pending}`);
+  // Nothing is written until Save, and Save's preview shows the line it would rewrite.
+  await tab.eval("document.getElementById('progress').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  const preview = await tab.eval("document.getElementById('preview').innerText");
+  check('the preview shows the date change as the line it would rewrite',
+    /2026-09-01 \* Coffee/.test(preview) && /2026-09-03 \* Coffee/.test(preview), preview.slice(0, 200));
+  await tab.eval("document.getElementById('cancel').click()");
+  // The keyboard does the same thing, one day at a time.
+  await tab.show('reconcile', 'dark');
+  const keys = await tab.eval(`(() => {
+    const rows = [...document.querySelectorAll('#rows tr[data-id]')];
+    rows[0].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true }));
+    return {
+      dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent),
+      status: document.getElementById('status').textContent,
+    };
+  })()`);
+  check('Alt+Down moves the focused transaction to the next day with postings, and says where',
+    keys.dates[0] === '2026-09-02' && /^Moved Coffee to 2026-09-02/.test(keys.status), JSON.stringify(keys));
+  // Read-only: the drag cannot start and the keyboard refuses with the message Save uses.
+  await tab.show('reconcile', 'dark', '&writable=no');
+  const locked = await tab.eval(`(() => {
+    const rows = [...document.querySelectorAll('#rows tr[data-id]')];
+    const box = new DataTransfer();
+    const before = rows[0].querySelector('td.date').textContent;
+    rows[0].dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: box }));
+    const cancelled = box.types.length === 0;
+    rows[0].focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true }));
+    return {
+      draggable: rows[0].getAttribute('draggable'),
+      cancelled,
+      status: document.getElementById('status').textContent,
+      date: rows[0].querySelector('td.date').textContent,
+      was: before,
+    };
+  })()`);
+  check('a read-only journal refuses the move, with the message the write actions use',
+    locked.draggable === 'false' && locked.cancelled && /read-only/.test(locked.status) && /run open/.test(locked.status)
+    && locked.date === locked.was, JSON.stringify(locked));
+}
+
 async function reconcileAlreadyCleared(tab) {
   await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
   const opened = await tab.eval(`(() => ({
@@ -1405,6 +1482,7 @@ try {
   await theEditor(tab);
   await reconciling(tab);
   await reconcileRunning(tab);
+  await reconcileMoving(tab);
   await reconcileAlreadyCleared(tab);
   await coverage.collect(tab);
   coverage.merge((await self.post('Profiler.takePreciseCoverage')).result);

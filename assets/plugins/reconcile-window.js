@@ -105,6 +105,9 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   tr.first td { box-shadow:inset 3px 0 0 ${colors.accent}; }
   tr.later td { opacity:.45; }
   tr.editor td { background:${softer}; cursor:default; }
+  /* Where a dragged row would land, and which day it would take. */
+  tr.drop td { box-shadow:inset 0 3px 0 ${colors.accent}; }
+  tr[draggable="true"] { cursor:grab; }
   .editing textarea { display:block; width:100%; box-sizing:border-box; font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;
     color:${colors.foreground}; background:${colors.background}; border:1px solid ${colors.dim}66; border-radius:4px; padding:6px 8px; resize:vertical; tab-size:4; }
   .editing .buttons { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
@@ -147,7 +150,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
   <div class="table"><table><thead><tr><th class="tick" aria-label="cleared" title="a ticked line is cleared: Save writes the mark"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
-  <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks all shown · / searches</p>
+  <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks all shown · Alt+↑↓ moves to the next day · / searches</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
 <script type="module">import { mount } from ${JSON.stringify(module)}; mount();</script>
@@ -191,6 +194,9 @@ export function mount(root = document) {
   let edits = {};
   let inserts = [];
   let expected = {};
+  // Rows whose transaction was moved, and the date it was moved to. Nothing is written until
+  // Save or Finish, like every other change the window makes.
+  let moved = {};
   let editing = null;
   // A posting added to explain a typed balance takes that balance over: the statement's line
   // it stood for is the new posting's.
@@ -209,8 +215,8 @@ export function mount(root = document) {
     return bridges && bridges[state.token];
   };
   const statement = () => ({ date: $('date').value || null, balance: parseInput($('balance').value, style()) });
-  const rows = () => ordered(state.data, { edits, inserts });
-  const sums = () => summarize({ data: state.data, ticked, statementDate: statement().date, statementBalance: statement().balance, edits, inserts });
+  const rows = () => ordered(state.data, { edits, inserts, moved });
+  const sums = () => summarize({ data: state.data, ticked, statementDate: statement().date, statementBalance: statement().balance, edits, inserts, moved });
 
   function say(message, error = false) {
     $('status').textContent = message || '';
@@ -301,14 +307,21 @@ export function mount(root = document) {
     return 'The totals match. <b>Finish</b> marks the ticked postings and writes the balance assertion.';
   }
 
+  /** How many transactions a move would re-date. A transaction may have several rows here. */
+  function movedCount() {
+    return new Set(Object.keys(moved).map((id) => id.split(':')[0])).size;
+  }
+
   /** What Save would write, in words: nothing to say when there is nothing to write. */
   function describe() {
     const marks = state.data.rows.filter((row) => (ticked.has(row.id) ? row.status !== 'Cleared' : row.status === 'Cleared')).length;
     const matched = checkpoints(rows(), expected).points.filter((point) => point.difference === 0).length;
     const deleted = Object.values(edits).filter((edit) => !edit.text.trim()).length;
     const changed = Object.keys(edits).length - deleted;
+    const dates = movedCount();
     const parts = [
       marks && `${marks} to clear`,
+      dates && `${dates} date${dates === 1 ? '' : 's'} changed`,
       changed && `${changed} edit${changed === 1 ? '' : 's'}`,
       deleted && `${deleted} deleted`,
       inserts.length && `${inserts.length} new`,
@@ -330,7 +343,7 @@ export function mount(root = document) {
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
     const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
-    return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
+    return `<tr data-id="${escape(row.id)}" tabindex="-1" draggable="${readOnly() ? 'false' : 'true'}" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
 <td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${escape(row.date)}</td>
 <td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">${PENCIL}</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
@@ -458,6 +471,34 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     trs[focus].focus();
   }
 
+  /** Whether the files behind this window can be written at all. */
+  const readOnly = () => !state.files.some((file) => file.writable);
+
+  /**
+   * Move a transaction to `date`, which is what a drag or Alt+arrow does.
+   *
+   * Moving changes the transaction's date, not its position in the file: the list is ordered by
+   * date, so the row appears in its new place, and nothing else about the journal changes. The
+   * change is pending like an edit, so it is shown in the preview before anything is written.
+   */
+  function moveTo(id, date) {
+    const row = rows().find((entry) => entry.id === id);
+    if (!row || !date || row.date === date) return;
+    if (readOnly()) { say('The journal is read-only, so nothing can be written: run open in the terminal to edit it.', true); return; }
+    if (id.startsWith('new:')) { say('A new posting takes its date from its text. Edit it to change the date.', true); return; }
+    // Every row of the transaction moves with it, so one transaction cannot end up on two dates.
+    // Moved back to the day it was written on, it is not a change at all.
+    const transaction = id.split(':')[0];
+    for (const entry of state.data.rows) {
+      if (entry.id.split(':')[0] !== transaction) continue;
+      if (entry.date === date) delete moved[entry.id];
+      else moved[entry.id] = date;
+    }
+    say(`Moved ${row.description} to ${date}. Finish asserts from there; Save writes the date.`);
+    hidePreview();
+    drawRows();
+  }
+
   function hidePreview() {
     pending = null;
     $('preview').hidden = true;
@@ -469,7 +510,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const link = bridge();
     if (!link) { say('This window has lost touch with the app. Run reconcile again.', true); return; }
     const { date, balance } = statement();
-    const request = { ticked: [...ticked], finish: finish ? { date, balance } : null, edits, inserts, expected, fingerprint: state.fingerprint };
+    const request = { ticked: [...ticked], finish: finish ? { date, balance } : null, edits, inserts, expected, moved, fingerprint: state.fingerprint };
     const result = await link.preview(request);
     const writable = result.writable.some((file) => file.writable);
     const lines = [];
@@ -530,6 +571,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
         // written, because they did not match, are kept where their posting still is.
         edits = {};
         inserts = [];
+        moved = {};
         expected = Object.fromEntries(Object.entries(expected).filter(([id]) => state.data.rows.some((row) => row.id === id)));
       }
     }
@@ -546,6 +588,46 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     drafting = template(date || statement().date || state.statementDate, state.data.account, amount, style());
     drawRows();
   }
+
+  let dragging = null;
+  $('rows').addEventListener('dragstart', (event) => {
+    const tr = event.target.closest('tr[data-id]');
+    if (!tr || readOnly() || tr.dataset.id.startsWith('new:')) { event.preventDefault(); return; }
+    dragging = tr.dataset.id;
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', tr.dataset.id);
+  });
+  $('rows').addEventListener('dragover', (event) => {
+    if (!dragging) return;
+    const tr = event.target.closest('tr[data-id]');
+    if (!tr) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    for (const other of $('rows').children) other.classList.toggle('drop', other === tr);
+    const row = shown.find((entry) => entry.id === tr.dataset.id);
+    const from = shown.find((entry) => entry.id === dragging);
+    if (row && from && row.date !== from.date) say(`move to ${row.date}`);
+    else if (row) say(`${row.date}, the date it already has`);
+  });
+  $('rows').addEventListener('dragleave', (event) => {
+    const tr = event.target.closest('tr[data-id]');
+    if (tr) tr.classList.remove('drop');
+  });
+  $('rows').addEventListener('drop', (event) => {
+    const tr = event.target.closest('tr[data-id]');
+    if (!tr || !dragging) return;
+    event.preventDefault();
+    const target = shown.find((entry) => entry.id === tr.dataset.id);
+    const id = dragging;
+    dragging = null;
+    for (const other of $('rows').children) other.classList.remove('drop');
+    if (target) moveTo(id, target.date);
+  });
+  $('rows').addEventListener('dragend', () => {
+    dragging = null;
+    for (const other of $('rows').children) other.classList.remove('drop');
+    if (!$('status').textContent.startsWith('Moved')) say('');
+  });
 
   $('rows').addEventListener('click', (event) => {
     const button = event.target.closest('button');
@@ -615,6 +697,25 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     }
     if (typing) return;
     const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
+    // Alt with an arrow moves the transaction to the next day that has postings, which is the
+    // keyboard's version of dropping it on a row. It changes the date, as a drag does. It comes
+    // before the plain arrows below, which take the same keys for moving the focus.
+    if (event.altKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp') && trs[focus]) {
+      event.preventDefault();
+      const at = shown.findIndex((row) => row.id === trs[focus].dataset.id);
+      const here = shown[at] && shown[at].date;
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      let target = null;
+      for (let index = at + step; index >= 0 && index < shown.length; index += step) {
+        if (shown[index].date !== here) { target = shown[index]; break; }
+      }
+      if (!target) {
+        say(`There is no ${step > 0 ? 'later' : 'earlier'} date in this list to move it to.`, true);
+        return;
+      }
+      moveTo(trs[focus].dataset.id, target.date);
+      return;
+    }
     if (event.key === 'ArrowDown' || event.key === 'j') { event.preventDefault(); moveFocus(focus + 1); }
     else if (event.key === 'ArrowUp' || event.key === 'k') { event.preventDefault(); moveFocus(focus - 1); }
     else if (event.key === ' ' && trs[focus] && event.target.tagName !== 'BUTTON') { event.preventDefault(); toggle(trs[focus].dataset.id); }

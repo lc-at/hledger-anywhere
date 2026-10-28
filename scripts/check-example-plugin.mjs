@@ -952,6 +952,41 @@ const TREE_MONTHS = [
 
   check('a search finds by description, account and amount, grouping aside',
     matching(data.rows, 'coffee', style).length === 1 && matching(data.rows, 'income', style).length === 1 && matching(data.rows, '21000', style).length === 1 && matching(data.rows, '21,000', style).length === 1, '');
+
+  // Moving a transaction changes its date, on its own first line. Nothing has to move in the
+  // file, so a move cannot overlap the block that a mark, an edit or an assertion rewrites; the
+  // tests below hold it to that by combining a move with each of them.
+  const texts = { 'fixture.journal': RECONCILE_JOURNAL };
+  const coffee = data.rows[0];
+  const salary = data.rows[1];
+  const written = (result) => result.files[0] || { changes: [], after: '', replaced: [], inserted: [], appended: '' };
+  const alone = written(plan({ data, texts, ticked: new Set(), moved: { [coffee.id]: '2026-09-04' } }));
+  check('a move rewrites the date on the transaction line and nothing else',
+    alone.changes.length === 1 && alone.changes[0].before === '2026-09-01 * Coffee'
+    && alone.changes[0].after === '2026-09-04 * Coffee', JSON.stringify(alone.changes));
+
+  const withMark = written(plan({ data, texts, ticked: new Set([coffee.id]), moved: { [coffee.id]: '2026-09-04' } }));
+  check('a move and a mark on the same transaction both land, neither dropped nor doubled',
+    withMark.changes.length === 2
+    && withMark.changes.some((change) => change.after === '2026-09-04 * Coffee')
+    && withMark.changes.some((change) => /^ {2}\* Assets:Bank:Checking/.test(change.after)),
+    JSON.stringify(withMark.changes));
+
+  const withEdit = written(plan({ data, texts, ticked: new Set(), edits: { [coffee.id]: { text: '2026-09-01 * Coffee beans\n    Expenses:Food    25000 IDR\n    Assets:Bank:Checking' } }, moved: { [coffee.id]: '2026-09-04' } }));
+  check('a move rewrites the date of an edited transaction too, keeping the edit',
+    withEdit.after.includes('2026-09-04 * Coffee beans') && withEdit.after.includes('25000 IDR'),
+    withEdit.after.split('\n').slice(6, 10).join(' | '));
+
+  const withInsert = written(plan({ data, texts, ticked: new Set(), moved: { [coffee.id]: '2026-09-04' }, inserts: [{ id: 'new:1', text: '2026-09-02 * Fee\n    Assets:Bank:Checking    -1000 IDR\n    Expenses:Fees', after: salary.id }] }));
+  const insertedText = withInsert.after.includes('2026-09-02 * Fee');
+  check('a move beside an insertion leaves both in the file',
+    insertedText && withInsert.changes.some((change) => change.after === '2026-09-04 * Coffee')
+    && withInsert.inserted.length === 1, `${insertedText} ${JSON.stringify(withInsert.changes)}`);
+
+  const withDelete = written(plan({ data, texts, ticked: new Set(), edits: { [salary.id]: { text: '' } }, moved: { [coffee.id]: '2026-09-04' } }));
+  check('a move beside a deletion deletes that transaction and moves only the other',
+    !withDelete.after.includes('* Salary') && withDelete.after.includes('2026-09-04 * Coffee')
+    && withDelete.replaced.length === 1, JSON.stringify(withDelete.replaced));
 }
 
 {
