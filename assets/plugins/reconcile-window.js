@@ -58,8 +58,8 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   button.primary { background:${colors.accent}; color:${colors.background}; border-color:${colors.accent}; font-weight:600; }
   button:disabled { opacity:.45; cursor:not-allowed; }
   /* The edit control sits beside the description rather than in a column of its own. A whole
-     column for one small mark cost width on every row, and on a narrow window that width is
-     what pushed the difference off the screen. Quiet until it is wanted. */
+     column for one small control cost width on every row, and on a narrow window that width is
+     what pushed the difference off the screen. It is a word, quiet until it is wanted. */
   button.edit { background:none; border:none; padding:0; margin-left:4px; color:${colors.dim};
     cursor:pointer; font-size:11px; vertical-align:1px; }
   button.edit:hover, button.edit:focus-visible { color:${colors.foreground}; text-decoration:underline; }
@@ -331,7 +331,7 @@ export function mount(root = document) {
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
     const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
-    return `<tr data-id="${escape(row.id)}" tabindex="-1" draggable="${readOnly() ? 'false' : 'true'}" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
+    return `<tr data-id="${escape(row.id)}" tabindex="-1" draggable="true" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
 <td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${escape(row.date)}</td>
 <td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
@@ -582,10 +582,19 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   let dragging = null;
   $('rows').addEventListener('dragstart', (event) => {
     const tr = event.target.closest('tr[data-id]');
-    if (!tr || readOnly() || tr.dataset.id.startsWith('new:')) { event.preventDefault(); return; }
+    if (!tr) { event.preventDefault(); return; }
+    if (tr.dataset.id.startsWith('new:')) {
+      event.preventDefault();
+      say('A new posting takes its date from its text. Edit it to change the date.', true);
+      return;
+    }
+    // A read-only journal still starts the drag, so the drop can say why it will not take it.
+    // Cancelling here instead was silent, and a drag that does nothing looks like a broken
+    // feature rather than a read-only journal.
     dragging = tr.dataset.id;
-    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.effectAllowed = readOnly() ? 'none' : 'move';
     event.dataTransfer.setData('text/plain', tr.dataset.id);
+    if (readOnly()) say('The journal is read-only, so the date cannot be changed: run open in the terminal to edit it.', true);
   });
   $('rows').addEventListener('dragover', (event) => {
     if (!dragging) return;
@@ -595,8 +604,14 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const row = shown.find((entry) => entry.id === tr.dataset.id);
     const from = shown.find((entry) => entry.id === dragging);
     const refused = row ? moveRefusal(state.data, row.date) : null;
+    const locked = readOnly();
     // The cursor says no on a target that will not take it, and the line under the table says why.
-    event.dataTransfer.dropEffect = refused ? 'none' : 'move';
+    event.dataTransfer.dropEffect = refused || locked ? 'none' : 'move';
+    if (locked) {
+      for (const other of $('rows').children) other.classList.remove('drop');
+      say('The journal is read-only, so the date cannot be changed: run open in the terminal to edit it.', true);
+      return;
+    }
     for (const other of $('rows').children) other.classList.toggle('drop', other === tr && !refused);
     if (row && refused) {
       say(`cannot move to ${row.date}: it is ${refused}`, true);
@@ -623,7 +638,10 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   $('rows').addEventListener('dragend', () => {
     dragging = null;
     for (const other of $('rows').children) other.classList.remove('drop');
-    if (!$('status').textContent.startsWith('Moved')) say('');
+    // Only the hints this gesture wrote are cleared: a refusal is the answer to what the person
+    // just did, and wiping it on release would be the same silence the drag used to have.
+    const said = $('status').textContent;
+    if (said.startsWith('move to ') || said.startsWith('cannot move to ')) say('');
   });
 
   $('rows').addEventListener('click', (event) => {

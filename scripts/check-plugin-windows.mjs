@@ -482,6 +482,50 @@ class Tab {
   }
 
   /**
+   * A real drag, through the browser's own drag machinery.
+   *
+   * A synthetic DragEvent proves what the handlers do with an event; it does not prove a person
+   * can drag anything, and it cannot catch a drag the browser never starts. This presses on the
+   * source with the mouse, lets the browser decide a drag has begun, takes the drag data it
+   * offers, and drives the drop through the same protocol a real pointer would. Returns false
+   * when the browser never began a drag at all, which is itself the answer to "does dragging
+   * work".
+   */
+  async dragNative(fromSelector, toSelector) {
+    const from = await this.centre(fromSelector);
+    const to = await this.centre(toSelector);
+    await this.send('Input.setInterceptDrags', { enabled: true });
+    const intercepted = new Promise((resolve) => {
+      const stop = this.cdp.on((message) => {
+        if (message.sessionId === this.sessionId && message.method === 'Input.dragIntercepted') {
+          stop();
+          resolve(message.params.data);
+        }
+      });
+    });
+    try {
+      await this.mouse('mouseMoved', from[0], from[1]);
+      await this.mouse('mousePressed', from[0], from[1], { button: 'left', clickCount: 1 });
+      for (let step = 1; step <= 5; step += 1) {
+        await this.mouse('mouseMoved', from[0] + ((to[0] - from[0]) * step) / 5, from[1] + ((to[1] - from[1]) * step) / 5, { button: 'left', buttons: 1 });
+        await sleep(25);
+      }
+      const data = await Promise.race([intercepted, sleep(1500).then(() => null)]);
+      if (!data) return false;
+      await this.send('Input.dispatchDragEvent', { type: 'dragEnter', x: to[0], y: to[1], data });
+      await this.send('Input.dispatchDragEvent', { type: 'dragOver', x: to[0], y: to[1], data });
+      await sleep(40);
+      await this.send('Input.dispatchDragEvent', { type: 'drop', x: to[0], y: to[1], data });
+      return true;
+    } finally {
+      await this.mouse('mouseReleased', to[0], to[1], { button: 'left' });
+      await this.send('Input.setInterceptDrags', { enabled: false });
+      await sleep(80);
+    }
+  }
+
+
+  /**
    * The centre of the first element matching a selector, in page coordinates.
    *
    * It waits for the element to have a size. A node that has just been unhidden, or drawn into
@@ -1153,6 +1197,16 @@ async function reconciling(tab) {
 // by date. A drag and Alt+arrow are the same action, and neither writes anything until Save.
 async function reconcileMoving(tab) {
   await tab.show('reconcile', 'dark');
+  // First the thing a person actually does, through the browser's own drag machinery. Every
+  // other drag check here dispatches a synthetic DragEvent, which cannot fail when the browser
+  // refuses to start a drag at all, and that is exactly how a silently dead drag survived.
+  const nativeMoved = await tab.dragNative('#rows tr:nth-of-type(1)', '#rows tr:nth-of-type(3)');
+  const nativeResult = await tab.eval("({ dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent), said: document.getElementById('status').textContent })");
+  check('a real drag with the mouse moves the transaction, which a synthetic event cannot prove',
+    nativeMoved === true && /^Moved Coffee to 2026-09-03/.test(nativeResult.said)
+    && nativeResult.dates.filter((date) => date === '2026-09-03').length === 2,
+    JSON.stringify({ nativeMoved, ...nativeResult }));
+  await tab.show('reconcile', 'dark');
   const before = await tab.eval("[...document.querySelectorAll('#rows td.date')].map((td) => td.textContent)");
   const drag = await tab.eval(`(() => {
     const rows = [...document.querySelectorAll('#rows tr[data-id]')];
@@ -1243,8 +1297,14 @@ async function reconcileMoving(tab) {
     /^Moved Pending transfer to 2026-10-02/.test(later.said) && later.dates.filter((date) => date === '2026-10-02').length === 2,
     JSON.stringify(later));
 
-  // Read-only: the drag cannot start and the keyboard refuses with the message Save uses.
+  // Read-only: the drag still starts, so the refusal can be seen and read, rather than the row
+  // simply refusing to be picked up with no explanation.
   await tab.show('reconcile', 'dark', '&writable=no');
+  const lockedNative = await tab.dragNative('#rows tr:nth-of-type(1)', '#rows tr:nth-of-type(3)');
+  const lockedNativeState = await tab.eval("({ said: document.getElementById('status').textContent, dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent) })");
+  check('a real drag on a read-only journal starts, says why it cannot move, and moves nothing',
+    lockedNative === true && /read-only/.test(lockedNativeState.said)
+    && lockedNativeState.dates[0] === '2026-09-01', JSON.stringify({ lockedNative, ...lockedNativeState }));
   const locked = await tab.eval(`(() => {
     const rows = [...document.querySelectorAll('#rows tr[data-id]')];
     const box = new DataTransfer();
@@ -1262,7 +1322,7 @@ async function reconcileMoving(tab) {
     };
   })()`);
   check('a read-only journal refuses the move, with the message the write actions use',
-    locked.draggable === 'false' && locked.cancelled && /read-only/.test(locked.status) && /run open/.test(locked.status)
+    locked.draggable === 'true' && /read-only/.test(locked.status) && /run open/.test(locked.status)
     && locked.date === locked.was, JSON.stringify(locked));
 }
 
@@ -1351,6 +1411,9 @@ async function reconcileRunning(tab) {
   check('an edit changes the amount and every balance after it, and is marked',
     (await cell(0, 3)) === '-25,000.00 IDR' && (await cell(0, 4)) === '975,000.00 IDR' && /Coffee beansedited/.test(await cell(0, 2)) && /1 edit, 1 new/.test(await text('pending')),
     `${await cell(0, 3)} ${await cell(0, 4)} ${await text('pending')}`);
+  // The per-row control is a word, and it lives beside the description instead of in a column of
+  // its own: a column for one small control cost width on every row, and on a narrow window that
+  // is the width the difference needs. What matters is the name, so the name is asserted.
   const editControl = await tab.eval(`(() => {
     const button = document.querySelector('#rows button[data-edit]');
     button.focus();
@@ -1372,7 +1435,7 @@ async function reconcileRunning(tab) {
     && editControl.ascii && editControl.focusable && editControl.inDescription
     && editControl.width <= 40, JSON.stringify(editControl));
   check('and there is no column of its own for it any more',
-    editControl.editColumn === false && editControl.columns === 7, editControl.columns + ' columns, edit column ' + editControl.editColumn);
+    editControl.editColumn === false && editControl.columns === 7, `${editControl.columns} columns, edit column ${editControl.editColumn}`);
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
   check('an edit reopens with what was typed, and can be undone', /Coffee beans/.test(await area()) && (await tab.eval("!!document.querySelector('tr.editor [data-undo]')")), '');
   await tab.eval("document.querySelector('tr.editor [data-undo]').click()");
