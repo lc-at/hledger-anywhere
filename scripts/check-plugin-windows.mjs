@@ -1331,16 +1331,39 @@ async function reconcileAlreadyCleared(tab) {
   const opened = await tab.eval(`(() => ({
     on: document.querySelectorAll('#rows tr.on').length,
     total: document.querySelectorAll('#rows tr[data-id]').length,
+    hidden: document.getElementById('hidden').innerText,
     notes: document.getElementById('notes').innerText,
     focus: document.activeElement.dataset ? document.activeElement.dataset.id : null,
     firstLeft: [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => !tr.classList.contains('on')).dataset.id,
   }))()`);
-  check('a marked transaction shows its postings as already cleared, at open',
-    opened.on === 2 && opened.total === 6, JSON.stringify(opened));
+  // They are cleared, so the window hides them and says so, rather than listing work already done.
+  check('a marked transaction\'s postings are hidden as already cleared, and counted',
+    opened.on === 0 && opened.total === 4 && /^2 cleared postings hidden, 2026-09-01 to 2026-09-02/.test(opened.hidden), JSON.stringify(opened));
   check('and the window says where the list starts and how much of it is done',
     /starts at 2026-08-31/.test(opened.notes) && /2 postings up to 2026-09-02 are already cleared/.test(opened.notes), opened.notes);
   check('and it opens on the first posting still to do, not on the finished ones',
     opened.focus === opened.firstLeft, `${opened.focus} vs ${opened.firstLeft}`);
+  // The control that brings them back has to work, and show them as they are: cleared and ticked.
+  const revealed = await tab.eval(`(() => {
+    document.querySelector('[data-toggle-hidden]').click();
+    return {
+      total: document.querySelectorAll('#rows tr[data-id]').length,
+      on: document.querySelectorAll('#rows tr.on').length,
+      line: document.getElementById('hidden').innerText,
+    };
+  })()`);
+  check('and the control that shows them brings them back, still ticked',
+    revealed.total === 6 && revealed.on === 2 && /hide them/.test(revealed.line), JSON.stringify(revealed));
+  // Dragging has to work in the filtered view too, where the rows on screen are not the rows in
+  // the file: the drag targets are visible rows, and the dates they carry are their own.
+  await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
+  const filteredBefore = await tab.eval("[...document.querySelectorAll('#rows td.date')].map((td) => td.textContent)");
+  const filteredDrag = await tab.dragNative('#rows tr:nth-of-type(1)', '#rows tr:nth-of-type(3)');
+  const filteredAfter = await tab.eval("({ dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent), said: document.getElementById('status').textContent, hidden: document.getElementById('hidden').innerText })");
+  check('a real drag works in the filtered view, on the rows that are actually shown',
+    filteredDrag === true && /^Moved Pending transfer to 2026-09-05/.test(filteredAfter.said)
+    && JSON.stringify(filteredAfter.dates) !== JSON.stringify(filteredBefore) && /hidden/.test(filteredAfter.hidden),
+    JSON.stringify({ filteredDrag, before: filteredBefore, ...filteredAfter }));
   // The rule that makes an assertion trustworthy still holds: at a difference of zero, Finish
   // waits for the postings before the statement date that are not ticked. Ticking the marked
   // ones by default must not become a way of finishing on a partial month.

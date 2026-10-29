@@ -15,7 +15,7 @@
  * / searches, Ctrl+Enter keeps an edit, Escape clears the search or closes an editor.
  */
 
-import { checkpoints, hints, moveRefusal, ordered, parseInput, readTransaction, readable, summarize, template } from './reconcile-data.js';
+import { checkpoints, hints, moveRefusal, ordered, parseInput, readTransaction, readable, summarize, template, visibleRows } from './reconcile-data.js';
 import { escape, isLight, mix } from './window-kit.js';
 
 
@@ -113,6 +113,11 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   /* The one line that says what to do next. It changes as the work moves on. */
   #next { font-size:13px; margin:0 0 12px; padding:8px 10px; border-left:2px solid ${colors.accent}; background:${softer}; }
   #next b { font-weight:600; }
+  /* What is hidden, and the way to see it. Quiet, but always there when something is hidden. */
+  .hidden-note { color:${colors.dim}; font-size:12px; margin:0 0 6px; min-height:0; }
+  .hidden-note:empty { display:none; }
+  .hidden-note button { background:none; border:none; padding:0; margin-left:6px; color:${colors.foreground};
+    font:inherit; text-decoration:underline; cursor:pointer; }
   .readonly { color:${colors.dim}; }
 </style></head>
 <body><main>
@@ -137,6 +142,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div id="status" role="status"></div>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
+  <p class="hidden-note" id="hidden"></p>
   <div class="table"><table><thead><tr><th class="tick" aria-label="cleared" title="a ticked line is cleared: Save writes the mark"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
   <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks all shown · Alt+↑↓ moves to the next day · / searches</p>
 </main>
@@ -185,6 +191,12 @@ export function mount(root = document) {
   // Rows whose transaction was moved, and the date it was moved to. Nothing is written until
   // Save or Finish, like every other change the window makes.
   let moved = {};
+  // Rows already cleared when the window opened are hidden by default, so the window opens on the
+  // work still to do. What was cleared is captured once: a row the person ticks or edits from
+  // here stays in view, so nothing vanishes from under the hand that just changed it.
+  let hideCleared = true;
+  const clearedAtOpen = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+  const touched = new Set();
   let editing = null;
   // A posting added to explain a typed balance takes that balance over: the statement's line
   // it stood for is the new posting's.
@@ -326,6 +338,23 @@ export function mount(root = document) {
     $('sub').textContent = `${data.rows.length} postings in ${data.commodity || 'its commodity'}, ${since}${others}. ${files}`;
   }
 
+  /** What is hidden, where it is from, and the control that shows it. */
+  function drawHidden(view) {
+    if (!hideCleared) {
+      const cleared = clearedAtOpen.size;
+      $('hidden').innerHTML = cleared
+        ? `Showing the ${cleared} posting${cleared === 1 ? '' : 's'} that were already cleared<button data-toggle-hidden="1">hide them</button>`
+        : '';
+      return;
+    }
+    if (!view.hidden.length) { $('hidden').innerHTML = ''; return; }
+    const count = view.hidden.length;
+    const from = view.hiddenFrom;
+    const to = view.hiddenTo;
+    const when = from === to ? from : `${from} to ${to}`;
+    $('hidden').innerHTML = `${count} cleared posting${count === 1 ? '' : 's'} hidden, ${escape(when)}<button data-toggle-hidden="1">show them</button>`;
+  }
+
   function rowHtml(row, later, newDay = false) {
     const point = expected[row.id] != null && row.balance != null ? expected[row.id] - row.balance : null;
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
@@ -377,7 +406,19 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
 
   function drawRows() {
     const date = $('date').value;
-    shown = matching(rows(), $('search').value, style());
+    const all = rows();
+    const searching = $('search').value.trim() !== '';
+    // A row is kept in view if the person has done anything to it, so a tick or a typed balance
+    // never disappears from the window it was entered in.
+    const used = new Set(all.filter((row) => touched.has(row.id) || edits[row.id] != null || expected[row.id] != null || moved[row.id] != null).map((row) => row.id));
+    const view = visibleRows(matching(all, $('search').value, style()), {
+      hide: hideCleared,
+      cleared: clearedAtOpen,
+      touched: used,
+      searching,
+    });
+    shown = view.shown;
+    drawHidden(view);
     const html = [];
     if (editing && editing.startsWith('new:') && !inserts.some((insert) => insert.id === editing)) {
       html.push(editorHtml({ id: editing, inserted: true, text: drafting || template(statement().date || state.statementDate, state.data.account, null, style()) }));
@@ -406,6 +447,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const row = rows().find((entry) => entry.id === id);
     const date = $('date').value;
     if (!row || (date && row.date > date)) return;
+    touched.add(id);
     if (ticked.has(id)) ticked.delete(id); else ticked.add(id);
     const tr = [...$('rows').children].find((element) => element.dataset.id === id);
     if (tr) {
@@ -679,6 +721,12 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   $('rows').addEventListener('keydown', (event) => {
     // In the text, Enter is a new line; Ctrl+Enter (or Cmd+Enter) keeps it.
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && event.target.closest('tr.editor')) { event.preventDefault(); keep(event.target.closest('tr.editor').dataset.editor); }
+  });
+  $('hidden').addEventListener('click', (event) => {
+    if (!event.target.closest('[data-toggle-hidden]')) return;
+    hideCleared = !hideCleared;
+    hidePreview();
+    drawRows();
   });
   $('notes').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-restore]');

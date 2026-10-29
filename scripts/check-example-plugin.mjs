@@ -42,7 +42,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, formatHeader, formatPosting, hints, journalAmount, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, formatHeader, formatPosting, hints, journalAmount, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -987,6 +987,32 @@ const TREE_MONTHS = [
   check('a move beside a deletion deletes that transaction and moves only the other',
     !withDelete.after.includes('* Salary') && withDelete.after.includes('2026-09-04 * Coffee')
     && withDelete.replaced.length === 1, JSON.stringify(withDelete.replaced));
+
+  // Hiding already-cleared rows is a view, not a recalculation. The balances are worked out over
+  // every posting first, so a hidden row still counts towards the balance of the row below it.
+  {
+    const all = ordered(data);
+    const cleared = new Set(all.filter((row) => row.status === 'Cleared').map((row) => row.id));
+    const view = visibleRows(all, { hide: true, cleared });
+    check('hiding a cleared row leaves the balance of the rows below it untouched',
+      view.hidden.length === 0 && view.shown.length === all.length, `${view.hidden.length} hidden of ${all.length}`);
+    // Mark two of the six cleared, so they would be hidden, and check the arithmetic downstream.
+    const marked = ordered(readPrint(RECONCILE_PRINT.map((transaction) => (
+      transaction.tindex === 2 || transaction.tindex === 3 ? { ...transaction, tstatus: 'Cleared' } : transaction
+    )), 'Assets:Bank:Checking'));
+    const markedView = visibleRows(marked, { hide: true, cleared: new Set(marked.filter((row) => row.status === 'Cleared').map((row) => row.id)) });
+    check('a hidden cleared row still contributes to the next visible row\'s running balance',
+      markedView.hidden.length === 2 && markedView.shown.length === 4
+      && markedView.shown[0].balance === markedView.hidden[markedView.hidden.length - 1].balance + markedView.shown[0].amount
+      && markedView.hiddenFrom === '2026-09-01' && markedView.hiddenTo === '2026-09-02',
+      `${markedView.hidden.length} hidden, first shown balance ${markedView.shown[0] && markedView.shown[0].balance}`);
+    // Ticking or typing on a row keeps it in view, so nothing vanishes under the hand or is lost.
+    const keptView = visibleRows(marked, { hide: true, cleared: new Set(marked.filter((row) => row.status === 'Cleared').map((row) => row.id)), touched: new Set([marked[0].id]) });
+    check('a row that was touched stays visible, and a search shows everything',
+      keptView.hidden.length === 1 && keptView.shown.includes(marked[0])
+      && visibleRows(marked, { hide: true, cleared: new Set(marked.map((row) => row.id)), searching: true }).hidden.length === 0, '');
+    check('and hiding off shows everything', visibleRows(marked, { hide: false, cleared: new Set(marked.map((row) => row.id)) }).hidden.length === 0, '');
+  }
 
   // A move must not date a posting before the point the balance was asserted at: the assertion
   // says what the balance was that day, and a posting before it would be one it failed to count.

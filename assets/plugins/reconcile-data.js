@@ -343,6 +343,37 @@ export function readTransaction(text, account, style, inclusive = false) {
 }
 
 /**
+ * Which rows a window shows, when the ones already cleared are hidden.
+ *
+ * The accounting does not change: rows arrive here with their balances already worked out over
+ * every posting, so a hidden row still contributes to the balance of the next visible one. This
+ * only decides what to draw. A row is hidden when it was already cleared when the window opened
+ * and the person has not touched it since, so ticking or editing a row never makes it vanish
+ * under the hand that just changed it, and anything carrying typed input stays in view so the
+ * figure cannot be entered and then lost.
+ *
+ * `cleared` is the set of row ids that were already cleared at open, `touched` the ids the person
+ * has since ticked, unticked, edited, moved or typed a statement balance for.
+ */
+export function visibleRows(rows, { hide = true, cleared = new Set(), touched = new Set(), searching = false } = {}) {
+  // A search is an explicit request to see what matches, so it is not filtered behind the
+  // person's back: searching for something and being told it is hidden would be a lie.
+  if (!hide || searching) return { shown: rows, hidden: [], hiddenFrom: null, hiddenTo: null };
+  const shown = [];
+  const hidden = [];
+  for (const row of rows) {
+    if (cleared.has(row.id) && !touched.has(row.id)) hidden.push(row);
+    else shown.push(row);
+  }
+  return {
+    shown,
+    hidden,
+    hiddenFrom: hidden.length ? hidden[0].date : null,
+    hiddenTo: hidden.length ? hidden[hidden.length - 1].date : null,
+  };
+}
+
+/**
  * Each row whose expected running total was typed, and the difference there: the statement's
  * balance after that line less the journal's. The first row where it is not zero is where the
  * journal and the statement part, which is where to look.
