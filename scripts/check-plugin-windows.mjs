@@ -1351,36 +1351,28 @@ async function reconcileRunning(tab) {
   check('an edit changes the amount and every balance after it, and is marked',
     (await cell(0, 3)) === '-25,000.00 IDR' && (await cell(0, 4)) === '975,000.00 IDR' && /Coffee beansedited/.test(await cell(0, 2)) && /1 edit, 1 new/.test(await text('pending')),
     `${await cell(0, 3)} ${await cell(0, 4)} ${await text('pending')}`);
-  // The per-row control is a drawn mark, not a typed character, and it lives beside the
-  // description instead of in a column of its own: a column for one small mark cost width on
-  // every row, and on a narrow window that is the width the difference column needs.
   const editControl = await tab.eval(`(() => {
     const button = document.querySelector('#rows button[data-edit]');
     button.focus();
-    const svg = button.querySelector('svg');
-    const box = button.getBoundingClientRect();
     const cell = document.querySelector('#rows tr[data-id]').children[2];
     return {
+      text: button.textContent.trim(),
       label: button.getAttribute('aria-label'),
       title: button.getAttribute('title'),
+      ascii: /^[ -~]+$/.test(button.textContent.trim()),
       focusable: document.activeElement === button,
       inDescription: button.closest('td') === cell && cell.textContent.trim().length > 0,
-      hasSvg: svg !== null,
-      svgWidth: svg ? Math.round(svg.getBoundingClientRect().width) : 0,
-      stroke: svg && svg.querySelector('path') ? svg.querySelector('path').getAttribute('stroke') : null,
-      hiddenFromAssistive: svg ? svg.getAttribute('aria-hidden') === 'true' : false,
       columns: document.querySelectorAll('thead th').length,
       editColumn: document.querySelector('thead th[aria-label="edit"]') !== null,
-      width: Math.round(box.width),
+      width: Math.round(button.getBoundingClientRect().width),
     };
   })()`);
-  check('the edit control is a drawn mark beside the description, with a name and a focus',
-    editControl.label === 'edit' && editControl.title === 'edit (e)' && editControl.focusable
-    && editControl.inDescription && editControl.hasSvg && editControl.stroke === 'currentColor'
-    && editControl.hiddenFromAssistive && editControl.svgWidth >= 12 && editControl.svgWidth <= 16
-    && editControl.width <= 24, JSON.stringify(editControl));
+  check('the edit control is a word beside the description, with a name and a focus',
+    editControl.text === 'edit' && editControl.label === 'edit' && editControl.title === 'edit (e)'
+    && editControl.ascii && editControl.focusable && editControl.inDescription
+    && editControl.width <= 40, JSON.stringify(editControl));
   check('and there is no column of its own for it any more',
-    editControl.editColumn === false && editControl.columns === 7, `${editControl.columns} columns, edit column ${editControl.editColumn}`);
+    editControl.editColumn === false && editControl.columns === 7, editControl.columns + ' columns, edit column ' + editControl.editColumn);
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
   check('an edit reopens with what was typed, and can be undone', /Coffee beans/.test(await area()) && (await tab.eval("!!document.querySelector('tr.editor [data-undo]')")), '');
   await tab.eval("document.querySelector('tr.editor [data-undo]').click()");

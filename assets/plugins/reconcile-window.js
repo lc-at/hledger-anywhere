@@ -18,17 +18,6 @@
 import { checkpoints, hints, moveRefusal, ordered, parseInput, readTransaction, readable, summarize, template } from './reconcile-data.js';
 import { escape, isLight, mix } from './window-kit.js';
 
-/**
- * The edit control's mark: a pencil, drawn rather than typed.
- *
- * A character would need the font to have a picture of a pencil, and the marks people's
- * fonts do have for this are inconsistent and were not wanted. It is stroked in
- * `currentColor`, so it takes the button's colour and therefore the theme's, and it is
- * hidden from assistive technology because the button already carries the name.
- */
-const PENCIL = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false">'
-  + '<path d="M4 20h4L20 8a2.83 2.83 0 0 0-4-4L4 16v4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>'
-  + '</svg>';
 
 /** The whole document, with the data in a JSON block and the page to be mounted. */
 export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module }) {
@@ -71,10 +60,9 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   /* The edit control sits beside the description rather than in a column of its own. A whole
      column for one small mark cost width on every row, and on a narrow window that width is
      what pushed the difference off the screen. Quiet until it is wanted. */
-  button.edit { background:none; border:none; padding:0; color:${colors.dim};
-    cursor:pointer; vertical-align:-2px; line-height:0; }
-  button.edit:hover, button.edit:focus-visible { color:${colors.foreground}; }
-  button.edit svg { display:block; }
+  button.edit { background:none; border:none; padding:0; margin-left:4px; color:${colors.dim};
+    cursor:pointer; font-size:11px; vertical-align:1px; }
+  button.edit:hover, button.edit:focus-visible { color:${colors.foreground}; text-decoration:underline; }
   /* The restore link beside a deleted posting keeps the word, since it is not an icon. */
   button.icon { background:none; border:none; padding:0 2px; color:${colors.dim}; font-size:11px; white-space:nowrap; }
   button.icon:hover { color:${colors.foreground}; text-decoration:underline; }
@@ -345,7 +333,7 @@ export function mount(root = document) {
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
     return `<tr data-id="${escape(row.id)}" tabindex="-1" draggable="${readOnly() ? 'false' : 'true'}" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
 <td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${escape(row.date)}</td>
-<td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">${PENCIL}</button><br><span class="against">${escape(row.against || '')}</span></td>
+<td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
 <td class="n expect"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
 <td class="n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
