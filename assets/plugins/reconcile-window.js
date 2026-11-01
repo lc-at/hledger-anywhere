@@ -20,8 +20,8 @@ import { escape, isLight, mix } from './window-kit.js';
 
 
 /** The whole document, with the data in a JSON block and the page to be mounted. */
-export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module }) {
-  const payload = JSON.stringify({ data, colors, token, files, accounts, statementDate, statementBalance, fingerprint }).replace(/</g, '\\u003c');
+export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module, style = 'posting' }) {
+  const payload = JSON.stringify({ data, colors, token, files, accounts, statementDate, statementBalance, fingerprint, style }).replace(/</g, '\\u003c');
   const writable = files.some((file) => file.writable);
   const soft = mix(colors.background, colors.dim, 14);
   const softer = mix(colors.background, colors.dim, 7);
@@ -35,6 +35,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   .sub { color:${colors.dim}; margin:2px 0 14px; font-size:13px; }
   .statement { display:flex; flex-wrap:wrap; gap:16px; align-items:end; margin:0 0 12px; }
   label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:${colors.dim}; }
+  select { font:inherit; font-size:12px; color:${colors.foreground}; background:${softer}; border:1px solid ${colors.dim}66; border-radius:4px; padding:4px 6px; }
   input { font:inherit; color:${colors.foreground}; background:${softer}; border:1px solid ${colors.dim}66; border-radius:4px; padding:5px 8px; }
   input:disabled { opacity:.5; }
   input:focus-visible, button:focus-visible, tr:focus-visible { outline:2px solid ${colors.accent}; outline-offset:1px; }
@@ -126,6 +127,10 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div class="statement">
     <label>Statement date<input type="date" id="date" value="${escape(statementDate || '')}"></label>
     <label>Statement closing balance<input type="text" id="balance" inputmode="decimal" placeholder="as the statement says it" value="${escape(statementBalance || '')}" autocomplete="off"></label>
+    <label title="where the cleared marks are written: on the transaction's own line, or on the posting's">Mark<select id="style">
+      <option value="posting"${style === 'posting' ? ' selected' : ''}>posting</option>
+      <option value="transaction"${style === 'transaction' ? ' selected' : ''}>transaction</option>
+    </select></label>
   </div>
   <div class="sums" id="sums"></div>
   <p id="next"></p>
@@ -194,6 +199,9 @@ export function mount(root = document) {
   // Rows already cleared when the window opened are hidden by default, so the window opens on the
   // work still to do. What was cleared is captured once: a row the person ticks or edits from
   // here stays in view, so nothing vanishes from under the hand that just changed it.
+  // Where the cleared marks are written. The journal's own habit, or the last choice, comes in
+  // from the plugin; changing it here is remembered there so it survives the window.
+  let markStyle = state.style === 'transaction' ? 'transaction' : 'posting';
   let hideCleared = true;
   const clearedAtOpen = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
   const touched = new Set();
@@ -447,8 +455,20 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const row = rows().find((entry) => entry.id === id);
     const date = $('date').value;
     if (!row || (date && row.date > date)) return;
-    touched.add(id);
-    if (ticked.has(id)) ticked.delete(id); else ticked.add(id);
+    // In transaction mode the mark covers the whole transaction, so every row of it ticks
+    // together: ticking one posting of a two-posting transaction and not the other would be a
+    // state hledger cannot write.
+    const group = markStyle === 'transaction'
+      ? rows().filter((entry) => entry.id.split(':')[0] === id.split(':')[0])
+      : [row];
+    const turningOn = !ticked.has(id);
+    for (const entry of group) {
+      touched.add(entry.id);
+      if (turningOn) ticked.add(entry.id); else ticked.delete(entry.id);
+    }
+    // One row can be redrawn in place; a whole transaction needs the list redrawn, because the
+    // rows of the transaction that also changed may be anywhere in it.
+    if (group.length > 1) { hidePreview(); drawRows(); return; }
     const tr = [...$('rows').children].find((element) => element.dataset.id === id);
     if (tr) {
       tr.classList.toggle('on', ticked.has(id));
@@ -542,7 +562,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const link = bridge();
     if (!link) { say('This window has lost touch with the app. Run reconcile again.', true); return; }
     const { date, balance } = statement();
-    const request = { ticked: [...ticked], finish: finish ? { date, balance } : null, edits, inserts, expected, moved, fingerprint: state.fingerprint };
+    const request = { ticked: [...ticked], finish: finish ? { date, balance } : null, edits, inserts, expected, moved, style: markStyle, fingerprint: state.fingerprint };
     const result = await link.preview(request);
     const writable = result.writable.some((file) => file.writable);
     const lines = [];
@@ -564,6 +584,11 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       if (changes.length) lines.push(`<pre>${changes.join('\n')}</pre>`);
       if (file.appended) lines.push(`<pre class="add" id="assertion">${escape(file.appended)}</pre>`);
     }
+    // What kind of change this is, said before the lines it would write: the contract is that
+    // nothing surprising reaches the file.
+    lines.unshift(`<p class="marks">${markStyle === 'transaction'
+      ? "Marks transactions: the cleared mark goes on the transaction's own line."
+      : "Marks postings: the cleared mark goes on each posting's own line."}</p>`);
     if (!result.files.length && !result.missing.length) lines.push('<p>Nothing to write.</p>');
     // One line per reason: two hundred postings in a file that cannot be read are one problem.
     const reasons = [...new Set(result.missing.map((entry) => entry.why))];
@@ -739,6 +764,17 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (!p) return;
     const index = shown.findIndex((row) => row.id === p.dataset.id);
     if (index >= 0) moveFocus(index);
+  });
+  $('style').addEventListener('change', () => {
+    markStyle = $('style').value === 'transaction' ? 'transaction' : 'posting';
+    const link = bridge();
+    if (link && typeof link.setStyle === 'function') link.setStyle(markStyle);
+    hidePreview();
+    drawSub();
+    drawRows();
+    const pending = describe();
+    say(`${markStyle === 'transaction' ? 'Marks the whole transaction' : 'Marks the posting'} from now on.`
+      + (pending ? ` ${pending}, and it will be written that way.` : ''));
   });
   for (const id of ['date', 'balance']) $(id).addEventListener('input', () => { hidePreview(); id === 'date' ? drawRows() : drawSums(); });
   $('search').addEventListener('input', drawRows);

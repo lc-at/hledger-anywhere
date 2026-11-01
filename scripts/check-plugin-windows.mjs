@@ -186,6 +186,10 @@ const OPENER = `
           writable: [{ path: 'fixture.journal', writable: window.__writable }],
         };
       },
+      setStyle(style) {
+        window.__styleSet = style;
+        return style;
+      },
       async apply(request) {
         window.__applied.push(request);
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1326,6 +1330,53 @@ async function reconcileMoving(tab) {
     && locked.date === locked.was, JSON.stringify(locked));
 }
 
+// Where the cleared marks are written is the person's choice, and the window has to show it,
+// carry it in every request, and remember it.
+async function reconcileStyle(tab) {
+  await tab.show('reconcile', 'dark');
+  const initial = await tab.eval("({ value: document.getElementById('style').value, options: [...document.querySelectorAll('#style option')].map((o) => o.value) })");
+  check('the marking style is a visible choice, with both styles offered',
+    initial.value === 'posting' && initial.options.join() === 'posting,transaction', JSON.stringify(initial));
+  // A transaction with two postings to this account ticks as one in transaction mode.
+  const together = await tab.eval(`(() => {
+    const select = document.getElementById('style');
+    select.value = 'transaction';
+    select.dispatchEvent(new Event('change'));
+    const rows = [...document.querySelectorAll('#rows tr[data-id]')];
+    const split = rows.filter((tr) => /Split/.test(tr.textContent));
+    split[0].click();
+    return {
+      splitRows: split.length,
+      ticked: document.querySelectorAll('#rows tr.on').length,
+      splitTicked: [...document.querySelectorAll('#rows tr[data-id]')].filter((tr) => /Split/.test(tr.textContent) && tr.classList.contains('on')).length,
+      status: document.getElementById('status').textContent,
+      remembered: window.__styleSet,
+    };
+  })()`);
+  check('in transaction mode one click ticks every row of that transaction, and the choice is remembered',
+    together.splitRows === 2 && together.splitTicked === 2 && together.remembered === 'transaction',
+    JSON.stringify(together));
+  // The preview says which kind of change it would make.
+  await tab.eval("document.getElementById('progress').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  const previewText = await tab.eval("document.getElementById('preview').innerText");
+  check('and the preview says it marks transactions',
+    /Marks transactions/.test(previewText) && /transaction's own line/.test(previewText), previewText.slice(0, 120));
+  await tab.eval("document.getElementById('cancel').click()");
+  const backToPosting = await tab.eval(`(() => {
+    const select = document.getElementById('style');
+    select.value = 'posting';
+    select.dispatchEvent(new Event('change'));
+    document.getElementById('progress').click();
+    return document.getElementById('style').value;
+  })()`);
+  await tab.until("!document.getElementById('preview').hidden");
+  const postingPreview = await tab.eval("document.getElementById('preview').innerText");
+  check('and in posting mode it says it marks postings, and that is what it would write',
+    backToPosting === 'posting' && /Marks postings/.test(postingPreview) && /each posting's own line/.test(postingPreview),
+    postingPreview.slice(0, 120));
+}
+
 async function reconcileAlreadyCleared(tab) {
   await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
   const opened = await tab.eval(`(() => ({
@@ -1614,6 +1665,7 @@ try {
   await reconciling(tab);
   await reconcileRunning(tab);
   await reconcileMoving(tab);
+  await reconcileStyle(tab);
   await reconcileAlreadyCleared(tab);
   await coverage.collect(tab);
   coverage.merge((await self.post('Profiler.takePreciseCoverage')).result);

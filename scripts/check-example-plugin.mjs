@@ -42,7 +42,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, formatHeader, formatPosting, hints, journalAmount, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -1021,6 +1021,63 @@ const TREE_MONTHS = [
     && moveRefusal(data, '2026-08-31') === null && moveRefusal(data, '2026-09-04') === null
     && moveRefusal(data, '2027-01-01') === null && moveRefusal({ ...data, start: null }, '1999-01-01') === null,
     `${moveRefusal(data, '2026-08-30')} / ${moveRefusal(data, '2026-08-31')}`);
+
+  // Transaction-level marking: the mark goes on the transaction's own line, and every row of the
+  // transaction reads as ticked, which is what Finish counts.
+  {
+    const texts = { 'fixture.journal': RECONCILE_JOURNAL };
+    // Nothing written is a failure to report, not a crash: it is the shape of the bug where a
+    // style silently writes nothing.
+    const output = (result) => result.files[0] || { changes: [], after: '' };
+    // The fixture's transactions are written unmarked, so a tick is real work in either style.
+    const unmarked = readPrint(RECONCILE_PRINT.map((transaction) => ({ ...transaction, tstatus: 'Unmarked' })), 'Assets:Bank:Checking');
+    // The same journal with its transaction marks taken off, so the text and the JSON agree.
+    const plainTexts = { 'fixture.journal': RECONCILE_JOURNAL.replace(/^(2026-\d\d-\d\d) \* /gm, '$1 ') };
+    const viaTransaction = output(plan({ data: unmarked, texts: plainTexts, ticked: new Set([unmarked.rows[0].id]), finish: null, style: 'transaction' }));
+    const viaPosting = output(plan({ data: unmarked, texts: plainTexts, ticked: new Set([unmarked.rows[0].id]), finish: null, style: 'posting' }));
+    check('the same tick writes the transaction line in one style and the posting line in the other',
+      viaTransaction.changes.length === 1 && viaTransaction.changes[0].after === '2026-09-01 * Coffee'
+      && viaPosting.changes.length === 1 && /^ {2}\* Assets:Bank:Checking/.test(viaPosting.changes[0].after),
+      `${JSON.stringify(viaTransaction.changes)} / ${JSON.stringify(viaPosting.changes)}`);
+    // Two postings to this account in one transaction: one mark on the transaction, none on either.
+    const split = unmarked.rows.filter((row) => /Split/.test(row.description));
+    const both = output(plan({ data: unmarked, texts: plainTexts, ticked: new Set(split.map((row) => row.id)), finish: null, style: 'transaction' }));
+    check('a transaction with two postings to this account takes one mark, on its own line',
+      both.changes.length === 1 && both.changes[0].after === '2026-09-05 * Split', JSON.stringify(both.changes));
+    // Un-ticking a cleared transaction marks it pending, which is hledger's honest "not cleared".
+    const cleared = readPrint(RECONCILE_PRINT.map((transaction) => ({ ...transaction, tstatus: 'Cleared' })), 'Assets:Bank:Checking');
+    const off = output(plan({ data: cleared, texts, ticked: new Set(), finish: null, style: 'transaction' }));
+    check('un-ticking a cleared transaction marks the transaction pending, and every other one too',
+      off.changes.length === 4 && off.changes[0].after === '2026-09-01 ! Coffee'
+      && off.changes.every((change) => / ! /.test(change.after)), JSON.stringify(off.changes));
+    // A stray posting mark inside a transaction being ticked is normalised onto the header.
+    const strayed = readPrint(RECONCILE_PRINT.map((transaction) => (transaction.tindex === 2
+      ? { ...transaction, tstatus: 'Unmarked', tpostings: transaction.tpostings.map((posting) => (posting.paccount === 'Assets:Bank:Checking' ? { ...posting, pstatus: 'Pending' } : posting)) }
+      : { ...transaction, tstatus: 'Unmarked' })), 'Assets:Bank:Checking');
+    // The stray has to be in the text as well as the JSON, or there is nothing to take off.
+    const strayTexts = { 'fixture.journal': plainTexts['fixture.journal'].replace('    Assets:Bank:Checking\n\n2026-09-02', '  ! Assets:Bank:Checking\n\n2026-09-02') };
+    const normalised = output(plan({ data: strayed, texts: strayTexts, ticked: new Set([strayed.rows[0].id]), finish: null, style: 'transaction' }));
+    check('ticking that transaction puts its mark on the header and takes the stray off the posting',
+      normalised.changes.length === 2
+      && normalised.changes.some((change) => change.after === '2026-09-01 * Coffee')
+      && normalised.changes.some((change) => change.after === '    Assets:Bank:Checking'),
+      JSON.stringify(normalised.changes));
+    // Finish must not refuse work the person believes is done: every row of a ticked transaction
+    // has to count as ticked.
+    const asTransaction = plan({ data: unmarked, texts: plainTexts, ticked: new Set(unmarked.rows.filter((row) => !/After the statement/.test(row.description)).map((row) => row.id)), finish: { date: '2026-09-30', balance: 0 }, style: 'transaction' });
+    check('and in transaction style the postings it covers all count, so an assertion can be finished',
+      asTransaction.files.length === 1 && !asTransaction.missing.length, JSON.stringify(asTransaction.missing));
+    // The style a journal is kept in is inferred from the marks it carries.
+    check('the style is inferred from how the journal is written',
+      inferStyle(cleared.rows) === 'transaction'
+      && inferStyle(readPrint(RECONCILE_PRINT.map((transaction) => ({ ...transaction, tstatus: 'Unmarked', tpostings: transaction.tpostings.map((posting) => (posting.paccount === 'Assets:Bank:Checking' ? { ...posting, pstatus: 'Cleared' } : posting)) })), 'Assets:Bank:Checking').rows) === 'posting'
+      && inferStyle(readPrint(RECONCILE_PRINT.map((transaction) => ({ ...transaction, tstatus: 'Unmarked' })), 'Assets:Bank:Checking').rows) === 'posting',
+      `${inferStyle(cleared.rows)}`);
+    check('a header mark is set and cleared without touching the rest of the line',
+      markTransaction('2026-09-01 * (123) Coffee  ; note', '') === '2026-09-01 (123) Coffee  ; note'
+      && markTransaction('2026-09-01 Coffee', '*') === '2026-09-01 * Coffee'
+      && markTransaction('2026-09-01 ! Coffee', '') === '2026-09-01 Coffee', '');
+  }
 
   // Un-ticking a posting that was only cleared by its transaction. Removing a mark it never had
   // would leave it cleared, so Save would report nothing and the row would come back ticked.
