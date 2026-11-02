@@ -8,7 +8,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { page } from '../assets/plugins/reconcile-window.js';
-import { readPrint } from '../assets/plugins/reconcile-data.js';
+import { inferStyle, readPrint } from '../assets/plugins/reconcile-data.js';
 import { COLORS, DARK } from './chart-fixtures.mjs';
 import { RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -83,6 +83,9 @@ const server = createServer(async (request, response) => {
     statementDate: url.searchParams.get('date') || '2026-09-30',
     statementBalance: url.searchParams.get('balance') || '',
     fingerprint: 'preview',
+    // As the plugin does: the journal's own habit, so the window opens the way it really would.
+    style: url.searchParams.get('style') || inferStyle(data.rows),
+    lines: url.searchParams.get('lines') === 'on',
     module: '/plugins/reconcile-window.js',
   }));
 });
