@@ -112,6 +112,22 @@ function accountOn(line) {
   return { mark: match[1] || '', account: match[3].trim() };
 }
 
+/**
+ * How another posting of the transaction is named on a line's "against" row.
+ *
+ * A second posting to the same account in one transaction reads as a duplicate of the first:
+ * same date, same description, same other accounts, and only the amount telling them apart,
+ * which is not where the eye goes. Naming the sibling with its amount says which of the two
+ * this line is. Any other account is named as it is.
+ */
+function againstName(other, mine) {
+  if (other.paccount !== mine) return other.paccount;
+  const own = (other.pamount || [])[0];
+  if (!own) return other.paccount;
+  const style = styleOf(own);
+  return `${other.paccount} ${readable(toMinor(quantityOf(own), style.precision), style)}`;
+}
+
 /** Whether an account is the one asked for, or under it when `inclusive`. */
 function belongs(name, account, inclusive) {
   return name === account || (inclusive && name.startsWith(`${account}:`));
@@ -181,7 +197,8 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
       date: posting.pdate || transaction.tdate,
       description: transaction.tdescription,
       account: posting.paccount,
-      against: transaction.tpostings.filter((other) => other !== posting).map((other) => other.paccount).join(', '),
+      against: transaction.tpostings.filter((other) => other !== posting)
+        .map((other) => againstName(other, posting.paccount)).join(', '),
       amount: amount ? toMinor(quantityOf(amount), style.precision) : 0,
       // Whether this line belongs in the arithmetic of this commodity. A line in another
       // commodity adds nothing, and `stated` is what it says instead of a number here.

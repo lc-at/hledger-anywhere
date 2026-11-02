@@ -1230,9 +1230,11 @@ const TREE_MONTHS = [
  * stood in for by what the fixture prints, plus an assertion check done the way hledger does it,
  * over every posting up to the assertion's date.
  */
-function reconcileHost({ writable = true, failBefore = false, failSave = false, settings = {} } = {}) {
+function reconcileHost({ writable = true, failBefore = false, failSave = false, settings = {},
+  journal = RECONCILE_JOURNAL, print = RECONCILE_PRINT,
+  accounts = 'Assets:Bank:Checking\nAssets:Savings\nEquity:Opening\nExpenses:Fees\nExpenses:Food\nIncome:Salary\n' } = {}) {
   const log = { said: [], pages: [], saved: [], asked: [], remembered: {} };
-  const files = { 'fixture.journal': RECONCILE_JOURNAL };
+  const files = { 'fixture.journal': journal };
   const assertionsHold = (text) => {
     const balance = (until) => 100000000 + [[-2100000, '2026-09-01'], [500000000, '2026-09-02'], [-30000000, '2026-09-03'], [-900000, '2026-09-05'], [-250000, '2026-10-02']]
       .filter(([, date]) => date <= until).reduce((sum, [amount]) => sum + amount, 0);
@@ -1256,11 +1258,11 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false, 
     },
     async hledger(command) {
       log.asked.push(command);
-      if (command === 'accounts') return 'Assets:Bank:Checking\nAssets:Savings\nEquity:Opening\nExpenses:Fees\nExpenses:Food\nIncome:Salary\n';
+      if (command === 'accounts') return accounts;
       if (command.startsWith('print')) {
         // What hledger prints for the file as it is now: marks the plugin wrote are read back.
         const lines = files['fixture.journal'].split('\n');
-        return JSON.stringify(RECONCILE_PRINT.map((transaction) => ({
+        return JSON.stringify(print.map((transaction) => ({
           ...transaction,
           tpostings: transaction.tpostings.map((posting, index) => {
             // A transaction's posting lines, without its comment lines.
@@ -1786,6 +1788,19 @@ check('every bundled plugin documents itself for `<command>?`',
   for (const row of rows) byStatus[row.status] = (byStatus[row.status] || 0) + 1;
   check('unmarked, cleared and pending all appear, at both the transaction and posting level',
     byStatus.Unmarked === 5 && byStatus.Cleared === 3 && byStatus.Pending === 2, JSON.stringify(byStatus));
+
+  // The window says which commodity it counts and names the command that switches it, so the
+  // switch has to really switch: the same journal re-read for the other commodity counts that
+  // one instead, and the lines it was counting become the ones shown but not counted.
+  const usd = reconcileHost({
+    journal: GENERIC_JOURNAL, print: GENERIC_PRINT, accounts: 'assets:bank\nexpenses:travel\n',
+  });
+  await Reconcile.run('assets:bank --commodity USD', usd.host);
+  const usdPage = usd.log.pages[usd.log.pages.length - 1] || '';
+  const where = usdPage.indexOf('"commodity"');
+  check('--commodity switches which commodity the window counts, from the same journal',
+    usdPage.includes('"commodity":"USD"') && usdPage.includes('"others":["IDR"]'),
+    where >= 0 ? usdPage.slice(where, where + 70) : 'no commodity in the page');
 
   // A blank amount is worked out from the real postings only, which is what hledger does: a
   // bracketed posting is not part of the balance, so it must not be part of the sum either.

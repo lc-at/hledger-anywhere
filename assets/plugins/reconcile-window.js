@@ -34,22 +34,30 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   main { max-width:1180px; margin:0 auto; padding:20px 24px 40px; }
   h1 { font-size:18px; font-weight:600; margin:0; }
   .sub { color:${colors.dim}; margin:2px 0 14px; font-size:13px; }
-  .statement { display:flex; flex-wrap:wrap; gap:16px; align-items:end; margin:0 0 12px; }
+  /* The bar stays put while the list scrolls: the next step, the difference and the actions
+     are what the window is for, so they are never out of reach. Two lines, wrapping at 620px. */
+  .bar { position:sticky; top:0; z-index:5; background:${colors.background}; border-bottom:1px solid ${colors.dim}55; padding:8px 0 10px; margin:0 0 12px; }
+  /* One row of fields: the statement's date, its closing balance, and the difference they make.
+     The figures take a row of their own underneath rather than competing with the inputs. */
+  .fields { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:end; }
+  .figures { width:100%; font-size:11px; color:${colors.dim}; }
+  /* On a narrow window the figures would take a row of their own and push the bar past a quarter
+     of the screen, so they go to the difference's tooltip, which carries them anyway. */
+  @media (max-width:760px) { .figures { display:none; } }
+  .figures b { color:${colors.foreground}; font-variant-numeric:tabular-nums; font-weight:600; }
+  .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; width:100%; }
+  .actions input[type=search] { flex:1; min-width:150px; }
   label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:${colors.dim}; }
   select { font:inherit; font-size:12px; color:${colors.foreground}; background:${softer}; border:1px solid ${colors.dim}66; border-radius:4px; padding:4px 6px; }
   input { font:inherit; color:${colors.foreground}; background:${softer}; border:1px solid ${colors.dim}66; border-radius:4px; padding:5px 8px; }
   input:disabled { opacity:.5; }
   input:focus-visible, button:focus-visible, tr:focus-visible { outline:2px solid ${colors.accent}; outline-offset:1px; }
-  .sums { display:flex; flex-wrap:wrap; gap:1px; background:${colors.dim}44; border-radius:6px; overflow:hidden; margin:0 0 10px; }
-  .sums div { flex:1 1 150px; }
-  .sums div { background:${colors.background}; padding:8px 10px; }
-  .sums span { display:block; font-size:11px; color:${colors.dim}; text-transform:uppercase; letter-spacing:.04em; }
-  .sums b { font-variant-numeric:tabular-nums; font-weight:600; }
   /* The difference is the number the whole window is for, so it is the loud one. */
-  .sums .difference { background:${softer}; }
-  .sums .difference b { font-size:20px; }
-  .sums .difference.zero b { color:${colors.accent}; }
-  .sums .difference.zero span::after { content:' matches'; }
+  .difference { text-align:right; }
+  .difference b { font-size:20px; font-variant-numeric:tabular-nums; font-weight:600; }
+  .difference .word { font-size:11px; color:${colors.dim}; text-transform:uppercase; letter-spacing:.04em; }
+  .difference.zero b { color:${colors.accent}; }
+  .difference.zero .word { font-size:13px; text-transform:none; letter-spacing:0; }
   /* Everything worth knowing that is not the next step, one line each, in one place. */
   .issues { margin:0 0 10px; }
   .issues:not(:has(p)) { display:none; }
@@ -99,25 +107,32 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   td.delta.off { color:${colors.accent}; font-weight:600; }
   td.delta.ok { color:${colors.dim}; }
   tr { cursor:pointer; }
-  /* The only thing that drags. A click anywhere else on a row ticks it and can never move it. */
-  .grip { display:inline-block; width:8px; height:14px; margin:0 6px 0 -2px; vertical-align:-2px; cursor:grab;
-    background:radial-gradient(${colors.dim} 1px, transparent 1.5px) 0 0 / 4px 4px; opacity:.7; }
-  .grip:hover { opacity:1; }
   tr.on td { background:${softer}; }
-  tr.on td.tick { color:${colors.accent}; }
+  /* The state of the line, in a word. Small and dim so a long list of cleared lines stays
+     calm; the word itself, not the colour, is what says which is which. */
+  .state { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:${colors.dim}; margin-right:6px; }
+  .state.pending { color:${colors.accent}; }
+  .state.foreign { border-bottom:1px dotted ${colors.dim}; }
+  td.foreign { color:${colors.dim}; }
+  /* Named for what it is rather than for the cell it sits in: the cell has the date name too,
+     and a rule for the button was taking the cell's own borders with it. */
+  .date-btn, .insert { background:none; border:none; padding:0; color:inherit; font:inherit; cursor:pointer; }
+  .date-btn { text-decoration:underline dotted ${colors.dim}; text-underline-offset:3px; }
+  .date-btn:hover, .insert:hover { color:${colors.accent}; }
+  .insert { color:${colors.dim}; margin-left:6px; font-weight:600; opacity:0; }
+  tr:hover .insert, tr:focus-within .insert, .insert:focus-visible { opacity:1; }
+  .date-input { font:inherit; padding:1px 4px; }
   tr.hinted td { box-shadow:inset 0 0 0 9999px ${mix(colors.background, colors.accent, 14)}; }
   /* Where the statement and the journal part: one bar at the start of the row, not one per cell. */
   tr.first td:first-child { box-shadow:inset 3px 0 0 ${colors.accent}; }
   tr.later td { opacity:.45; }
   tr.editor td { background:${softer}; cursor:default; }
-  /* Where a dragged row would land, and which day it would take. */
-  tr.drop td { box-shadow:inset 0 3px 0 ${colors.accent}; }
   .editing textarea { display:block; width:100%; box-sizing:border-box; font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;
     color:${colors.foreground}; background:${colors.background}; border:1px solid ${colors.dim}66; border-radius:4px; padding:6px 8px; resize:vertical; tab-size:4; }
   .editing .buttons { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
   .editing .reading { color:${colors.foreground}; font-size:12px; margin:6px 0 0; }
   .against { color:${colors.dim}; }
-  /* A state of the row (new, edited, pending): small and set apart from the edit control. */
+  /* That the row is new or has been edited, set apart from the edit control. */
   .badge { color:${colors.accent}; font-size:10px; margin-left:6px; text-transform:uppercase; letter-spacing:.04em; }
   .muted { color:${colors.dim}; font-size:11px; }
   .preview { margin:14px 0; padding:10px 12px; border:1px solid ${colors.dim}66; border-radius:6px; }
@@ -140,10 +155,6 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <h1>reconcile ${escape(data.account)}</h1>
   <p class="sub" id="sub"></p>
   ${writable ? '' : `<p class="banner" id="readonly">Read-only: ${escape(locked)} did not come from an opened folder, so nothing here can be saved. Run <b>open</b> in the terminal to edit it.</p>`}
-  <div class="statement">
-    <label>Statement date<input type="date" id="date" value="${escape(statementDate || '')}"></label>
-    <label>Statement closing balance<input type="text" id="balance" inputmode="decimal" placeholder="as the statement says it" value="${escape(statementBalance || '')}" autocomplete="off"></label>
-  </div>
   <div class="options">
     <label title="where the cleared mark is written in the journal">Mark as cleared<select id="style">
       <option value="posting"${style === 'posting' ? ' selected' : ''}>this account's line</option>
@@ -151,22 +162,29 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
     </select></label>
     <label title="type the statement's balance after each line to find where they part; matching lines are asserted when you save"><input type="checkbox" id="lines"${lines ? ' checked' : ''}>Check line by line</label>
   </div>
-  <div class="sums" id="sums"></div>
-  <p id="next"></p>
-  <div class="issues"><div id="notes"></div><div class="hints" id="hints"></div></div>
-  <div class="tools">
-    <input type="search" id="search" placeholder="search descriptions, accounts or amounts (/)" aria-label="search">
-    <button id="add" title="add a transaction this account is in (n)">Add a transaction</button>
-    <button id="all" title="tick every line shown, up to the statement date (a)">Tick all</button>
-    <button id="progress"${writable ? '' : ' disabled hidden'} title="write the ticks, edits and date changes, without asserting a balance">Save changes<span class="count" id="pending"></span></button>
-    <button id="finish" class="primary" disabled>${writable ? 'Finish: assert balance' : 'Show the assertion'}</button>
+  <div class="bar">
+    <p id="next"></p>
+    <div class="fields">
+      <label>Statement date<input type="date" id="date" value="${escape(statementDate || '')}"></label>
+      <label>Closing balance<input type="text" id="balance" inputmode="decimal" placeholder="as the statement says it" value="${escape(statementBalance || '')}" autocomplete="off"></label>
+      <span class="difference" id="difference"></span>
+      <span class="figures" id="figures"></span>
+      <span class="actions">
+        <input type="search" id="search" placeholder="search descriptions, accounts or amounts (/)" aria-label="search">
+        <button id="add" title="add a transaction this account is in: after the line with the cursor, or at the end (n or i)">Add a transaction</button>
+        <button id="all" title="tick every line shown, up to the statement date (a)">Tick all</button>
+        <button id="progress"${writable ? '' : ' disabled hidden'} title="write the ticks, edits and date changes, without asserting a balance">Save changes<span class="count" id="pending"></span></button>
+        <button id="finish" class="primary" disabled>${writable ? 'Finish: assert balance' : 'Show the assertion'}</button>
+      </span>
+    </div>
   </div>
+  <div class="issues"><div id="notes"></div><div class="hints" id="hints"></div></div>
   <div id="status" role="status"></div>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
   <p class="hidden-note" id="hidden"></p>
-  <div class="table"><table id="table" class="${lines ? 'lines' : ''}"><thead><tr><th class="tick" aria-label="cleared" title="a ticked line is cleared"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Running balance</th><th class="n line" title="the balance your statement shows after this line">Statement balance</th><th class="n line">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
-  <p class="keys">Space tick · e edit · n new transaction · a tick all · Alt+↑↓ move to the next day · / search</p>
+  <div class="table"><table id="table" class="${lines ? 'lines' : ''}"><thead><tr><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Running balance</th><th class="n line" title="the balance your statement shows after this line">Statement balance</th><th class="n line">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <p class="keys">Space tick · e edit · n new · i insert · d change date · a tick all · Alt+↑↓ next day · / search</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
 <script type="module">import { mount } from ${JSON.stringify(module)}; mount();</script>
@@ -227,6 +245,10 @@ export function mount(root = document) {
   const clearedAtOpen = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
   const touched = new Set();
   let editing = null;
+  // Whose date is being edited in place, if anyone's: the date is a button that becomes an
+  // input, because changing a date is a deliberate act rather than something a click can
+  // drift into.
+  let dateBeingEdited = null;
   // A posting added to explain a typed balance takes that balance over: the statement's line
   // it stood for is the new posting's.
   let from = null;
@@ -239,12 +261,13 @@ export function mount(root = document) {
   const style = () => state.data.style;
   const money = (minor) => readable(minor, style());
   /**
-   * What a line's amount says. A line in another commodity is not added to this balance, so it
-   * shows what the journal wrote for it rather than a zero in the wrong commodity.
+   * What a line's amount says. A line that is not counted cannot be added to this balance, so it
+   * shows what the journal wrote for it rather than a zero in the wrong commodity; a line with
+   * nothing to show at all shows a question mark rather than a number that would be a guess.
    */
-  const amountOf = (row) => (row.amount == null
-    ? '?'
-    : row.stated ? readable(row.stated.minor, row.stated.style) : money(row.amount));
+  const amountOf = (row) => (row.counted
+    ? (row.amount == null ? '?' : money(row.amount))
+    : (row.stated ? readable(row.stated.minor, row.stated.style) : '?'));
 
   const bridge = () => {
     const bridges = window.opener && window.opener.__reconcileBridges;
@@ -262,15 +285,20 @@ export function mount(root = document) {
   function drawSums() {
     const now = sums();
     const { balance, date } = statement();
-    const cell = (name, value, extra = '', hint = '') => `<div class="${extra}"${hint ? ` title="${escape(hint)}"` : ''}><span>${name}</span><b>${escape(value)}</b></div>`;
-    // Four numbers, named so they cannot be mistaken for each other: where the account started,
-    // where the ticked lines take it by the statement date, what the statement says, and the gap.
-    $('sums').innerHTML = [
-      cell('Opening', money(now.opening), '', 'the balance this account was last proven to have'),
-      cell(`Cleared balance${date ? ` to ${date}` : ''}`, money(now.expected), '', `the opening plus the ${now.tickedCount} ticked line${now.tickedCount === 1 ? '' : 's'}: what the journal says the statement should show`),
-      cell('Statement', balance == null ? 'type it above' : money(balance), '', 'the closing balance you typed'),
-      cell('Difference', now.difference == null ? '-' : money(now.difference), `difference${now.difference === 0 ? ' zero' : ''}`, 'statement less cleared balance: zero when they agree'),
-    ].join('');
+    // Two figures in small text, so the line stays slim: where the account started, and where
+    // the ticked lines take it by the statement date. The closing balance is the input beside
+    // them and the difference is the number all three are in service of.
+    $('figures').innerHTML = `opening <b>${escape(money(now.opening))}</b> · cleared to ${escape(date || 'the statement date')} <b>${escape(money(now.expected))}</b>`;
+    const zero = now.difference === 0;
+    $('difference').className = `difference${zero ? ' zero' : ''}`;
+    // Nothing typed yet says nothing here at all: a dash in the place where the number will be
+    // reads as a broken field rather than as one that is waiting.
+    $('difference').innerHTML = now.difference == null
+      ? ''
+      : zero
+        ? `<b>${escape(money(now.difference))}</b> <span class="word">matches</span>`
+        : `<span class="word">difference</span> <b>${escape(money(now.difference))}</b>`;
+    $('difference').title = `opening ${money(now.opening)}, plus the ${now.tickedCount} ticked line${now.tickedCount === 1 ? '' : 's'} to ${date || 'the statement date'}, gives ${money(now.expected)}; the statement says ${balance == null ? 'nothing yet' : money(balance)}`;
 
     // One line each. The next step is not repeated here, and nothing here is said twice.
     const notes = [];
@@ -281,7 +309,14 @@ export function mount(root = document) {
     }
     if (now.later) notes.push(`${now.later} line${now.later === 1 ? '' : 's'} after the statement date ${now.later === 1 ? 'is' : 'are'} greyed out and not counted.`);
     if (now.unknown) notes.push(`${now.unknown} edited transaction${now.unknown === 1 ? '' : 's'} cannot be read here, so the balances after ${now.unknown === 1 ? 'it' : 'them'} show ? until saved.`);
-    if (state.data.others.length) notes.push(`Lines in ${state.data.others.join(', ')} are not part of this.`);
+    // Which commodity this window counts, and how to count another one: a statement with lines
+    // in more than one currency is otherwise quietly unreadable.
+    if (state.data.others.length) {
+      const others = state.data.others;
+      notes.push(others.length === 1
+        ? `Counting ${state.data.commodity}. Lines in ${others[0]} are shown but not counted: reconcile ${state.data.account} --commodity ${others[0]} to count ${others[0]}.`
+        : `Counting ${state.data.commodity}. Lines in ${others.join(', ')} are shown but not counted.`);
+    }
     const restores = Object.entries(edits).filter(([, edit]) => !edit.text.trim()).map(([id]) => {
       const row = state.data.rows.find((entry) => entry.id === id);
       return `<p class="note">Deleted: ${escape(row.date)} ${escape(row.description)} ${escape(money(row.amount))} <button class="icon" data-restore="${escape(id)}">restore</button></p>`;
@@ -399,14 +434,32 @@ export function mount(root = document) {
   function rowHtml(row, later, newDay = false) {
     const point = expected[row.id] != null && row.balance != null ? expected[row.id] - row.balance : null;
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
-    const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : row.status === 'Pending' ? '<span class="badge">pending</span>' : '';
-    const moving = !row.inserted && !readOnly();
+    const on = ticked.has(row.id);
+    const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
+    // The state of the line, in a word on the line itself rather than in a column of its own.
+    // Quiet on purpose: a list of mostly-cleared lines should not shout the same word three
+    // hundred times. An uncleared line has no word at all, so the two differ even in greyscale.
+    const state = on ? 'cleared' : row.status === 'Pending' ? 'pending' : '';
+    // A line in another commodity is shown but adds nothing to this balance, and that has to be
+    // said on the row: a number in the right column with a running total that never moves looks
+    // like a mistake otherwise.
+    const foreign = !row.counted;
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
-    return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
-<td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${row.inserted ? '' : `<span class="grip" draggable="true" title="${moving ? 'drag onto another day to change the date (Alt+↑↓)' : 'read-only: run open in the terminal to change dates'}" aria-hidden="true"></span>`}${escape(row.date)}</td>
-<td>${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
-<td class="n">${escape(amountOf(row))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
-<td class="n expect line"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
+    // The date is a button that opens an editor in place. A new transaction's date lives in
+    // its text, so it is shown as it is rather than edited here.
+    let date;
+    if (row.inserted) date = escape(row.date);
+    else if (dateBeingEdited === row.id) {
+      date = `<input type="date" class="date-input" data-date-input="${escape(row.id)}" value="${escape(row.date)}" aria-label="date of this transaction">`;
+    } else {
+      date = `<button class="date-btn" data-date="${escape(row.id)}" title="change the date (d)">${escape(row.date)}</button>`
+        + `<button class="insert" data-insert="${escape(row.id)}" title="insert a transaction here (i)">+</button>`;
+    }
+    return `<tr data-id="${escape(row.id)}" tabindex="-1" role="checkbox" aria-checked="${on}" aria-label="${escape(`${row.date} ${row.description}, ${amountOf(row)}, ${state || 'not cleared'}`)}" class="${on ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}">
+<td class="date">${date}</td>
+<td>${state ? `<span class="state ${state}">${state}</span>` : ''}${foreign ? '<span class="state foreign">not counted</span>' : ''}${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
+<td class="n${foreign ? ' foreign' : ''}">${escape(amountOf(row))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
+<td class="n expect line"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}"></td>
 <td class="n delta line ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
   }
 
@@ -506,7 +559,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const tr = [...$('rows').children].find((element) => element.dataset.id === id);
     if (tr) {
       tr.classList.toggle('on', ticked.has(id));
-      tr.setAttribute('aria-selected', String(ticked.has(id)));
+      tr.setAttribute('aria-checked', String(ticked.has(id)));
       tr.firstElementChild.textContent = ticked.has(id) ? '✓' : '';
     }
     hidePreview();
@@ -527,7 +580,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (isNew) {
       const fresh = { id, text };
       // Added to explain where the statement and journal part, it goes beside that posting.
-      if (from && from.id === id && rows().some((row) => row.id === from.row && row.date === read.date)) fresh.after = from.row;
+      if (from && from.id === id && rows().some((row) => row.id === from.row)) fresh.after = from.row;
       const insert = inserts.find((entry) => entry.id === id);
       if (insert) Object.assign(insert, fresh); else inserts.push(fresh);
       ticked.add(id);
@@ -559,7 +612,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   const readOnly = () => !state.files.some((file) => file.writable);
 
   /**
-   * Move a transaction to `date`, which is what a drag or Alt+arrow does.
+   * Move a transaction to `date`, which is what the date editor or Alt+arrow asks for.
    *
    * Moving changes the transaction's date, not its position in the file: the list is ordered by
    * date, so the row appears in its new place, and nothing else about the journal changes. The
@@ -680,76 +733,45 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     drawRows();
   }
 
-  let dragging = null;
-  $('rows').addEventListener('dragstart', (event) => {
-    // Only the grip drags. A row is clicked to tick it, and a click must never be able to move it.
-    const tr = event.target.closest && event.target.closest('.grip') ? event.target.closest('tr[data-id]') : null;
-    if (!tr) { event.preventDefault(); return; }
-    if (tr.dataset.id.startsWith('new:')) {
-      event.preventDefault();
-      say('A new posting takes its date from its text. Edit it to change the date.', true);
-      return;
-    }
-    // A read-only journal still starts the drag, so the drop can say why it will not take it.
-    // Cancelling here instead was silent, and a drag that does nothing looks like a broken
-    // feature rather than a read-only journal.
-    dragging = tr.dataset.id;
-    event.dataTransfer.effectAllowed = readOnly() ? 'none' : 'move';
-    event.dataTransfer.setData('text/plain', tr.dataset.id);
-    if (readOnly()) say('The journal is read-only, so the date cannot be changed: run open in the terminal to edit it.', true);
-  });
-  $('rows').addEventListener('dragover', (event) => {
-    if (!dragging) return;
-    const tr = event.target.closest('tr[data-id]');
-    if (!tr) return;
-    event.preventDefault();
-    const row = shown.find((entry) => entry.id === tr.dataset.id);
-    const from = shown.find((entry) => entry.id === dragging);
-    const refused = row ? moveRefusal(state.data, row.date) : null;
-    const locked = readOnly();
-    // The cursor says no on a target that will not take it, and the line under the table says why.
-    event.dataTransfer.dropEffect = refused || locked ? 'none' : 'move';
-    if (locked) {
-      for (const other of $('rows').children) other.classList.remove('drop');
-      say('The journal is read-only, so the date cannot be changed: run open in the terminal to edit it.', true);
-      return;
-    }
-    for (const other of $('rows').children) other.classList.toggle('drop', other === tr && !refused);
-    if (row && refused) {
-      say(`cannot move to ${row.date}: it is ${refused}`, true);
-    } else if (row && from && row.date !== from.date) {
-      say(`move to ${row.date}`);
-    } else if (row) {
-      say(`${row.date}, the date it already has`);
-    }
-  });
-  $('rows').addEventListener('dragleave', (event) => {
-    const tr = event.target.closest('tr[data-id]');
-    if (tr) tr.classList.remove('drop');
-  });
-  $('rows').addEventListener('drop', (event) => {
-    const tr = event.target.closest('tr[data-id]');
-    if (!tr || !dragging) return;
-    event.preventDefault();
-    const target = shown.find((entry) => entry.id === tr.dataset.id);
-    const id = dragging;
-    dragging = null;
-    for (const other of $('rows').children) other.classList.remove('drop');
-    if (target) moveTo(id, target.date);
-  });
-  $('rows').addEventListener('dragend', () => {
-    dragging = null;
-    for (const other of $('rows').children) other.classList.remove('drop');
-    // Only the hints this gesture wrote are cleared: a refusal is the answer to what the person
-    // just did, and wiping it on release would be the same silence the drag used to have.
-    const said = $('status').textContent;
-    if (said.startsWith('move to ') || said.startsWith('cannot move to ')) say('');
-  });
+  /**
+   * Open one transaction's date in place, ready to change. This is the only way to change a
+   * date: deliberate, one row at a time, and it goes through the same checks as every other
+   * date change, so it can never land before the asserted balance or write to a read-only file.
+   */
+  function startDateEdit(id) {
+    if (readOnly()) { say('The journal is read-only, so the date cannot be changed: run open in the terminal to edit it.', true); return; }
+    dateBeingEdited = id;
+    drawRows();
+    const input = $('rows').querySelector(`tr[data-id="${CSS.escape(id)}"] .date-input`);
+    if (!input) return;
+    input.focus();
+    if (typeof input.showPicker === 'function') { try { input.showPicker(); } catch (error) { /* not in every browser, and not in every gesture */ } }
+  }
+
+  /** Close the date editor, moving the transaction when a date was given. */
+  function finishDateEdit(id, value) {
+    if (dateBeingEdited !== id) return;
+    dateBeingEdited = null;
+    if (value) moveTo(id, value);
+    drawRows();
+  }
+
+  /**
+   * Open a new transaction after this one, prefilled with its day, so the two land in the
+   * same place in the file as they do in the list.
+   */
+  function startInserting(after) {
+    if (readOnly()) { say('The journal is read-only, so nothing can be written: run open in the terminal to edit it.', true); return; }
+    const row = shown.find((entry) => entry.id === after) || rows().find((entry) => entry.id === after);
+    startAdding(null, row ? row.date : null, row || null);
+  }
 
   $('rows').addEventListener('click', (event) => {
     const button = event.target.closest('button');
     if (button) {
-      if (button.dataset.edit) { editing = button.dataset.edit; drawRows(); }
+      if (button.dataset.date) startDateEdit(button.dataset.date);
+      else if (button.dataset.insert) startInserting(button.dataset.insert);
+      else if (button.dataset.edit) { editing = button.dataset.edit; drawRows(); }
       else if (button.dataset.keep) keep(button.dataset.keep);
       else if (button.dataset.restore) { delete edits[button.dataset.restore]; drawRows(); }
       else if (button.dataset.drop) { inserts = inserts.filter((insert) => insert.id !== button.dataset.drop); ticked.delete(button.dataset.drop); delete expected[button.dataset.drop]; editing = null; drawRows(); }
@@ -782,6 +804,11 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     // In the text, Enter is a new line; Ctrl+Enter (or Cmd+Enter) keeps it.
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && event.target.closest('tr.editor')) { event.preventDefault(); keep(event.target.closest('tr.editor').dataset.editor); }
   });
+  $('rows').addEventListener('focusout', (event) => {
+    const input = event.target.closest && event.target.closest('[data-date-input]');
+    if (input && dateBeingEdited === input.dataset.dateInput) finishDateEdit(input.dataset.dateInput, input.value);
+  });
+
   $('hidden').addEventListener('click', (event) => {
     if (!event.target.closest('[data-toggle-hidden]')) return;
     hideCleared = !hideCleared;
@@ -837,15 +864,23 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
 
   root.addEventListener('keydown', (event) => {
     const typing = /^(INPUT|TEXTAREA)$/.test(event.target.tagName);
+    // The date editor: Enter keeps the date, Escape leaves it alone. It is checked before the
+    // keys below, which are for the list rather than for a field being typed in.
+    const dateInput = event.target.closest && event.target.closest('[data-date-input]');
+    if (dateInput) {
+      if (event.key === 'Enter') { event.preventDefault(); finishDateEdit(dateInput.dataset.dateInput, dateInput.value); }
+      else if (event.key === 'Escape') { event.preventDefault(); finishDateEdit(dateInput.dataset.dateInput, null); }
+      return;
+    }
     if (event.key === 'Escape') {
       if (editing) { editing = null; drafting = null; drawRows(); return; }
       if (event.target === $('search')) { $('search').value = ''; drawRows(); return; }
     }
     if (typing) return;
     const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
-    // Alt with an arrow moves the transaction to the next day that has postings, which is the
-    // keyboard's version of dropping it on a row. It changes the date, as a drag does. It comes
-    // before the plain arrows below, which take the same keys for moving the focus.
+    // Alt with an arrow moves the transaction to the next day that has postings, the quick way
+    // to step it onto the day the statement shows. It changes the date like the date editor
+    // does, and comes before the plain arrows below, which take the same keys for focus.
     if (event.altKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp') && trs[focus]) {
       event.preventDefault();
       const at = shown.findIndex((row) => row.id === trs[focus].dataset.id);
@@ -866,6 +901,8 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     else if (event.key === 'ArrowUp' || event.key === 'k') { event.preventDefault(); moveFocus(focus - 1); }
     else if (event.key === ' ' && trs[focus] && event.target.tagName !== 'BUTTON') { event.preventDefault(); toggle(trs[focus].dataset.id); }
     else if (event.key === 'e' && trs[focus]) { event.preventDefault(); editing = trs[focus].dataset.id; drawRows(); }
+    else if (event.key === 'd' && trs[focus]) { event.preventDefault(); startDateEdit(trs[focus].dataset.id); }
+    else if ((event.key === 'i' || (event.key === 'N' && event.shiftKey)) && trs[focus]) { event.preventDefault(); startInserting(trs[focus].dataset.id); }
     else if (event.key === 'n') { event.preventDefault(); startAdding(); }
     else if (event.key === 'a' && !event.ctrlKey && !event.metaKey) { event.preventDefault(); $('all').click(); }
     else if (event.key === '/') { event.preventDefault(); $('search').focus(); }

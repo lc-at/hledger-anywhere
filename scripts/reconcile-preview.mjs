@@ -1,6 +1,6 @@
 // Renders the reconcile window in whichever state you want to look at, with the plugin
 // side stubbed so no journal is touched. Run: node scripts/reconcile-preview.mjs [port]
-// then open /?case=demo|big|empty&theme=light|dark&writable=no (BIG_PRINT sets the big case).
+// then open /?case=demo|generic|big|empty&theme=light|dark&writable=no (BIG_PRINT sets the big case).
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -10,7 +10,14 @@ import { fileURLToPath } from 'node:url';
 import { page } from '../assets/plugins/reconcile-window.js';
 import { inferStyle, readPrint } from '../assets/plugins/reconcile-data.js';
 import { COLORS, DARK } from './chart-fixtures.mjs';
-import { RECONCILE_PRINT } from './reconcile-fixtures.mjs';
+import { GENERIC_PRINT, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
+
+/** Today, as the plugin writes it: the date of the statement in front of you. */
+function today() {
+  const now = new Date();
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
 
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
 const TYPES = { '.js': 'text/javascript', '.html': 'text/html; charset=utf-8', '.css': 'text/css' };
@@ -61,6 +68,9 @@ const server = createServer(async (request, response) => {
     }
     account = process.env.BIG_ACCOUNT || 'Assets:BNI:Taplus8650';
     data = dataFor(print, account);
+  } else if (which === 'generic') {
+    account = 'assets:bank';
+    data = dataFor(GENERIC_PRINT, account);
   } else if (which === 'empty') {
     data = dataFor([], account);
   } else {
@@ -80,7 +90,9 @@ const server = createServer(async (request, response) => {
     token: 'preview',
     files: [{ path: 'journal.journal', writable }],
     accounts: [account, 'Expenses:Food', 'Income:Salary'],
-    statementDate: url.searchParams.get('date') || '2026-09-30',
+    // The same default the plugin uses: today, the date of the statement being reconciled now.
+    // A fixture's own date can be given with date= when a check needs one.
+    statementDate: url.searchParams.get('date') || today(),
     statementBalance: url.searchParams.get('balance') || '',
     fingerprint: 'preview',
     // As the plugin does: the journal's own habit, so the window opens the way it really would.
