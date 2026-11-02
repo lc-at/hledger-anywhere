@@ -1232,13 +1232,18 @@ async function reconcileGeneric(tab) {
     const rows = [...document.querySelectorAll('#rows tr[data-id]')];
     return {
       virtual: rows.filter((tr) => /Cash set aside|Money set aside/.test(tr.textContent)).length,
+      tinted: rows.filter((tr) => tr.classList.contains('on')).length,
       states: rows.map((tr) => (tr.querySelector('.state') || { textContent: '' }).textContent),
       line: document.getElementById('hidden').innerText,
     };
   })()`);
+  // Cleared is the tint rather than a word: three lines were cleared when the window opened and
+  // they come back tinted, with no "cleared" on any of them, while pending and not counted stay
+  // words. The row still says cleared to a screen reader through aria-checked and its label.
   check('showing them brings back the cleared lines, virtual ones included',
-    revealed.virtual === 2 && revealed.states.includes('cleared') && /hide them/.test(revealed.line),
-    JSON.stringify(revealed));
+    revealed.virtual === 2 && revealed.tinted === 3 && !revealed.states.includes('cleared')
+    && revealed.states.includes('pending') && revealed.states.includes('not counted')
+    && /hide them/.test(revealed.line), JSON.stringify(revealed));
 }
 
 // A sticky bar that eats a third of the screen is worse than no sticky header, so the narrow

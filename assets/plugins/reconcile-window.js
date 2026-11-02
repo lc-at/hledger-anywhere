@@ -99,9 +99,12 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
      rather than the row, since a table row's own border does not paint in border-collapse mode. */
   tr.day td { border-top:2px solid ${colors.dim}88; }
   td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
-  /* Values stay on one line; a header may wrap, so naming the commodity in it costs a line
-     rather than a column, which is what pushes the balance off a narrow window. */
+  /* Values stay on one line whatever happens. A header wraps only where there is no room for
+     it on one, because there naming the commodity in it costs a line rather than a column and
+     a wrapped header over a wide window just reads worse. */
   td.n { white-space:nowrap; }
+  th.n { white-space:nowrap; }
+  @media (max-width:760px) { th.n { white-space:normal; } }
   td.tick { width:24px; text-align:center; }
   /* A date on two lines costs a row twice the height and reads worse. */
   td.date, th.date { white-space:nowrap; width:1%; }
@@ -113,7 +116,10 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   td.delta.off { color:${colors.accent}; font-weight:600; }
   td.delta.ok { color:${colors.dim}; }
   tr { cursor:pointer; }
-  tr.on td { background:${softer}; }
+  /* Cleared is the tint rather than a word: with two hundred and eighty-nine of them in view,
+     a word on every row is the noisy half, and the tint plus the lines being hidden until asked
+     for already say which are done. The state is still on the row for a screen reader. */
+  tr.on td { background:${soft}; }
   /* The state of the line, in a word. Small and dim so a long list of cleared lines stays
      calm; the word itself, not the colour, is what says which is which. */
   .state { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:${colors.dim}; margin-right:6px; }
@@ -451,7 +457,10 @@ export function mount(root = document) {
     // The state of the line, in a word on the line itself rather than in a column of its own.
     // Quiet on purpose: a list of mostly-cleared lines should not shout the same word three
     // hundred times. An uncleared line has no word at all, so the two differ even in greyscale.
-    const state = on ? 'cleared' : row.status === 'Pending' ? 'pending' : '';
+    // What is said out loud, which is more than what is drawn: a cleared line has no word on
+    // it any more, so the label is where it is still stated rather than left to the tint.
+    const spoken = on ? 'cleared' : row.status === 'Pending' ? 'pending' : 'not cleared';
+    const state = row.status === 'Pending' ? 'pending' : '';
     // A line in another commodity is shown but adds nothing to this balance, and that has to be
     // said on the row: a number in the right column with a running total that never moves looks
     // like a mistake otherwise.
@@ -467,7 +476,7 @@ export function mount(root = document) {
       date = `<button class="date-btn" data-date="${escape(row.id)}" title="change the date (d)">${escape(row.date)}</button>`
         + `<button class="insert" data-insert="${escape(row.id)}" title="insert a transaction here (i)">+</button>`;
     }
-    return `<tr data-id="${escape(row.id)}" tabindex="-1" role="checkbox" aria-checked="${on}" aria-label="${escape(`${row.date} ${row.description}, ${amountOf(row)}, ${state || 'not cleared'}`)}" class="${on ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}">
+    return `<tr data-id="${escape(row.id)}" tabindex="-1" role="checkbox" aria-checked="${on}" aria-label="${escape(`${row.date} ${row.description}, ${amountOf(row)}, ${spoken}${foreign ? ', not counted' : ''}`)}" class="${on ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}">
 <td class="date">${date}</td>
 <td>${state ? `<span class="state ${state}">${state}</span>` : ''}${foreign ? '<span class="state foreign">not counted</span>' : ''}${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n${foreign ? ' foreign' : ''}">${escape(amountOf(row))}</td><td class="n">${row.balance == null ? '?' : escape(bare(row.balance))}</td>

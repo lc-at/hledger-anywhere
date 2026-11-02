@@ -113,19 +113,37 @@ function accountOn(line) {
 }
 
 /**
- * How another posting of the transaction is named on a line's "against" row.
+ * What a line is against: the other accounts first, then the postings this account also has
+ * in the same transaction.
  *
- * A second posting to the same account in one transaction reads as a duplicate of the first:
- * same date, same description, same other accounts, and only the amount telling them apart,
- * which is not where the eye goes. Naming the sibling with its amount says which of the two
- * this line is. Any other account is named as it is.
+ * A second posting to the same account reads as a duplicate of the first: same date, same
+ * description, same other accounts, and only the amount telling them apart, which is not
+ * where the eye goes. Saying "also this, and that, on this account" instead of repeating the
+ * account name says which of the two the line is, without a run of identical names.
  */
-function againstName(other, mine) {
-  if (other.paccount !== mine) return other.paccount;
+function againstLine(transaction, posting, commodity) {
+  const others = transaction.tpostings.filter(
+    (other) => other !== posting && other.paccount !== posting.paccount,
+  );
+  const siblings = transaction.tpostings.filter(
+    (other) => other !== posting && other.paccount === posting.paccount,
+  );
+  const parts = others.map((other) => other.paccount);
+  const amounts = siblings.map((other) => siblingAmount(other, commodity)).filter(Boolean);
+  if (amounts.length) parts.push(`also ${amounts.join(' and ')} on this account`);
+  return parts.join(' \u00b7 ');
+}
+
+/**
+ * A sibling posting's amount, bare when it is in the commodity this window counts, which the
+ * column header already names, and with its own commodity when it is not.
+ */
+function siblingAmount(other, commodity) {
   const own = (other.pamount || [])[0];
-  if (!own) return other.paccount;
+  if (!own) return '';
   const style = styleOf(own);
-  return `${other.paccount} ${readable(toMinor(quantityOf(own), style.precision), style)}`;
+  const minor = toMinor(quantityOf(own), style.precision);
+  return readable(minor, style.commodity === commodity ? { ...style, commodity: '' } : style);
 }
 
 /** Whether an account is the one asked for, or under it when `inclusive`. */
@@ -197,8 +215,7 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
       date: posting.pdate || transaction.tdate,
       description: transaction.tdescription,
       account: posting.paccount,
-      against: transaction.tpostings.filter((other) => other !== posting)
-        .map((other) => againstName(other, posting.paccount)).join(', '),
+      against: againstLine(transaction, posting, commodity),
       amount: amount ? toMinor(quantityOf(amount), style.precision) : 0,
       // Whether this line belongs in the arithmetic of this commodity. A line in another
       // commodity adds nothing, and `stated` is what it says instead of a number here.
