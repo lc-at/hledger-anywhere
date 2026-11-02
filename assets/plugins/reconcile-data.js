@@ -156,9 +156,18 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
   let start = null;
   for (const { transaction, posting, occurrence } of found) {
     const amount = (posting.pamount || []).find((entry) => entry.acommodity === commodity);
+    // The posting's own amount, whatever commodity it is in. A line in another commodity is
+    // still a line on the statement and still belongs to this account, so it is shown; it is
+    // simply not added to a balance in this one, which no arithmetic can do honestly.
+    const own = (posting.pamount || [])[0];
     const assertion = posting.pbalanceassertion;
     const asserts = assertion && assertion.baamount && assertion.baamount.acommodity === commodity;
-    if (!amount && !asserts) continue;
+    // Only a posting with nothing to say at all is dropped. Dropping the others hid real lines
+    // from the person reconciling the statement, who then could not tick them.
+    if (!amount && !asserts && !own) continue;
+    // How a line in another commodity is written, for the window to show instead of a number
+    // in this one. It is never converted: print output has no rate to convert with.
+    const stated = amount || !own || !own.acommodity ? null : styleOf(own);
     const positions = transaction.tsourcepos || [];
     const file = String((positions[0] || {}).sourceName || '').replace(/^\/+/, '');
     // A transaction of two postings in one commodity, with no costs, is one whose amounts and
@@ -174,6 +183,14 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
       account: posting.paccount,
       against: transaction.tpostings.filter((other) => other !== posting).map((other) => other.paccount).join(', '),
       amount: amount ? toMinor(quantityOf(amount), style.precision) : 0,
+      // Whether this line belongs in the arithmetic of this commodity. A line in another
+      // commodity adds nothing, and `stated` is what it says instead of a number here.
+      counted: Boolean(amount),
+      stated: stated ? { commodity: stated.commodity, minor: toMinor(quantityOf(own), stated.precision), style: stated } : null,
+      // A bracketed posting: hledger keeps it out of the transaction's balance check but
+      // counts it in the account's balance all the same, so it is listed and counted here
+      // too, marked, because it is not a movement the statement would show.
+      virtual: posting.ptype === 'VirtualPosting' || posting.ptype === 'BalancedVirtualPosting',
       // A posting is cleared when its own mark says so, or when its transaction is marked
       // and the posting says nothing of its own. That is hledger's rule, not a choice: in a
       // journal whose transactions are marked, `register --cleared` lists them and
@@ -347,7 +364,11 @@ export function readTransaction(text, account, style, inclusive = false) {
     if (!/^[ \t]/.test(line) || line.trim().startsWith(';')) continue;
     const parts = parsePosting(line);
     if (!parts) continue;
-    const virtual = parts.open === '(';
+    // Both brackets keep a posting out of the transaction's balance check: (...) is virtual and
+    // [...] is balanced virtual, and hledger weighs neither when deciding whether the
+    // transaction balances or what a blank amount must be. Treating [...] as a real posting
+    // worked out blank amounts from it, which hledger does not.
+    const virtual = parts.open === '(' || parts.open === '[';
     postings.push({ account: parts.account, written: Boolean(parts.amount && !/^=/.test(parts.amount)), value: parts.amount && !/^=/.test(parts.amount) ? readAmount(parts.amount, style) : null, virtual, raw: parts.amount });
   }
   const ours = postings.filter((posting) => belongs(posting.account, account, inclusive));
@@ -717,11 +738,13 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
       }
     }
     const text = `${lines.join('\n')}\n`;
-    const beside = insert.after != null ? data.rows.find((row) => row.id === insert.after && row.date === read.date && !row.generated) : null;
+    // Beside the neighbouring transaction, whatever the date. hledger sorts by date first, so a
+    // different date lands in its own group, while appending to the end of the file would put a
+    // same-dated line after every other line of that day, which is not where the person put it.
+    const beside = insert.after != null ? data.rows.find((row) => row.id === insert.after && !row.generated) : null;
     const path = beside ? beside.where.file : insert.file || lastFile();
     const file = path ? fileOf(path) : null;
     if (!file) { missing.push({ id: insert.id, why: 'there is no file to add it to' }); continue; }
-    // Beside the transaction it explains, so hledger orders it where the statement has it.
     if (beside) file.inserted.push({ index: beside.where.last - 1, line: beside.where.last - 1, text });
     else file.appended += `${file.appended ? '\n' : ''}${text}`;
   }

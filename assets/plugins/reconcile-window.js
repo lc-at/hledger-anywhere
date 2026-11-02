@@ -238,6 +238,13 @@ export function mount(root = document) {
   let pending = null;
   const style = () => state.data.style;
   const money = (minor) => readable(minor, style());
+  /**
+   * What a line's amount says. A line in another commodity is not added to this balance, so it
+   * shows what the journal wrote for it rather than a zero in the wrong commodity.
+   */
+  const amountOf = (row) => (row.amount == null
+    ? '?'
+    : row.stated ? readable(row.stated.minor, row.stated.style) : money(row.amount));
 
   const bridge = () => {
     const bridges = window.opener && window.opener.__reconcileBridges;
@@ -398,7 +405,7 @@ export function mount(root = document) {
     return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
 <td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${row.inserted ? '' : `<span class="grip" draggable="true" title="${moving ? 'drag onto another day to change the date (Alt+↑↓)' : 'read-only: run open in the terminal to change dates'}" aria-hidden="true"></span>`}${escape(row.date)}</td>
 <td>${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
-<td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
+<td class="n">${escape(amountOf(row))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
 <td class="n expect line"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
 <td class="n delta line ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
   }

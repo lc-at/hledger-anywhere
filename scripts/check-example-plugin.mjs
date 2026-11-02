@@ -44,7 +44,7 @@ import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
 import { assertionText, checkpoints, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
-import { RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
+import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
 import { page as editPage } from '../assets/plugins/edit-window.js';
 import { alsoLine } from '../assets/plugins/chart-window.js';
@@ -1740,6 +1740,83 @@ check('every bundled plugin documents itself for `<command>?`',
     (chartEntry.examples || []).every(([command]) => !build(command.replace(/^chart\s*/, '')).refusal), '');
   const text = JSON.stringify(plugins);
   check('nothing printed in the terminal has a backtick or an em dash', !/[`\u2014]/.test(text), '');
+}
+
+{
+  // The generic fixture: a journal built to carry every kind of posting the window has to
+  // handle, so that nothing in the window is specific to one person's book.
+  const account = 'assets:bank';
+  const data = readPrint(GENERIC_PRINT, account);
+  const rows = ordered(data, {});
+
+  check('the generic journal reads: an opening, ten lines, one commodity counted',
+    data.start.date === '2026-01-01' && data.start.balance === 500000
+    && data.rows.length === 10 && data.rows.filter((row) => row.counted).length === 7
+    && data.commodity === 'IDR' && data.others.join() === 'USD',
+    JSON.stringify({ start: data.start, rows: data.rows.length, commodity: data.commodity, others: data.others }));
+
+  // The engine's own answer, from `hledger balance assets:bank`: 15,640.00 IDR. It includes the
+  // bracketed postings and leaves out the dollar lines, which is what makes this worth pinning:
+  // it fails if either kind of line starts being counted the wrong way.
+  check('the running balance over every line equals what hledger itself reports for the account',
+    rows[rows.length - 1].balance === 1564000, String(rows[rows.length - 1].balance));
+
+  const foreign = rows.filter((row) => row.stated);
+  check('lines in another commodity are shown with their own commodity, and are not counted',
+    foreign.length === 3 && foreign.every((row) => row.counted === false)
+    && foreign.map((row) => `${row.stated.commodity} ${row.stated.minor}`).join() === 'USD 100,USD 5000,USD -2500',
+    JSON.stringify(foreign.map((row) => row.stated)));
+  const at = rows.findIndex((row) => row.stated);
+  check('and they do not move the running balance past them',
+    at > 0 && rows[at].balance === rows[at - 1].balance,
+    at > 0 ? `${rows[at - 1].balance} -> ${rows[at].balance}` : 'no line in another commodity to check against');
+
+  const virtual = rows.filter((row) => row.virtual);
+  check('bracketed postings are listed and counted, marked as virtual',
+    virtual.length === 2 && virtual.every((row) => row.counted)
+    && virtual.map((row) => row.amount).join() === '50000,-300000',
+    JSON.stringify(virtual.map((row) => ({ amount: row.amount, counted: row.counted }))));
+
+  const costed = rows.find((row) => row.description === 'Buying dollars for a trip');
+  check('a line bought at a price shows the price, not a converted number',
+    Boolean(costed) && costed.stated.commodity === 'USD' && costed.stated.minor === 100 && costed.counted === false,
+    JSON.stringify(costed && costed.stated));
+
+  const byStatus = {};
+  for (const row of rows) byStatus[row.status] = (byStatus[row.status] || 0) + 1;
+  check('unmarked, cleared and pending all appear, at both the transaction and posting level',
+    byStatus.Unmarked === 5 && byStatus.Cleared === 3 && byStatus.Pending === 2, JSON.stringify(byStatus));
+
+  // A blank amount is worked out from the real postings only, which is what hledger does: a
+  // bracketed posting is not part of the balance, so it must not be part of the sum either.
+  const bracketed = ['2026-01-01 A bracketed posting beside a blank', '    [budget:holiday]    50.00 IDR',
+    '    expenses:food    100.00 IDR', '    assets:bank'].join('\n');
+  const round = ['2026-01-01 A round bracketed posting', '    (assets:pocket)    50.00 IDR',
+    '    expenses:food    100.00 IDR', '    assets:bank'].join('\n');
+  const plain = ['2026-01-01 A blank with nothing beside it', '    expenses:food    100.00 IDR',
+    '    assets:bank'].join('\n');
+  const style = data.style;
+  check('a blank amount is worked out from the real postings, ignoring a bracketed one',
+    readTransaction(bracketed, account, style).amount === -10000
+    && readTransaction(bracketed, account, style).amount === readTransaction(plain, account, style).amount,
+    String(readTransaction(bracketed, account, style).amount));
+  check('and a round bracketed posting is ignored the same way',
+    readTransaction(round, account, style).amount === -10000, String(readTransaction(round, account, style).amount));
+
+  // Inserting beside a row puts the new transaction after it in the file, even when its date
+  // differs: hledger sorts by date, so appending would be the wrong place for that line.
+  const neighbour = rows.find((row) => row.date === '2026-01-11');
+  const placed = plan({ data, texts: { 'generic.journal': GENERIC_JOURNAL }, ticked: new Set(),
+    inserts: [{ id: 'new:1', text: '2026-01-20 A line for another day\n    Assets:Bank    10.00 IDR\n    Expenses:Food', after: neighbour.id }] });
+  const placedFile = placed.files[0];
+  check('a transaction inserted beside a row is written after that row, not at the end',
+    Boolean(placedFile) && placedFile.inserted.length === 1 && placedFile.appended === ''
+    && placedFile.inserted[0].text.includes('2026-01-20'),
+    JSON.stringify({ inserted: placedFile && placedFile.inserted.length, appended: placedFile && placedFile.appended }));
+  const sameDay = plan({ data, texts: { 'generic.journal': GENERIC_JOURNAL }, ticked: new Set(),
+    inserts: [{ id: 'new:2', text: '2026-01-11 Another on the same day\n    Assets:Bank    10.00 IDR\n    Expenses:Food', after: neighbour.id }] });
+  check('and one dated like its neighbour is placed there too',
+    Boolean(sameDay.files[0]) && sameDay.files[0].inserted.length === 1 && sameDay.files[0].appended === '', '');
 }
 
 // ------------------------------------------------------------------ the verdict
