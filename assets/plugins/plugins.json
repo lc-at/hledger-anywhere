@@ -343,7 +343,7 @@
       ],
       "module": "./reconcile.js",
       "usage": "reconcile <account> [--statement DATE] [--balance N]",
-      "help": "Opens a window on an account's postings since its last balance assertion. Already cleared lines are hidden, so it opens on what is left. Type the statement's date and closing balance, and tick the lines the statement shows until the difference is zero. Save changes writes the ticks, edits and date changes; Finish writes them and a balance assertion, then runs hledger to check it, putting the files back if it fails. Every write is shown first. Only files from an open folder can be written.",
+      "help": "Opens a window on an account's postings since its last balance assertion. Already cleared lines are hidden, so it opens on what is left. Lines in another currency are shown but marked as not counted, and the window says which currency it counts and how to count another. The statement date defaults to today. Type the closing balance and tick the lines the statement shows until the difference is zero. Save changes writes the ticks, edits and date changes; Finish writes them and a balance assertion, then runs hledger to check it, putting the files back if it fails. Every write is shown first. Only files from an open folder can be written.",
       "sections": [
         {
           "title": "Options",
@@ -383,11 +383,19 @@
             ],
             [
               "n",
-              "add a transaction the journal is missing"
+              "add a transaction at the end"
             ],
             [
-              "drag the grip, Alt+up, Alt+down",
-              "move a transaction to another day; this changes its date"
+              "i",
+              "add a transaction after the line with the cursor"
+            ],
+            [
+              "click the date, or d",
+              "change that transaction's date in place"
+            ],
+            [
+              "Alt+up, Alt+down",
+              "move a transaction to the next day that has postings; this changes its date, never to before the asserted balance"
             ],
             [
               "/",

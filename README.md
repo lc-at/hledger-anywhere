@@ -203,13 +203,18 @@ reconcile assets:bank:checking --statement 2026-09-30
 
 `reconcile` opens a window on the account's postings since its last balance assertion,
 the point the balance was last proven. Lines already cleared are hidden ("40 cleared
-postings hidden", with a control to show them), so it opens on what is left.
+postings hidden", with a control to show them), so it opens on what is left. An account
+holding more than one currency shows one of them and says which: lines in another currency
+are marked **not counted** and leave the running balance alone, because a journal file has
+no rate to convert them with. The note names the command that counts another one,
+`reconcile assets:bank --commodity USD`.
 
-The window has four numbers: **Opening**, **Cleared balance** to the statement date (the
-opening plus every ticked line), **Statement** (the closing balance you type) and
-**Difference**. One line above the table always says the next step; when everything up to
-the statement date is already cleared, it says so and asks only for the closing balance.
-Problems and hints sit in one list under it, one line each.
+A sticky bar keeps the next step and the numbers in reach while a long list scrolls: the
+statement's date, the closing balance you type, and the **difference** between that and the
+cleared balance. Opening and the cleared balance, run to the statement date, sit under them
+in small text. The date defaults to **today**, the date of the statement you are holding.
+When everything up to that date is already cleared, the next step says so and asks only for
+the closing balance. Problems and hints sit in one list under the bar, one line each.
 
 Tick the lines the statement shows (click or Space; `a` ticks all up to the statement date,
 `/` searches) until the difference is zero. When it is not, the window points at the likely
@@ -232,7 +237,7 @@ read-only, said once at the top, and Finish becomes "Show the assertion" to copy
     Assets:Bank:Checking    0.00 IDR = 1329539.01 IDR
 ```
 
-Two quiet options sit under the statement fields, and both are remembered:
+Two quiet options sit above the bar, and both are remembered:
 
 - **Mark as cleared**: on *this account's line* (`*` on the posting, leaving the other side
   of a transfer alone) or on *the whole transaction* (`*` on its first line, as above). It
@@ -243,10 +248,12 @@ Two quiet options sit under the statement fields, and both are remembered:
   first line where they part is found. Lines that match are asserted when you save. Off,
   nothing typed there is written.
 
-`e` edits a transaction as journal text (empty deletes it) and `n` adds a missing one. To
-move a transaction to another day, drag it by the grip beside its date, or press Alt+Up or
-Alt+Down; this changes its date, and never to before the asserted balance. A click on a
-row only ever ticks it.
+Each line says whether it is cleared, so there is no column for it: a ticked line is
+tinted and says so in a small word. `e` edits a transaction as journal text (empty deletes
+it), `n` adds a new one at the end, and `i` adds one after the line with the cursor. To
+change a date, click it and edit it in place (`d` on the focused line), or step to a
+neighbouring day with Alt+Up or Alt+Down. A date is never set before the asserted balance,
+and a click on a row only ever ticks it: nothing on a row can be dragged.
 
 ## Themes
 
