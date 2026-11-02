@@ -1220,7 +1220,7 @@ async function reconcileGeneric(tab) {
   check('it says which commodity it counts and how to count another one',
     /Counting IDR/.test(seen.notes) && /--commodity USD/.test(seen.notes), JSON.stringify(seen.notes));
   check('a line in another commodity is shown with its own amount, and leaves the balance alone',
-    seen.amounts.includes('100 USD') && seen.amounts.includes('-25.00 USD') && seen.lastBalance === '15,640.00 IDR',
+    seen.amounts.includes('100 USD') && seen.amounts.includes('-25.00 USD') && seen.lastBalance === '15,640.00',
     JSON.stringify({ amounts: seen.amounts, last: seen.lastBalance }));
   // The cleared ones are hidden until asked for, so only one virtual line is up at first and
   // nothing visible is marked cleared. Showing them brings back the rest, marks and all.
@@ -1327,6 +1327,21 @@ async function reconcileDates(tab) {
   check('and the preview shows the line it would rewrite before anything is written',
     /2026-09-01 \* Coffee/.test(preview) && /2026-09-03 \* Coffee/.test(preview), preview.slice(0, 200));
   await tab.eval("document.getElementById('cancel').click()");
+
+  // The date and the insert control are reached from the keyboard, not only by a pointer: Tab
+  // from the focused line lands on them in turn, each drawn with a focus ring, and the plus is
+  // revealed when it has focus rather than staying invisible until something hovers over it.
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40 });
+  await tab.key('Tab', { code: 'Tab', keyCode: 9 });
+  const firstStop = await tab.eval("(() => { const el = document.activeElement; return { cls: el.className, ring: getComputedStyle(el).outlineWidth }; })()");
+  await tab.key('Tab', { code: 'Tab', keyCode: 9 });
+  const secondStop = await tab.eval("(() => { const el = document.activeElement; return { cls: el.className, ring: getComputedStyle(el).outlineWidth, opacity: getComputedStyle(el).opacity }; })()");
+  check('Tab from a line reaches the date and then the plus, each with a focus ring',
+    firstStop.cls === 'date-btn' && parseFloat(firstStop.ring) >= 2
+    && secondStop.cls === 'insert' && parseFloat(secondStop.ring) >= 2 && secondStop.opacity === '1',
+    JSON.stringify({ firstStop, secondStop }));
 
   // A date past the statement date is allowed: the statement date is a filter, not a wall, and
   // Finish waits for the date to move rather than refusing the line.
@@ -1542,7 +1557,7 @@ async function reconcileRunning(tab) {
   const cell = (row, column) => tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${row}].children[${column}].textContent.trim()`);
   const expect = (row, value) => tab.eval(`(() => { const input = document.querySelectorAll('#rows tr[data-id] input[data-expect]')[${row}]; input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await tab.show('reconcile', 'dark', '&lines=on');
-  check('each posting shows the balance after it', [await cell(0, 3), await cell(1, 3), await cell(2, 3)].join(' | ') === '979,000.00 IDR | 5,979,000.00 IDR | 5,679,000.00 IDR',
+  check('each posting shows the balance after it', [await cell(0, 3), await cell(1, 3), await cell(2, 3)].join(' | ') === '979,000.00 | 5,979,000.00 | 5,679,000.00',
     [await cell(0, 3), await cell(1, 3), await cell(2, 3)].join(' | '));
   await expect(0, '979,000');
   await expect(1, '5,979,000');
@@ -1600,7 +1615,7 @@ async function reconcileRunning(tab) {
   check('Ctrl+Enter keeps it: it is ticked, marked new, and placed straight after the posting where they parted, the balances following',
     // A line's state now sits at the front of its description, so an entry may begin with it:
     // what is being asserted here is the order and the balances, not where the text starts.
-    /[^|]*Split[^|]*=5,675,000\.00 IDR \| [^|]*Bank feenew[^|]*=5,600,000\.00 IDR \| [^|]*Split[^|]*=5,595,000\.00 IDR \| [^|]*After the statement[^|]*=5,592,500\.00 IDR/.test(await rows()), await rows());
+    /[^|]*Split[^|]*=5,675,000\.00 \| [^|]*Bank feenew[^|]*=5,600,000\.00 \| [^|]*Split[^|]*=5,595,000\.00 \| [^|]*After the statement[^|]*=5,592,500\.00/.test(await rows()), await rows());
   const feeRow = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Bank fee/.test(tr.textContent))");
   check('and the statement balance typed where they parted moves to it, where it now matches',
     (await cell(feeRow, 5)) === '✓' && (await cell(3, 5)) === '' && (await tab.eval("document.querySelectorAll('#rows tr.first').length")) === 0, `${await cell(feeRow, 5)} / ${await cell(3, 5)}`);
@@ -1614,7 +1629,7 @@ async function reconcileRunning(tab) {
   check('the reading follows the text, the amount worked out as hledger would', (await text('reading')) === '2026-09-01: -25,000.00 IDR to Assets:Bank:Checking, against Expenses:Food:Coffee.', await text('reading'));
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
   check('an edit changes the amount and every balance after it, and is marked',
-    (await cell(0, 2)) === '-25,000.00 IDR' && (await cell(0, 3)) === '975,000.00 IDR' && /Coffee beansedited/.test(await cell(0, 1)) && /1 edit, 1 new/.test(await text('pending')),
+    (await cell(0, 2)) === '-25,000.00' && (await cell(0, 3)) === '975,000.00' && /Coffee beansedited/.test(await cell(0, 1)) && /1 edit, 1 new/.test(await text('pending')),
     `${await cell(0, 2)} ${await cell(0, 3)} ${await text('pending')}`);
   // The per-row control is a word, and it lives beside the description instead of in a column of
   // its own: a column for one small control cost width on every row, and on a narrow window that
@@ -1644,7 +1659,7 @@ async function reconcileRunning(tab) {
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
   check('an edit reopens with what was typed, and can be undone', /Coffee beans/.test(await area()) && (await tab.eval("!!document.querySelector('tr.editor [data-undo]')")), '');
   await tab.eval("document.querySelector('tr.editor [data-undo]').click()");
-  check('and is as it was', (await cell(0, 2)) === '-21,000.00 IDR', await cell(0, 2));
+  check('and is as it was', (await cell(0, 2)) === '-21,000.00', await cell(0, 2));
   // A transaction with two postings to the account is edited whole.
   const split = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Split/.test(tr.textContent))");
   await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${split}].querySelector('button[data-edit]').click()`);

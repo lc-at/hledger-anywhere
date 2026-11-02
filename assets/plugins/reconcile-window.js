@@ -46,7 +46,10 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   @media (max-width:760px) { .figures { display:none; } }
   .figures b { color:${colors.foreground}; font-variant-numeric:tabular-nums; font-weight:600; }
   .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; width:100%; }
-  .actions input[type=search] { flex:1; min-width:150px; }
+  .actions input[type=search] { flex:1 1 150px; min-width:150px; }
+  /* Narrow, the search takes a line to itself and the buttons share the next one, rather than
+     the search shrinking until its placeholder is cut off in the middle of a word. */
+  @media (max-width:760px) { .actions input[type=search] { flex:1 1 100%; } }
   label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:${colors.dim}; }
   select { font:inherit; font-size:12px; color:${colors.foreground}; background:${softer}; border:1px solid ${colors.dim}66; border-radius:4px; padding:4px 6px; }
   input { font:inherit; color:${colors.foreground}; background:${softer}; border:1px solid ${colors.dim}66; border-radius:4px; padding:5px 8px; }
@@ -95,7 +98,10 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   /* Where the day changes, a heavier rule than the hairline between postings. Drawn on the cells
      rather than the row, since a table row's own border does not paint in border-collapse mode. */
   tr.day td { border-top:2px solid ${colors.dim}88; }
-  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  /* Values stay on one line; a header may wrap, so naming the commodity in it costs a line
+     rather than a column, which is what pushes the balance off a narrow window. */
+  td.n { white-space:nowrap; }
   td.tick { width:24px; text-align:center; }
   /* A date on two lines costs a row twice the height and reads worse. */
   td.date, th.date { white-space:nowrap; width:1%; }
@@ -170,7 +176,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
       <span class="difference" id="difference"></span>
       <span class="figures" id="figures"></span>
       <span class="actions">
-        <input type="search" id="search" placeholder="search descriptions, accounts or amounts (/)" aria-label="search">
+        <input type="search" id="search" placeholder="search (/)" aria-label="search descriptions, accounts and amounts">
         <button id="add" title="add a transaction this account is in: after the line with the cursor, or at the end (n or i)">Add a transaction</button>
         <button id="all" title="tick every line shown, up to the statement date (a)">Tick all</button>
         <button id="progress"${writable ? '' : ' disabled hidden'} title="write the ticks, edits and date changes, without asserting a balance">Save changes<span class="count" id="pending"></span></button>
@@ -183,7 +189,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
   <p class="hidden-note" id="hidden"></p>
-  <div class="table"><table id="table" class="${lines ? 'lines' : ''}"><thead><tr><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Running balance</th><th class="n line" title="the balance your statement shows after this line">Statement balance</th><th class="n line">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <div class="table"><table id="table" class="${lines ? 'lines' : ''}"><thead><tr><th class="date">Date</th><th>Description</th><th class="n">Amount${data.commodity ? ` (${escape(data.commodity)})` : ''}</th><th class="n">Running balance${data.commodity ? ` (${escape(data.commodity)})` : ''}</th><th class="n line" title="the balance your statement shows after this line">Statement balance</th><th class="n line">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
   <p class="keys">Space tick · e edit · n new · i insert · d change date · a tick all · Alt+↑↓ next day · / search</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
@@ -261,12 +267,18 @@ export function mount(root = document) {
   const style = () => state.data.style;
   const money = (minor) => readable(minor, style());
   /**
+   * A number in this commodity without naming it: the column header names the commodity once,
+   * which keeps the rows narrow enough for a phone, where a repeated suffix is what pushes the
+   * running balance off the edge of the window.
+   */
+  const bare = (minor) => (minor == null ? '?' : readable(minor, { ...style(), commodity: '' }));
+  /**
    * What a line's amount says. A line that is not counted cannot be added to this balance, so it
-   * shows what the journal wrote for it rather than a zero in the wrong commodity; a line with
-   * nothing to show at all shows a question mark rather than a number that would be a guess.
+   * shows what the journal wrote for it, commodity included, because the commodity is the whole
+   * point of it; a line with nothing to show shows a question mark rather than a guess.
    */
   const amountOf = (row) => (row.counted
-    ? (row.amount == null ? '?' : money(row.amount))
+    ? (row.amount == null ? '?' : bare(row.amount))
     : (row.stated ? readable(row.stated.minor, row.stated.style) : '?'));
 
   const bridge = () => {
@@ -458,7 +470,7 @@ export function mount(root = document) {
     return `<tr data-id="${escape(row.id)}" tabindex="-1" role="checkbox" aria-checked="${on}" aria-label="${escape(`${row.date} ${row.description}, ${amountOf(row)}, ${state || 'not cleared'}`)}" class="${on ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}">
 <td class="date">${date}</td>
 <td>${state ? `<span class="state ${state}">${state}</span>` : ''}${foreign ? '<span class="state foreign">not counted</span>' : ''}${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
-<td class="n${foreign ? ' foreign' : ''}">${escape(amountOf(row))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
+<td class="n${foreign ? ' foreign' : ''}">${escape(amountOf(row))}</td><td class="n">${row.balance == null ? '?' : escape(bare(row.balance))}</td>
 <td class="n expect line"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}"></td>
 <td class="n delta line ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
   }
