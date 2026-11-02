@@ -326,16 +326,32 @@ pub fn bytes_label(bytes: usize) -> String {
     }
 }
 
+/// How a file gets written, which the empty messages end with. "Written" rather than
+/// "downloaded", because the file is in the engine's filesystem and has not been saved
+/// anywhere yet.
+fn write_a_file() -> String {
+    format!(
+        "{} on a command writes a file, for example {}.",
+        bold("-o FILE"),
+        bold("balance -O csv -o balance.csv")
+    )
+}
+
+/// What `download <name>` says when nothing has been written at all: that name and the fact
+/// that there is nothing, in one sentence. Two that overlap read as though the second is the
+/// real error, and as though the name were the only thing wrong.
+pub fn nothing_named(path: &str) -> String {
+    format!(
+        "Nothing called {} was written and nothing has been written yet: {}.\r\n",
+        bold(path),
+        write_a_file()
+    )
+}
+
 /// What the terminal prints for `download` with no argument.
 pub fn download_list(files: &[String]) -> String {
     if files.is_empty() {
-        // "Written" rather than "downloaded": the file is in the engine's
-        // filesystem and has not been saved anywhere yet.
-        return format!(
-            "Nothing has been written yet. {} on a command writes a file, for example {}.\r\n",
-            bold("-o FILE"),
-            bold("balance -O csv -o balance.csv")
-        );
+        return format!("Nothing has been written yet. {}\r\n", write_a_file());
     }
     let mut text = String::from("Written by commands this session:\r\n");
     for path in files {
@@ -508,13 +524,32 @@ pub fn files_arrived(
     text
 }
 
+/// What to say when there is nothing to read.
+///
+/// The same sentence whether it comes from `journal` with nothing loaded or from a command
+/// the engine had no file for, so "where is my journal" gets one answer in a session rather
+/// than two.
+pub fn no_files() -> String {
+    format!(
+        "No journal files are loaded. Drop them on this window, or type {}.\r\n",
+        bold("upload")
+    )
+}
+
+/// Whether an engine failure is "there is nothing loaded", rather than a mistake in the command.
+///
+/// With nothing loaded the engine reports a data file nobody chose, which in a browser is at
+/// the root because there is no home directory, and suggests `hledger add`, which this app
+/// refuses because the engine cannot prompt. Both are worth replacing with the sentence that
+/// is true here. A failure with files loaded is about a real path, so it is left alone.
+pub fn missing_journal(stderr: &str) -> bool {
+    stderr.contains("data file") && stderr.contains("was not found")
+}
+
 /// What the terminal prints for `journal` with no argument.
 pub fn file_list(files: &[String], main: Option<&str>) -> String {
     if files.is_empty() {
-        return format!(
-            "No journal files are loaded. Drop them on this window, or type {}.\r\n",
-            bold("upload")
-        );
+        return no_files();
     }
     let noun = count(files.len(), "file", "files");
     let mut text = format!("{noun} loaded:\r\n");

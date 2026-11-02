@@ -1298,14 +1298,36 @@ impl App {
                 if !visible.trim().is_empty() {
                     self.output(&visible, None);
                 }
-                if !output.stderr.trim().is_empty() {
+                // With nothing loaded the engine answers with a data file nobody chose, at
+                // the root, and suggests hledger add, which this app refuses. The app's own
+                // sentence is the true one, so it replaces the engine's complaint and the
+                // exit status that would only repeat it.
+                let unloaded = output.is_failure()
+                    && self.files.borrow().is_empty()
+                    && terminal::missing_journal(&output.stderr);
+                if unloaded {
+                    self.say(&terminal::no_files());
+                } else if !output.stderr.trim().is_empty() {
                     self.output(&output.stderr, Some(terminal::RED));
+                    // The engine's flat refusal and nothing else for a slip of the finger.
+                    // Naming the word it probably meant is offered, never run.
+                    if let Some(word) = terminal::unrecognized(&output.stderr) {
+                        // Plugins answer to words of their own, so they are offered too:
+                        // `chrt` is as much a slip as `blance`, and hledger knows neither.
+                        let mut words = terminal::starting_words();
+                        words.extend(
+                            self.registry.borrow().listing().into_iter().map(|(name, _, _)| name.to_string()),
+                        );
+                        if let Some(near) = terminal::near_word(&word, &words) {
+                            self.say(&format!("Did you mean {}?", terminal::bold(&near)));
+                        }
+                    }
                 }
                 if let Some(note) = note {
                     self.say(&note);
                 }
                 self.record_writes(&output);
-                if output.is_failure() {
+                if output.is_failure() && !unloaded {
                     let status = format!(
                         "[exit {} · {:.1} s]",
                         output.exit_code,
@@ -1630,13 +1652,16 @@ impl App {
             ));
         }
         let files = self.files.borrow().clone();
+        let unloaded = files.is_empty();
         let output = hledger::run(HledgerRequest::new(argv, files))
             .await
             .map_err(|error| error.to_string())?;
         self.record_writes(&output);
         if output.is_failure() {
             let message = output.stderr.trim();
-            return Err(if message.is_empty() {
+            return Err(if unloaded && terminal::missing_journal(message) {
+                terminal::no_files().trim_end().to_string()
+            } else if message.is_empty() {
                 format!("hledger exited {}", output.exit_code)
             } else {
                 message.to_string()
@@ -2478,8 +2503,18 @@ impl App {
         let Some(file) = found else {
             let names: Vec<String> =
                 self.written.borrow().iter().map(|file| file.path.clone()).collect();
-            let text = terminal::download_list(&names);
-            self.announce(&format!("Nothing called {} was written.\n{text}", terminal::bold(path)));
+            // With nothing written at all, one sentence says both: that name, and that there
+            // is nothing. Two that overlap read as though the second is the real error.
+            let message = if names.is_empty() {
+                terminal::nothing_named(path)
+            } else {
+                format!(
+                    "Nothing called {} was written.\n{}",
+                    terminal::bold(path),
+                    terminal::download_list(&names)
+                )
+            };
+            self.announce(&message);
             return;
         };
         match save_to_disk(&file) {

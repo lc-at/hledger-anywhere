@@ -1764,6 +1764,12 @@ async function theEditor(tab) {
   await save();
   check('and a save says it has nowhere to write, in plain words', /nowhere to write\. Open its folder with open/.test(await tab.warning())
     && !(await tab.warning()).includes('`'), await tab.warning());
+  // The refusal is a confirmation rather than the first time the visitor learns it: the
+  // status says so as soon as there is a change, not only when a save is attempted.
+  await tab.send('Input.insertText', { text: 'x' });
+  await sleep(100);
+  check('typing in a read-only file says so straight away, not on save',
+    (await status()) === 'read-only: nothing typed here is saved', await status());
 
   await tab.show('edit', 'light', '&writable=yes');
   await tab.eval("Object.defineProperty(window, 'opener', { configurable: true, value: null })");

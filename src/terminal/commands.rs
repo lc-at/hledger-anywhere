@@ -273,6 +273,52 @@ pub fn common_prefix_ignoring_case(values: &[&String]) -> String {
 /// letter that starts a word (`:` in an account path, say) is worth more than one in
 /// the middle, and between equals the shorter name wins. Sorted best first, and
 /// capped, because a list nobody reads is not help.
+/// Whether every letter of `wanted` appears in `name`, in order, so `name` contains it.
+fn contains_in_order(wanted: &[char], name: &[char]) -> bool {
+    let mut at = 0;
+    for letter in wanted {
+        match name[at..].iter().position(|found| found == letter) {
+            Some(found) => at += found + 1,
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The word a mistyped command was probably meant to be, when that is nearly certain.
+///
+/// hledger reports an unrecognized command and offers nothing else, which is unhelpful for a
+/// slip of the finger. A correction is offered only when one name is a letter or two from the
+/// other and one contains the other: `blance` is answered with `balance` and `chrt` with
+/// `chart`, while `xyz` and two-letter fragments are answered with nothing, because naming a
+/// word that is not close would be worse than naming none. It is only ever named; nothing here
+/// runs it.
+pub fn near_word(token: &str, candidates: &[String]) -> Option<String> {
+    let typed: Vec<char> = token.to_lowercase().chars().collect();
+    if typed.len() < 3 {
+        return None;
+    }
+    candidates
+        .iter()
+        .filter(|candidate| {
+            let name: Vec<char> = candidate.to_lowercase().chars().collect();
+            name.len().abs_diff(typed.len()) <= 2
+                && (contains_in_order(&typed, &name) || contains_in_order(&name, &typed))
+        })
+        .min_by_key(|candidate| candidate.chars().count().abs_diff(typed.len()))
+        .cloned()
+}
+
+/// The command name hledger did not recognise, from its own complaint about it.
+pub fn unrecognized(stderr: &str) -> Option<String> {
+    let rest = stderr.split("command ").nth(1)?;
+    let word = rest.split(" is not recognized").next()?;
+    if word.is_empty() || word.chars().any(|c| c.is_whitespace()) {
+        return None;
+    }
+    Some(word.to_string())
+}
+
 pub fn fuzzy_matches(token: &str, candidates: &[String], limit: usize) -> Vec<String> {
     let needle: Vec<char> = token.chars().collect();
     if needle.len() < FUZZY_MINIMUM {

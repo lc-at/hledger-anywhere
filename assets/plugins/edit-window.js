@@ -77,7 +77,9 @@ export function mount(root = document) {
   editor.session.on('change', () => {
     if (dirty) return;
     dirty = true;
-    show(status, 'Unsaved changes');
+    // A file with nowhere to write says so as soon as there is a change, so the refusal on
+    // Ctrl+S is a confirmation rather than the first time the visitor learns it.
+    show(status, data.writable ? 'Unsaved changes' : 'read-only: nothing typed here is saved');
   });
 
   editor.commands.addCommand({

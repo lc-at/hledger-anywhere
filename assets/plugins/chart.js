@@ -42,6 +42,14 @@ export default {
       return;
     }
 
+    // Nothing loaded either: a window opened to carry hledger's complaint about there being no
+    // file is worse than the complaint, which the app already has a better answer to.
+    const files = typeof host.files === 'function' ? host.files() : [];
+    if (!files.length) {
+      host.say(`${host.name}: nothing is loaded. Run open or upload first.`);
+      return;
+    }
+
     // Opened first, filled when the numbers arrive.
     const view = host.window(`hledger: ${query.title}`);
     if (!view) {

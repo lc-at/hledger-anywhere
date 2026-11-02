@@ -2467,6 +2467,13 @@ mod tests {
         let listing = download_list(&["out.csv".to_string()]);
         assert!(listing.contains("out.csv"));
         assert!(listing.contains("download <path>"));
+        // Asking for a name when nothing has been written is one sentence saying both, rather
+        // than two that overlap and make the second look like the real error.
+        let named = nothing_named("balance.csv");
+        assert!(named.contains("balance.csv"), "{named}");
+        assert!(named.contains("has been written yet"), "{named}");
+        assert!(named.contains("-o FILE"), "{named}");
+        assert_eq!(named.lines().count(), 1, "one sentence, not two: {named}");
     }
 
     #[test]
@@ -2703,5 +2710,51 @@ mod tests {
         let empty = plain(&file_list(&[], None));
         assert!(empty.contains("No journal files are loaded"), "{empty}");
         assert!(empty.contains("upload"), "{empty}");
+        // The same sentence answers a command the engine had no file for, so a session never
+        // gives two different answers to "where is my journal".
+        assert_eq!(no_files(), file_list(&[], None));
+    }
+
+    #[test]
+    fn a_mistyped_command_is_offered_the_word_it_probably_meant() {
+        // What hledger really says about `blance`: its own complaint, and nothing else.
+        let engine = "hledger: Error: command blance is not recognized. Run with no command to see a list.";
+        let word = unrecognized(engine);
+        assert_eq!(word.as_deref(), Some("blance"), "{engine}");
+        // The words hledger and the app both answer to, which is what the engine complains
+        // about; a plugin word is offered from the plugin's own name, since hledger knows
+        // nothing about plugins and `chrt` is as much a slip as `blance`.
+        let words = starting_words();
+        assert_eq!(near_word("blance", &words).as_deref(), Some("balance"), "one letter out of place");
+        assert_eq!(near_word("regster", &words).as_deref(), Some("register"), "a letter left out");
+        assert_eq!(near_word("Balanc", &words).as_deref(), Some("balance"), "capitalised");
+        let mut with_plugins = words.clone();
+        with_plugins.push("chart".to_string());
+        assert_eq!(near_word("chrt", &with_plugins).as_deref(), Some("chart"), "a plugin word too");
+        // Nothing offered when it is not nearly certain, which is the rule: a correction named
+        // when it is wrong is worse than none, and none of it ever runs the word.
+        assert_eq!(near_word("xyz", &words), None, "not a command near anything");
+        assert_eq!(near_word("re", &words), None, "too short to mean one thing");
+        assert_eq!(near_word("bal", &words), None, "a fragment, which Tab already completes");
+        assert_eq!(unrecognized("hledger: Error: could not parse a file"), None);
+        assert_eq!(unrecognized("command "), None);
+    }
+
+    #[test]
+    fn a_command_with_nothing_to_read_is_answered_in_the_apps_own_words() {
+        // What the engine really says with nothing loaded: a path nobody chose, and a
+        // suggestion this app refuses because the engine cannot prompt.
+        let engine = "hledger: Error: data file \"/.hledger.journal\" was not found.\n\
+            Please create it first, eg with \"hledger add\" or a text editor.\n\
+            Or, specify an existing data file with -f or $LEDGER_FILE.";
+        assert!(missing_journal(engine), "the engine's complaint about there being no file");
+        // A different failure, with files loaded, is left to the engine to explain.
+        assert!(!missing_journal("hledger: Error: could not parse \"data/2024.journal\""), "");
+        assert!(!missing_journal("balance: a mistake in the command",), "");
+        let message = plain(&no_files());
+        assert!(message.contains("No journal files are loaded"), "{message}");
+        assert!(message.contains("upload"), "{message}");
+        assert!(!message.contains("hledger add"), "the engine's suggestion is not repeated: {message}");
+        assert!(!message.contains("/.hledger.journal"), "nor a path nobody chose: {message}");
     }
 }

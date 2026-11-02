@@ -124,7 +124,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         word: "alias",
         usage: "alias [name=command]",
-        group: "Reports",
+        group: "App",
         summary: "make a name run a command; alias lists them",
         detail: "An alias is a word that expands to a command, which is useful for the \
                  reports worth keeping. The app says which alias expanded when one runs, \
@@ -137,7 +137,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         word: "unalias",
         usage: "unalias <name>",
-        group: "Reports",
+        group: "App",
         summary: "remove one",
         detail: "Removes an alias defined with alias. alias on its own lists them.",
         examples: &[("unalias bal", "remove the bal alias")],
@@ -145,7 +145,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         word: "plugins",
         usage: "plugins [add|remove|reload] [url]",
-        group: "Reports",
+        group: "App",
         summary: "list the installed plugins, or add and remove repositories",
         detail: "A plugin is a command the app does not implement itself, fetched at \
                  runtime from a repository. The manifest is authoritative for the words, \
@@ -159,7 +159,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         word: "settings",
         usage: "settings [export|import]",
-        group: "Reports",
+        group: "App",
         summary: "show what is remembered, or export and import it as a file",
         detail: "Shows the settings kept in this browser, and moves them between visits \
                  or machines as a JSON file. An unreadable field is ignored rather than \
@@ -172,7 +172,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         word: "theme",
         usage: "theme [name]",
-        group: "Reports",
+        group: "App",
         summary: "list the colour themes, or select one; plugin themes included",
         detail: "A theme is a handful of colours by role: background, foreground, \
                  cursor, accent and dim. theme lists what is on offer, and \
@@ -186,7 +186,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry {
         word: "clear",
         usage: "clear",
-        group: "Reports",
+        group: "This terminal",
         summary: "clear the screen",
         detail: "Clears the screen and the scrollback. What is loaded and what is \
                  remembered are untouched.",
@@ -581,9 +581,10 @@ mod tests {
 
     #[test]
     fn the_overview_aligns_each_sections_columns() {
-        let text = plain(&overview(&[], 100));
-        // The Reports section's widest form is longer than the old fixed 18 columns,
-        // so this is the case that used to break the alignment.
+        let text = plain(&overview(
+            &[("chart", "Reports", "open a balance chart")],
+            100,
+        ));
         let column = |needle: &str| {
             text.lines()
                 .find(|line| line.contains(needle))
@@ -591,10 +592,19 @@ mod tests {
                 .find(needle)
                 .expect("the needle is in the line it was found by")
         };
+        // Rows line up inside their own section, which is the property: App's widest form is
+        // longer than the old fixed 18 columns, so this is the case that used to break the
+        // alignment, and a section with nothing long in it keeps its own narrow column rather
+        // than being dragged out to match another.
         let expected = column("list the installed plugins");
-        assert_eq!(column("search everything printed so far"), expected);
-        assert_eq!(column("make a name run a command"), expected);
-        assert_eq!(column("show what is remembered"), expected);
+        assert_eq!(column("make a name run a command"), expected, "alias is in App too");
+        assert_eq!(column("show what is remembered"), expected, "settings is in App too");
+        assert_eq!(column("list the colour themes"), expected, "theme is in App too");
+        assert_eq!(
+            column("open a balance chart"),
+            column("search everything printed so far"),
+            "a plugin and the app's own command line up in Reports"
+        );
     }
 
     #[test]

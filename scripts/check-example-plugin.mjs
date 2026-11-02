@@ -408,6 +408,8 @@ function stub(overrides = {}) {
     name: 'chart',
     colors: () => COLORS,
     setting: () => null,
+    // A journal is loaded, which is what every chart below is drawn from.
+    files: () => [{ path: 'journal.journal', writable: true, main: true }],
     say: (text) => log.said.push(text),
     remember: (key, value) => log.said.push(`remember ${key}=${value}`),
     window: (title) => {
@@ -426,6 +428,16 @@ function stub(overrides = {}) {
 }
 
 {
+  {
+    // With nothing loaded the window is not opened at all: a window whose only content is
+    // hledger's complaint about there being no file is worse than the complaint.
+    const { host, log } = stub({ files: () => [] });
+    await Chart.run('line expenses', host);
+    check('with nothing loaded, chart says so in the terminal and opens no window',
+      log.said[0] === 'chart: nothing is loaded. Run open or upload first.' && log.events.length === 0,
+      JSON.stringify(log));
+  }
+
   const { host, log, last } = stub();
   await Chart.run('line expenses', host);
   check('it opens the window before asking hledger', log.events[0] === 'window' && log.events.includes('hledger'), log.events.join(','));
