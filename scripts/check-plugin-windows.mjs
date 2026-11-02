@@ -243,6 +243,7 @@ function serve() {
         colors: theme === 'dark' ? DARK : COLORS, token: 'check',
         files: [{ path: 'fixture.journal', writable: url.searchParams.get('writable') !== 'no' }],
         statementDate: '2026-09-30', statementBalance: url.searchParams.get('balance') || '', fingerprint: 'before',
+        lines: url.searchParams.get('lines') === 'on',
         module: '/plugins/reconcile-window.js',
       }));
       return;
@@ -1084,7 +1085,7 @@ async function reconciling(tab) {
   for (const theme of ['light', 'dark']) {
     await tab.show('reconcile', theme);
     check(`the reconcile window lists the account's postings since its last assertion (${theme})`,
-      (await tab.eval("document.querySelectorAll('#rows tr').length")) === 6 && /opening balance asserted on 2026-08-31/.test(await text('sub')) && tab.errors.length === 0,
+      (await tab.eval("document.querySelectorAll('#rows tr').length")) === 6 && /^6 postings in IDR, since the balance asserted on 2026-08-31$/.test(await text('sub')) && tab.errors.length === 0,
       `${await text('sub')} ${tab.errors.join(' | ')}`);
   }
   check('it opens at the opening balance, asking for the statement', /Opening\s*1,000,000\.00 IDR/i.test(await text('sums')) && /Statement\s*type it above/i.test(await text('sums')), await text('sums'));
@@ -1108,15 +1109,16 @@ async function reconciling(tab) {
   check('and it is visibly heavier than the ordinary hairline',
     days.boundaryTop > days.ordinaryTop && days.boundaryTop >= 2, `${days.boundaryTop} vs ${days.ordinaryTop}`);
   // Ticking a line is what cleared means: the count and the summary say so in hledger's word.
-  check('the column and the summary are the cleared ones, not a private word for them',
+  check('the summary is four numbers that cannot be confused, and the cleared one names its date',
     (await tab.eval("document.querySelector('thead th').getAttribute('aria-label')")) === 'cleared'
-    && /cleared \(0\)/i.test(await text('sums')), await text('sums'));
+    && /^OPENING\n.*\nCLEARED BALANCE TO 2026-09-30\n.*\nSTATEMENT\n.*\nDIFFERENCE\n/i.test(await text('sums'))
+    && !/journal/i.test(await text('sums')), await text('sums'));
 
   // Someone opening this for the first time sees a table and empty boxes, so the one thing to
   // do first is said out loud, and the cursor is already where that happens.
   check('opening it says what to do first, and puts the cursor there',
-    /closing balance your statement shows/.test(await text('next')) && (await tab.eval('document.activeElement.id')) === 'balance', await text('next'));
-  check('a posting after the statement date is faded, and said', (await tab.eval("document.querySelectorAll('#rows tr.later').length")) === 1 && /1 later posting, after the statement date/.test(await text('notes')), await text('notes'));
+    /statement's closing balance/.test(await text('next')) && (await tab.eval('document.activeElement.id')) === 'balance', await text('next'));
+  check('a posting after the statement date is faded, and said', (await tab.eval("document.querySelectorAll('#rows tr.later').length")) === 1 && /^1 line after the statement date is greyed out and not counted\.$/.test(await text('notes')), await text('notes'));
   await type('balance', '5,670,000');
   check('and the line follows the state, counting what is left to account for',
     /4,670,000\.00 IDR still to account for/.test(await text('next')), await text('next'));
@@ -1141,7 +1143,7 @@ async function reconciling(tab) {
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
   await type('balance', '5,970,000');
   check('at zero with a posting left out, Finish says why it waits',
-    (await difference()) === '0.00 IDR' && (await tab.eval("document.getElementById('finish').disabled")) && /1 posting is dated on or before the statement but not ticked/.test(await text('notes')), await text('notes'));
+    (await difference()) === '0.00 IDR' && (await tab.eval("document.getElementById('finish').disabled")) && /^1 line up to the statement date is not ticked; an assertion counts every one/.test(await text('notes')), await text('notes'));
   await type('balance', '5,670,000');
   await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
   check('a ticks every posting shown up to the date', (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await difference()) === '0.00 IDR', '');
@@ -1170,7 +1172,7 @@ async function reconciling(tab) {
   check('with everything written, there is nothing left to save', (await tab.eval("document.getElementById('progress').disabled")) && (await text('pending')) === '', await text('pending'));
   await tab.eval("window.__refuse = 'hledger refused the result, so the files were put back as they were: Balance assertion failed'");
   await tickRow(0);
-  check('and a change says so beside Save', /unsaved: 1 to clear/.test(await text('pending')), await text('pending'));
+  check('and a change is counted on the Save button', /1 to clear/.test(await text('pending')), await text('pending'));
   await tab.eval("document.getElementById('progress').click()");
   await tab.until("!document.getElementById('preview').hidden");
   await tab.eval("document.getElementById('apply').click()");
@@ -1182,8 +1184,10 @@ async function reconciling(tab) {
   check('Cancel puts the preview away', await tab.eval("document.getElementById('preview').hidden"));
 
   await tab.show('reconcile', 'light', '&writable=no&balance=5670000');
-  check('in a read-only file, Save progress is off and Finish offers the assertion to copy',
-    (await tab.eval("document.getElementById('progress').disabled")) && /copy the assertion/.test(await tab.eval("document.getElementById('finish').textContent")) && /fixture\.journal \(read-only\)/.test(await text('sub')), await text('sub'));
+  check('in a read-only file, read-only is said once at the top, Save is not offered, and Finish shows the assertion',
+    (await tab.eval("document.getElementById('progress').hidden")) && (await tab.eval("document.getElementById('finish').textContent")) === 'Show the assertion'
+    && /^Read-only: fixture\.journal did not come from an opened folder.*Run open in the terminal/.test(await text('readonly'))
+    && !/read-only/i.test(await text('next')), await text('readonly'));
   await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
   await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
@@ -1204,7 +1208,13 @@ async function reconcileMoving(tab) {
   // First the thing a person actually does, through the browser's own drag machinery. Every
   // other drag check here dispatches a synthetic DragEvent, which cannot fail when the browser
   // refuses to start a drag at all, and that is exactly how a silently dead drag survived.
-  const nativeMoved = await tab.dragNative('#rows tr:nth-of-type(1)', '#rows tr:nth-of-type(3)');
+  // A press-and-drag on the row itself, the place a person clicks to tick, must not move it.
+  const bodyDrag = await tab.dragNative('#rows tr:nth-of-type(1) td:nth-of-type(4)', '#rows tr:nth-of-type(3)');
+  const bodyDates = await tab.eval("[...document.querySelectorAll('#rows td.date')].map((td) => td.textContent)");
+  check('a real drag from the row body starts nothing: only the grip moves a transaction',
+    bodyDrag === false && bodyDates[0] === '2026-09-01', JSON.stringify({ bodyDrag, first: bodyDates[0] }));
+  await tab.show('reconcile', 'dark');
+  const nativeMoved = await tab.dragNative('#rows tr:nth-of-type(1) .grip', '#rows tr:nth-of-type(3)');
   const nativeResult = await tab.eval("({ dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent), said: document.getElementById('status').textContent })");
   check('a real drag with the mouse moves the transaction, which a synthetic event cannot prove',
     nativeMoved === true && /^Moved Coffee to 2026-09-03/.test(nativeResult.said)
@@ -1218,7 +1228,7 @@ async function reconcileMoving(tab) {
     const to = rows[2];
     const box = new DataTransfer();
     const fire = (node, type, extra = {}) => node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: box, ...extra }));
-    fire(from, 'dragstart');
+    fire(from.querySelector('.grip'), 'dragstart');
     const over = fire(to, 'dragover');
     const target = document.getElementById('status').textContent;
     const lit = document.querySelectorAll('#rows tr.drop').length;
@@ -1237,7 +1247,7 @@ async function reconcileMoving(tab) {
     drag.dates[0] === '2026-09-02' && drag.dates.includes('2026-09-03') && drag.dates.join() !== before.join(),
     `${before.join()} -> ${drag.dates.join()}`);
   check('and it says so, and counts as a pending date change',
-    /^Moved Coffee to 2026-09-03/.test(drag.status) && /1 date changed/.test(drag.pending), `${drag.status} / ${drag.pending}`);
+    /^Moved Coffee to 2026-09-03/.test(drag.status) && /1 date/.test(drag.pending), `${drag.status} / ${drag.pending}`);
   // Nothing is written until Save, and Save's preview shows the line it would rewrite.
   await tab.eval("document.getElementById('progress').click()");
   await tab.until("!document.getElementById('preview').hidden");
@@ -1269,7 +1279,7 @@ async function reconcileMoving(tab) {
     const other = rows.find((tr) => dateOf(tr) === '2026-09-02');
     const box = new DataTransfer();
     const fire = (node, type) => node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: box }));
-    fire(other, 'dragstart');
+    fire(other.querySelector('.grip'), 'dragstart');
     fire(early, 'dragover');
     const over = {
       said: document.getElementById('status').textContent,
@@ -1292,7 +1302,7 @@ async function reconcileMoving(tab) {
     const to = rows.find((tr) => dateOf(tr) === '2026-10-02');
     const box = new DataTransfer();
     const fire = (node, type) => node.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: box }));
-    fire(from, 'dragstart');
+    fire(from.querySelector('.grip'), 'dragstart');
     fire(to, 'dragover');
     fire(to, 'drop');
     return { dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent), said: document.getElementById('status').textContent };
@@ -1304,7 +1314,7 @@ async function reconcileMoving(tab) {
   // Read-only: the drag still starts, so the refusal can be seen and read, rather than the row
   // simply refusing to be picked up with no explanation.
   await tab.show('reconcile', 'dark', '&writable=no');
-  const lockedNative = await tab.dragNative('#rows tr:nth-of-type(1)', '#rows tr:nth-of-type(3)');
+  const lockedNative = await tab.dragNative('#rows tr:nth-of-type(1) .grip', '#rows tr:nth-of-type(3)');
   const lockedNativeState = await tab.eval("({ said: document.getElementById('status').textContent, dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent) })");
   check('a real drag on a read-only journal starts, says why it cannot move, and moves nothing',
     lockedNative === true && /read-only/.test(lockedNativeState.said)
@@ -1313,7 +1323,7 @@ async function reconcileMoving(tab) {
     const rows = [...document.querySelectorAll('#rows tr[data-id]')];
     const box = new DataTransfer();
     const before = rows[0].querySelector('td.date').textContent;
-    rows[0].dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: box }));
+    rows[0].querySelector('.grip').dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: box }));
     const cancelled = box.types.length === 0;
     rows[0].focus();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true }));
@@ -1326,7 +1336,7 @@ async function reconcileMoving(tab) {
     };
   })()`);
   check('a read-only journal refuses the move, with the message the write actions use',
-    locked.draggable === 'true' && /read-only/.test(locked.status) && /run open/.test(locked.status)
+    locked.draggable === null && /read-only/.test(locked.status) && /run open/.test(locked.status)
     && locked.date === locked.was, JSON.stringify(locked));
 }
 
@@ -1383,6 +1393,7 @@ async function reconcileAlreadyCleared(tab) {
     on: document.querySelectorAll('#rows tr.on').length,
     total: document.querySelectorAll('#rows tr[data-id]').length,
     hidden: document.getElementById('hidden').innerText,
+    sub: document.getElementById('sub').innerText,
     notes: document.getElementById('notes').innerText,
     focus: document.activeElement.dataset ? document.activeElement.dataset.id : null,
     firstLeft: [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => !tr.classList.contains('on')).dataset.id,
@@ -1390,10 +1401,25 @@ async function reconcileAlreadyCleared(tab) {
   // They are cleared, so the window hides them and says so, rather than listing work already done.
   check('a marked transaction\'s postings are hidden as already cleared, and counted',
     opened.on === 0 && opened.total === 4 && /^2 cleared postings hidden, 2026-09-01 to 2026-09-02/.test(opened.hidden), JSON.stringify(opened));
-  check('and the window says where the list starts and how much of it is done',
-    /starts at 2026-08-31/.test(opened.notes) && /2 postings up to 2026-09-02 are already cleared/.test(opened.notes), opened.notes);
+  check('and where the list starts is in the header, and what is done is in the hidden line, one line each',
+    /since the balance asserted on 2026-08-31/.test(opened.sub) && /^2 cleared postings hidden, 2026-09-01 to 2026-09-02/.test(opened.hidden)
+    && !/starts at/.test(opened.notes), JSON.stringify({ sub: opened.sub, hidden: opened.hidden }));
   check('and it opens on the first posting still to do, not on the finished ones',
     opened.focus === opened.firstLeft, `${opened.focus} vs ${opened.firstLeft}`);
+  // The owner's situation: every line up to the statement date is already cleared, so there is
+  // nothing to tick, and telling him to tick lines would send him looking for work that is not
+  // there. The next step says so, and says what is left: the closing balance.
+  const nothingLeft = await tab.eval(`(() => {
+    const date = document.getElementById('date');
+    date.value = '2026-09-02';
+    date.dispatchEvent(new Event('input'));
+    const balance = document.getElementById('balance');
+    balance.value = '';
+    balance.dispatchEvent(new Event('input'));
+    return document.getElementById('next').innerText;
+  })()`);
+  check('when every line up to the statement date is cleared, the next step says so and asks only for the balance',
+    /^Everything up to 2026-09-02 is cleared\. Type the statement's closing balance/.test(nothingLeft) && !/tick the lines/i.test(nothingLeft), nothingLeft);
   // The control that brings them back has to work, and show them as they are: cleared and ticked.
   const revealed = await tab.eval(`(() => {
     document.querySelector('[data-toggle-hidden]').click();
@@ -1409,7 +1435,7 @@ async function reconcileAlreadyCleared(tab) {
   // the file: the drag targets are visible rows, and the dates they carry are their own.
   await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
   const filteredBefore = await tab.eval("[...document.querySelectorAll('#rows td.date')].map((td) => td.textContent)");
-  const filteredDrag = await tab.dragNative('#rows tr:nth-of-type(1)', '#rows tr:nth-of-type(3)');
+  const filteredDrag = await tab.dragNative('#rows tr:nth-of-type(1) .grip', '#rows tr:nth-of-type(3)');
   const filteredAfter = await tab.eval("({ dates: [...document.querySelectorAll('#rows td.date')].map((td) => td.textContent), said: document.getElementById('status').textContent, hidden: document.getElementById('hidden').innerText })");
   check('a real drag works in the filtered view, on the rows that are actually shown',
     filteredDrag === true && /^Moved Pending transfer to 2026-09-05/.test(filteredAfter.said)
@@ -1429,7 +1455,7 @@ async function reconcileAlreadyCleared(tab) {
     };
   })()`);
   check('at a zero difference Finish still waits for the postings left unticked',
-    zero.difference === '0.00 IDR' && zero.disabled && /3 postings are dated on or before the statement but not ticked/.test(zero.notes),
+    zero.difference === '0.00 IDR' && zero.disabled && /^3 lines up to the statement date are not ticked/.test(zero.notes),
     JSON.stringify(zero));
 }
 
@@ -1437,7 +1463,7 @@ async function reconcileRunning(tab) {
   const text = (id) => tab.eval(`document.getElementById('${id}').innerText`);
   const cell = (row, column) => tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${row}].children[${column}].textContent.trim()`);
   const expect = (row, value) => tab.eval(`(() => { const input = document.querySelectorAll('#rows tr[data-id] input[data-expect]')[${row}]; input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  await tab.show('reconcile', 'dark');
+  await tab.show('reconcile', 'dark', '&lines=on');
   check('each posting shows the balance after it', [await cell(0, 4), await cell(1, 4), await cell(2, 4)].join(' | ') === '979,000.00 IDR | 5,979,000.00 IDR | 5,679,000.00 IDR',
     [await cell(0, 4), await cell(1, 4), await cell(2, 4)].join(' | '));
   await expect(0, '979,000');
@@ -1448,7 +1474,32 @@ async function reconcileRunning(tab) {
   check('the first line where they part is marked', await tab.eval("document.querySelectorAll('#rows tr.first').length === 1 && document.querySelectorAll('#rows tr[data-id]')[3].classList.contains('first')"));
   check('and the hint says where, and that it may be the posting before',
     /part at 2026-09-05 Split, by 4,000\.00 IDR: 2026-09-05 Split \(-4,000\.00 IDR\) is exactly that/.test(await text('hints')), await text('hints'));
-  check('matching balances are counted as ones to assert', /2 balances to assert/.test(await text('pending')), await text('pending'));
+  check('in line-by-line mode, matching balances are counted on Save as ones it writes', /2 line balances/.test(await text('pending')), await text('pending'));
+  // Off, line by line writes nothing: its columns go, the figures typed stay, and none of them
+  // reaches the plugin. On again, they are all still there. Nothing is written that is not shown.
+  const gated = await tab.eval(`(() => {
+    const box = document.getElementById('lines');
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    const off = {
+      columns: getComputedStyle(document.querySelector('thead th.line')).display,
+      pending: document.getElementById('pending').textContent,
+      said: document.getElementById('status').textContent,
+    };
+    // Something real to save, so Save sends a request whose contents can be read.
+    document.querySelector('#rows tr[data-id]:not(.on) td.tick').click();
+    off.saveEnabled = !document.getElementById('progress').disabled;
+    window.__previewed.length = 0;
+    document.getElementById('progress').click();
+    off.sent = window.__previewed.length ? Object.keys(window.__previewed[window.__previewed.length - 1].expected).length : -1;
+    document.getElementById('cancel') && document.getElementById('cancel').click();
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    return { off, kept: [...document.querySelectorAll('#rows input[data-expect]')].filter((input) => input.value).length };
+  })()`);
+  check('with line by line off, its columns go, nothing typed is written, and the figures are kept',
+    gated.off.columns === 'none' && !/line balance/.test(gated.off.pending) && gated.off.sent === 0
+    && gated.off.saveEnabled && /kept, and not written/.test(gated.off.said) && gated.kept === 3, JSON.stringify(gated));
   await expect(3, '5,675,000');
   check('typing it right clears the mismatch', (await cell(3, 6)) === '✓' && (await tab.eval("document.querySelectorAll('#rows tr.first').length")) === 0, await cell(3, 6));
   await expect(3, '5,600,000');

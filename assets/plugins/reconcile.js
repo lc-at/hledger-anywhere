@@ -187,6 +187,10 @@ export default {
           writable: writableFiles(host, data),
         };
       },
+      setLines(on) {
+        if (typeof host.remember === 'function') host.remember('lineByLine', on ? 'on' : 'off');
+        return Boolean(on);
+      },
       setStyle(style) {
         const wanted = style === 'transaction' ? 'transaction' : 'posting';
         if (typeof host.remember === 'function') host.remember('markStyle', wanted);
@@ -256,6 +260,7 @@ export default {
       statementBalance: line.balance,
       fingerprint: fingerprint(data),
       style: markStyle,
+      lines: (typeof host.setting === 'function' ? host.setting('lineByLine') : null) === 'on',
       module: beside('reconcile-window.js'),
     }));
     const from = data.start ? `since the balance asserted on ${data.start.date}` : 'with no balance asserted yet';

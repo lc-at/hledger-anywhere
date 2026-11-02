@@ -201,47 +201,52 @@ so rather than losing the work.
 reconcile assets:bank:checking --statement 2026-09-30
 ```
 
-`reconcile` opens a window with the account's postings since its last balance assertion,
-the point already proven, and that balance as the opening. It opens on the one thing to do
-first: with no statement balance given, the cursor is in that field, and with one given it
-is on the first posting. A line above the table says what to do next and changes as the
-work moves on, from "type the closing balance" to "4,670,000.00 IDR still to account for"
-to "the totals match, Finish marks the ticked postings and writes the balance assertion".
-If the file cannot be written, that line says so at the start rather than at the end.
+`reconcile` opens a window on the account's postings since its last balance assertion,
+the point the balance was last proven. Lines already cleared are hidden ("40 cleared
+postings hidden", with a control to show them), so it opens on what is left.
 
-Tick what the statement shows (click, or Space; `a` ticks everything shown, `/` searches)
-and the difference falls to zero as it matches. When it does not, the window points at the
-likely cause: a posting exactly the difference, one of half the difference with the wrong
-sign, or a difference divisible by nine, which two swapped digits leave.
+The window has four numbers: **Opening**, **Cleared balance** to the statement date (the
+opening plus every ticked line), **Statement** (the closing balance you type) and
+**Difference**. One line above the table always says the next step; when everything up to
+the statement date is already cleared, it says so and asks only for the closing balance.
+Problems and hints sit in one list under it, one line each.
 
-Finish shows exactly what it will write, then writes only standard hledger: a posting-level
-`*` on each ticked posting, and an assertion-only transaction at the end of the file.
+Tick the lines the statement shows (click or Space; `a` ticks all up to the statement date,
+`/` searches) until the difference is zero. When it is not, the window points at the likely
+cause: a line exactly the difference, one of half the difference with the wrong sign, or a
+difference divisible by nine, which two swapped digits leave.
+
+Two buttons write, and both show every line first. **Save changes** writes the ticks, edits
+and date changes, and its label counts them. **Finish: assert balance** writes those too,
+then appends an assertion and runs hledger to check it, putting every file back if it fails.
+Finish waits until every line up to the statement date is ticked, because an assertion
+counts all of them. Only files from an `open` folder can be written; anything else is
+read-only, said once at the top, and Finish becomes "Show the assertion" to copy by hand.
 
 ```
-2026-09-05 * Dkriuk Mayestik
-    Expenses:Food:EatingOut                                    21000 IDR
-  * Assets:Mandiri:Now5782
+2026-09-05 * Coffee
+    Expenses:Food                                21000 IDR
+    Assets:Bank:Checking
 
 2026-09-30 * Reconciled with statement
-    Assets:Mandiri:Now5782    0.00 IDR = 1329539.01 IDR
+    Assets:Bank:Checking    0.00 IDR = 1329539.01 IDR
 ```
 
-The `*` marks that posting cleared and leaves the amount as written. The second
-transaction is appended at the end of the file and carries the statement balance as an
-assertion.
+Two quiet options sit under the statement fields, and both are remembered:
 
-The mark goes on the posting, not the transaction, so the other side of a transfer is left
-alone. hledger is then run on the result; if the assertion does not hold, every file is put
-back. Save writes the marks alone and the next `reconcile` picks them up. Because a balance
-assertion counts every posting up to its date, Finish waits until every posting on or
-before the statement date is ticked, and says so.
+- **Mark as cleared**: on *this account's line* (`*` on the posting, leaving the other side
+  of a transfer alone) or on *the whole transaction* (`*` on its first line, as above). It
+  starts on whichever the journal already uses. In whole-transaction mode, the lines of one
+  transaction tick together, and a stray mark on our posting is removed so the file has one
+  answer; the preview shows that line too.
+- **Check line by line**: adds a column for the statement's balance after each line, so the
+  first line where they part is found. Lines that match are asserted when you save. Off,
+  nothing typed there is written.
 
-Each posting shows the account's balance after it, the way a statement prints one beside
-each line, and takes the statement's figure for that line: the difference shows there, and
-the first line where it is not zero is where they part. `e` opens the transaction as it is
-written, working out any amount left out as hledger does and saying what the text means for
-the account as you type; `n` adds a new transaction from a template. Nothing is written
-until Save or Finish, which show the exact lines first.
+`e` edits a transaction as journal text (empty deletes it) and `n` adds a missing one. To
+move a transaction to another day, drag it by the grip beside its date, or press Alt+Up or
+Alt+Down; this changes its date, and never to before the asserted balance. A click on a
+row only ever ticks it.
 
 ## Themes
 

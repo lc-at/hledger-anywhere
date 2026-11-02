@@ -20,9 +20,10 @@ import { escape, isLight, mix } from './window-kit.js';
 
 
 /** The whole document, with the data in a JSON block and the page to be mounted. */
-export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module, style = 'posting' }) {
-  const payload = JSON.stringify({ data, colors, token, files, accounts, statementDate, statementBalance, fingerprint, style }).replace(/</g, '\\u003c');
+export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module, style = 'posting', lines = false }) {
+  const payload = JSON.stringify({ data, colors, token, files, accounts, statementDate, statementBalance, fingerprint, style, lines }).replace(/</g, '\\u003c');
   const writable = files.some((file) => file.writable);
+  const locked = files.filter((file) => !file.writable).map((file) => file.path).join(', ');
   const soft = mix(colors.background, colors.dim, 14);
   const softer = mix(colors.background, colors.dim, 7);
   return `<!doctype html>
@@ -49,12 +50,22 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   .sums .difference b { font-size:20px; }
   .sums .difference.zero b { color:${colors.accent}; }
   .sums .difference.zero span::after { content:' matches'; }
-  .note, .hints p { font-size:13px; margin:4px 0; }
-  .hints p { color:${colors.foreground}; border-left:2px solid ${colors.accent}; padding-left:8px; cursor:default; }
+  /* Everything worth knowing that is not the next step, one line each, in one place. */
+  .issues { margin:0 0 10px; }
+  .issues:not(:has(p)) { display:none; }
+  .note, .hints p { font-size:13px; margin:2px 0; padding-left:8px; border-left:2px solid ${colors.dim}66; }
+  .hints p { border-left-color:${colors.accent}; cursor:default; }
   .hints button { margin-left:8px; padding:1px 8px; font-size:12px; }
+  /* Said once, where it cannot be missed, with the one thing that fixes it. */
+  .banner { font-size:13px; margin:0 0 12px; padding:6px 10px; border:1px solid ${colors.dim}66; border-radius:4px; }
+  .options { display:flex; flex-wrap:wrap; gap:18px; align-items:center; margin:-4px 0 12px; font-size:12px; color:${colors.dim}; }
+  .options label { flex-direction:row; align-items:center; gap:6px; }
+  /* Off, the columns for checking line by line are not drawn at all; their cells stay, so a
+     column is the same column either way. */
+  table:not(.lines) .line { display:none; }
   .tools { display:flex; gap:10px; align-items:center; margin:12px 0 6px; flex-wrap:wrap; }
   .tools input[type=search] { flex:1; min-width:180px; }
-  .pending { color:${colors.dim}; font-size:12px; }
+  .count { font-weight:400; opacity:.75; }
   button { font:inherit; color:${colors.foreground}; background:${soft}; border:1px solid ${colors.dim}66; border-radius:4px; padding:5px 12px; cursor:pointer; }
   button.primary { background:${colors.accent}; color:${colors.background}; border-color:${colors.accent}; font-weight:600; }
   button:disabled { opacity:.45; cursor:not-allowed; }
@@ -88,21 +99,26 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   td.delta.off { color:${colors.accent}; font-weight:600; }
   td.delta.ok { color:${colors.dim}; }
   tr { cursor:pointer; }
+  /* The only thing that drags. A click anywhere else on a row ticks it and can never move it. */
+  .grip { display:inline-block; width:8px; height:14px; margin:0 6px 0 -2px; vertical-align:-2px; cursor:grab;
+    background:radial-gradient(${colors.dim} 1px, transparent 1.5px) 0 0 / 4px 4px; opacity:.7; }
+  .grip:hover { opacity:1; }
   tr.on td { background:${softer}; }
   tr.on td.tick { color:${colors.accent}; }
   tr.hinted td { box-shadow:inset 0 0 0 9999px ${mix(colors.background, colors.accent, 14)}; }
-  tr.first td { box-shadow:inset 3px 0 0 ${colors.accent}; }
+  /* Where the statement and the journal part: one bar at the start of the row, not one per cell. */
+  tr.first td:first-child { box-shadow:inset 3px 0 0 ${colors.accent}; }
   tr.later td { opacity:.45; }
   tr.editor td { background:${softer}; cursor:default; }
   /* Where a dragged row would land, and which day it would take. */
   tr.drop td { box-shadow:inset 0 3px 0 ${colors.accent}; }
-  tr[draggable="true"] { cursor:grab; }
   .editing textarea { display:block; width:100%; box-sizing:border-box; font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;
     color:${colors.foreground}; background:${colors.background}; border:1px solid ${colors.dim}66; border-radius:4px; padding:6px 8px; resize:vertical; tab-size:4; }
   .editing .buttons { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
   .editing .reading { color:${colors.foreground}; font-size:12px; margin:6px 0 0; }
   .against { color:${colors.dim}; }
-  .badge { color:${colors.accent}; font-size:11px; margin-left:4px; }
+  /* A state of the row (new, edited, pending): small and set apart from the edit control. */
+  .badge { color:${colors.accent}; font-size:10px; margin-left:6px; text-transform:uppercase; letter-spacing:.04em; }
   .muted { color:${colors.dim}; font-size:11px; }
   .preview { margin:14px 0; padding:10px 12px; border:1px solid ${colors.dim}66; border-radius:6px; }
   .preview pre { margin:6px 0; font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; white-space:pre-wrap; }
@@ -119,37 +135,38 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   .hidden-note:empty { display:none; }
   .hidden-note button { background:none; border:none; padding:0; margin-left:6px; color:${colors.foreground};
     font:inherit; text-decoration:underline; cursor:pointer; }
-  .readonly { color:${colors.dim}; }
 </style></head>
 <body><main>
   <h1>reconcile ${escape(data.account)}</h1>
   <p class="sub" id="sub"></p>
+  ${writable ? '' : `<p class="banner" id="readonly">Read-only: ${escape(locked)} did not come from an opened folder, so nothing here can be saved. Run <b>open</b> in the terminal to edit it.</p>`}
   <div class="statement">
     <label>Statement date<input type="date" id="date" value="${escape(statementDate || '')}"></label>
     <label>Statement closing balance<input type="text" id="balance" inputmode="decimal" placeholder="as the statement says it" value="${escape(statementBalance || '')}" autocomplete="off"></label>
-    <label title="where the cleared marks are written: on the transaction's own line, or on the posting's">Mark<select id="style">
-      <option value="posting"${style === 'posting' ? ' selected' : ''}>posting</option>
-      <option value="transaction"${style === 'transaction' ? ' selected' : ''}>transaction</option>
+  </div>
+  <div class="options">
+    <label title="where the cleared mark is written in the journal">Mark as cleared<select id="style">
+      <option value="posting"${style === 'posting' ? ' selected' : ''}>this account's line</option>
+      <option value="transaction"${style === 'transaction' ? ' selected' : ''}>the whole transaction</option>
     </select></label>
+    <label title="type the statement's balance after each line to find where they part; matching lines are asserted when you save"><input type="checkbox" id="lines"${lines ? ' checked' : ''}>Check line by line</label>
   </div>
   <div class="sums" id="sums"></div>
   <p id="next"></p>
-  <div id="notes"></div>
-  <div class="hints" id="hints"></div>
+  <div class="issues"><div id="notes"></div><div class="hints" id="hints"></div></div>
   <div class="tools">
     <input type="search" id="search" placeholder="search descriptions, accounts or amounts (/)" aria-label="search">
-    <button id="add" title="n">Add a posting</button>
-    <button id="all" title="a">Tick all shown</button>
-    <span class="pending" id="pending"></span>
-    <button id="progress"${writable ? '' : ' disabled title="this file did not come from an opened folder"'}>Save</button>
-    <button id="finish" class="primary" disabled>Finish</button>
+    <button id="add" title="add a transaction this account is in (n)">Add a transaction</button>
+    <button id="all" title="tick every line shown, up to the statement date (a)">Tick all</button>
+    <button id="progress"${writable ? '' : ' disabled hidden'} title="write the ticks, edits and date changes, without asserting a balance">Save changes<span class="count" id="pending"></span></button>
+    <button id="finish" class="primary" disabled>${writable ? 'Finish: assert balance' : 'Show the assertion'}</button>
   </div>
   <div id="status" role="status"></div>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
   <p class="hidden-note" id="hidden"></p>
-  <div class="table"><table><thead><tr><th class="tick" aria-label="cleared" title="a ticked line is cleared: Save writes the mark"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Balance</th><th class="n" title="the balance your statement shows after this line, if you want to check it line by line">Statement balance</th><th class="n">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
-  <p class="keys">↑ ↓ or j k move · Space ticks · e edits · n adds a posting · a ticks all shown · Alt+↑↓ moves to the next day · / searches</p>
+  <div class="table"><table id="table" class="${lines ? 'lines' : ''}"><thead><tr><th class="tick" aria-label="cleared" title="a ticked line is cleared"></th><th class="date">Date</th><th>Description</th><th class="n">Amount</th><th class="n">Running balance</th><th class="n line" title="the balance your statement shows after this line">Statement balance</th><th class="n line">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <p class="keys">Space tick · e edit · n new transaction · a tick all · Alt+↑↓ move to the next day · / search</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
 <script type="module">import { mount } from ${JSON.stringify(module)}; mount();</script>
@@ -202,6 +219,10 @@ export function mount(root = document) {
   // Where the cleared marks are written. The journal's own habit, or the last choice, comes in
   // from the plugin; changing it here is remembered there so it survives the window.
   let markStyle = state.style === 'transaction' ? 'transaction' : 'posting';
+  // Checking line by line is opt-in. Off, its columns are not drawn and the figures typed into
+  // them are kept but never written, so turning it off and on again loses nothing and writes
+  // nothing the person did not see.
+  let lineByLine = Boolean(state.lines);
   let hideCleared = true;
   const clearedAtOpen = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
   const touched = new Set();
@@ -233,45 +254,38 @@ export function mount(root = document) {
 
   function drawSums() {
     const now = sums();
-    const { balance } = statement();
+    const { balance, date } = statement();
     const cell = (name, value, extra = '', hint = '') => `<div class="${extra}"${hint ? ` title="${escape(hint)}"` : ''}><span>${name}</span><b>${escape(value)}</b></div>`;
+    // Four numbers, named so they cannot be mistaken for each other: where the account started,
+    // where the ticked lines take it by the statement date, what the statement says, and the gap.
     $('sums').innerHTML = [
       cell('Opening', money(now.opening), '', 'the balance this account was last proven to have'),
-      cell(`Cleared (${now.tickedCount})`, money(now.tickedTotal), '', 'the lines ticked as cleared, added up; Save writes the cleared mark on each'),
-      cell('Journal', money(now.expected), '', 'opening plus the ticked postings: what the journal says you have'),
+      cell(`Cleared balance${date ? ` to ${date}` : ''}`, money(now.expected), '', `the opening plus the ${now.tickedCount} ticked line${now.tickedCount === 1 ? '' : 's'}: what the journal says the statement should show`),
       cell('Statement', balance == null ? 'type it above' : money(balance), '', 'the closing balance you typed'),
-      cell('Difference', now.difference == null ? '-' : money(now.difference), `difference${now.difference === 0 ? ' zero' : ''}`, 'statement less journal: zero when they agree'),
+      cell('Difference', now.difference == null ? '-' : money(now.difference), `difference${now.difference === 0 ? ' zero' : ''}`, 'statement less cleared balance: zero when they agree'),
     ].join('');
+
+    // One line each. The next step is not repeated here, and nothing here is said twice.
     const notes = [];
-    // Why the list starts where it does, and how much of it is already done. Without this a
-    // journal whose balance was last asserted months ago opens on months of finished work
-    // and looks stuck there.
-    const done = (() => {
-      const cleared = rows().filter((row) => row.status === 'Cleared');
-      return cleared.length ? { count: cleared.length, last: cleared[cleared.length - 1].date } : null;
-    })();
-    if (done && state.data.start) {
-      notes.push(`The list starts at ${state.data.start.date}, where this account's balance was last asserted. ${done.count} posting${done.count === 1 ? '' : 's'} up to ${done.last} ${done.count === 1 ? 'is' : 'are'} already cleared and ticked. Finish writes a new assertion, so the next reconcile starts where this one ended.`);
-    } else if (done) {
-      notes.push(`${done.count} posting${done.count === 1 ? ' is' : 's are'} already cleared and ticked, up to ${done.last}.`);
-    }
     if (now.tooEarly) notes.push(`The statement date is before ${state.data.start.date}, where this account's balance is already asserted.`);
     if (now.difference === 0 && now.outstanding.length) {
-      notes.push(`${now.outstanding.length} posting${now.outstanding.length === 1 ? ' is' : 's are'} dated on or before the statement but not ticked. A balance assertion counts every posting up to its date, so tick ${now.outstanding.length === 1 ? 'it' : 'them'}, set the statement date earlier, or give ${now.outstanding.length === 1 ? 'it' : 'them'} the date the bank shows.`);
+      const n = now.outstanding.length;
+      notes.push(`${n} line${n === 1 ? '' : 's'} up to the statement date ${n === 1 ? 'is' : 'are'} not ticked; an assertion counts every one, so tick ${n === 1 ? 'it' : 'them'} or move ${n === 1 ? 'it' : 'them'} to the bank's date.`);
     }
-    if (now.later) notes.push(`${now.later} later posting${now.later === 1 ? '' : 's'}, after the statement date, ${now.later === 1 ? 'is' : 'are'} shown faded and not counted.`);
-    if (now.unknown) notes.push(`${now.unknown} edited transaction${now.unknown === 1 ? '' : 's'} cannot be read here, so the balances after ${now.unknown === 1 ? 'it' : 'them'} show ? until Save, when hledger reads ${now.unknown === 1 ? 'it' : 'them'}.`);
+    if (now.later) notes.push(`${now.later} line${now.later === 1 ? '' : 's'} after the statement date ${now.later === 1 ? 'is' : 'are'} greyed out and not counted.`);
+    if (now.unknown) notes.push(`${now.unknown} edited transaction${now.unknown === 1 ? '' : 's'} cannot be read here, so the balances after ${now.unknown === 1 ? 'it' : 'them'} show ? until saved.`);
+    if (state.data.others.length) notes.push(`Lines in ${state.data.others.join(', ')} are not part of this.`);
     const restores = Object.entries(edits).filter(([, edit]) => !edit.text.trim()).map(([id]) => {
       const row = state.data.rows.find((entry) => entry.id === id);
       return `<p class="note">Deleted: ${escape(row.date)} ${escape(row.description)} ${escape(money(row.amount))} <button class="icon" data-restore="${escape(id)}">restore</button></p>`;
     });
     $('notes').innerHTML = notes.map((text) => `<p class="note">${escape(text)}</p>`).join('') + restores.join('');
 
-    // Hints: the statement total's, then the running totals'.
+    // Hints: where the difference probably comes from, and with line-by-line checking on, where
+    // the statement and the journal part.
     const all = rows();
-    const date = $('date').value;
     const found = now.difference ? hints(all.filter((row) => !date || row.date <= date), ticked, now.difference, style()) : [];
-    const points = checkpoints(all, expected);
+    const points = checkpoints(all, lineByLine ? expected : {});
     const part = partHint(all, points, style());
     const lines = found.slice(0, 5).map((hint) => {
       const row = hint.id && all.find((entry) => entry.id === hint.id);
@@ -288,31 +302,43 @@ export function mount(root = document) {
     }
 
     const changes = describe();
-    $('pending').textContent = changes;
-    const writable = state.files.some((file) => file.writable);
+    const writable = !readOnly();
+    $('pending').textContent = changes ? ` (${changes})` : '';
     $('progress').disabled = !writable || !changes;
     $('finish').disabled = !now.canFinish;
-    $('finish').textContent = writable ? 'Finish' : 'Finish (copy the assertion)';
-    $('finish').title = now.canFinish ? 'mark the ticked postings and assert the statement balance' : 'at a difference of zero, with every posting up to the date ticked';
-    $('next').innerHTML = nextStep(now, balance, writable);
+    $('finish').title = !now.canFinish
+      ? 'needs a difference of zero, with every line up to the statement date ticked'
+      : writable
+        ? `writes ${changes ? `${changes} and ` : ''}a balance assertion for ${date}; the preview shows every line first`
+        : 'shows the assertion to copy into the journal yourself';
+    $('next').innerHTML = nextStep(now, balance, date, writable);
   }
 
   /**
-   * The one line that says what to do now. A window of numbers and empty boxes says nothing to
-   * someone opening it for the first time, and the state it is in is exactly what decides the
-   * next move, so it is written from that rather than left as a fixed paragraph.
+   * The one line that says what to do now, written from the state the window is in. It never
+   * repeats the read-only banner: that is said once, at the top.
    */
-  function nextStep(now, balance, writable) {
-    const readOnly = writable ? '' : ` <span class="readonly">The journal is read-only, so nothing can be written: run <b>open</b> in the terminal to edit it.</span>`;
-    if (now.tooEarly) return 'Set the statement date after the balance already asserted below.';
-    if (balance == null) return `Type the closing balance your statement shows, then tick the lines the statement has.${readOnly}`;
-    if (now.difference == null) return `Tick the lines your statement shows.${readOnly}`;
-    if (now.difference !== 0) {
-      return `Tick the lines your statement shows. <b>${escape(money(now.difference))}</b> still to account for${now.tickedCount ? '' : ', and nothing is ticked yet'}.${readOnly}`;
+  function nextStep(now, balance, date, writable) {
+    if (now.tooEarly) return 'Set the statement date after the balance already asserted.';
+    // Nothing up to the statement date is left to tick, which is common when the journal is kept
+    // marked as it goes: then the only thing to do is compare totals, and saying "tick the lines"
+    // sends the person looking for work that does not exist.
+    const nothingLeft = now.shown > 0 && now.outstanding.length === 0;
+    if (balance == null) {
+      return nothingLeft
+        ? `Everything up to ${escape(date || 'the statement date')} is cleared. Type the statement's closing balance; at a difference of zero, Finish asserts it.`
+        : "Type the statement's closing balance, then tick the lines the statement shows.";
     }
-    if (now.outstanding.length) return `The totals match, but ${now.outstanding.length} posting${now.outstanding.length === 1 ? ' is' : 's are'} dated on or before the statement and not ticked. See below.`;
-    if (!writable) return 'The totals match. Finish shows the assertion to copy into the journal yourself.';
-    return 'The totals match. <b>Finish</b> marks the ticked postings and writes the balance assertion.';
+    if (now.difference == null) return 'Tick the lines the statement shows.';
+    if (now.difference !== 0) {
+      return nothingLeft
+        ? `Everything up to ${escape(date || 'the statement date')} is ticked, but <b>${escape(money(now.difference))}</b> is unaccounted for: a line the journal is missing, or one with the wrong amount or date.`
+        : `Tick the lines the statement shows. <b>${escape(money(now.difference))}</b> still to account for.`;
+    }
+    if (now.outstanding.length) return 'The totals match, but some lines up to the statement date are not ticked.';
+    return writable
+      ? 'The totals match. <b>Finish</b> writes your changes and the balance assertion, after showing them.'
+      : 'The totals match. <b>Show the assertion</b> gives the line to copy into the journal yourself.';
   }
 
   /** How many transactions a move would re-date. A transaction may have several rows here. */
@@ -320,30 +346,30 @@ export function mount(root = document) {
     return new Set(Object.keys(moved).map((id) => id.split(':')[0])).size;
   }
 
-  /** What Save would write, in words: nothing to say when there is nothing to write. */
+  /** What Save would write, in a few words: nothing to say when there is nothing to write. */
   function describe() {
     const marks = state.data.rows.filter((row) => (ticked.has(row.id) ? row.status !== 'Cleared' : row.status === 'Cleared')).length;
-    const matched = checkpoints(rows(), expected).points.filter((point) => point.difference === 0).length;
+    // Per-line assertions are written only while checking line by line, and only then counted.
+    const matched = lineByLine ? checkpoints(rows(), expected).points.filter((point) => point.difference === 0).length : 0;
     const deleted = Object.values(edits).filter((edit) => !edit.text.trim()).length;
     const changed = Object.keys(edits).length - deleted;
     const dates = movedCount();
     const parts = [
       marks && `${marks} to clear`,
-      dates && `${dates} date${dates === 1 ? '' : 's'} changed`,
+      dates && `${dates} date${dates === 1 ? '' : 's'}`,
       changed && `${changed} edit${changed === 1 ? '' : 's'}`,
       deleted && `${deleted} deleted`,
       inserts.length && `${inserts.length} new`,
-      matched && `${matched} balance${matched === 1 ? '' : 's'} to assert`,
+      matched && `${matched} line balance${matched === 1 ? '' : 's'}`,
     ].filter(Boolean);
-    return parts.length ? `unsaved: ${parts.join(', ')}` : '';
+    return parts.join(', ');
   }
 
+  /** The line under the title: short, and about the account, not the files behind it. */
   function drawSub() {
     const data = state.data;
-    const since = data.start ? `opening balance asserted on ${data.start.date}` : 'no balance asserted yet, so from the first posting';
-    const others = data.others.length ? `; postings in ${data.others.join(', ')} are not part of this` : '';
-    const files = state.files.map((file) => `${file.path}${file.writable ? '' : ' (read-only)'}`).join(', ');
-    $('sub').textContent = `${data.rows.length} postings in ${data.commodity || 'its commodity'}, ${since}${others}. ${files}`;
+    const since = data.start ? `since the balance asserted on ${data.start.date}` : 'from the first posting, no balance asserted yet';
+    $('sub').textContent = `${data.rows.length} postings in ${data.commodity || 'its commodity'}, ${since}`;
   }
 
   /** What is hidden, where it is from, and the control that shows it. */
@@ -366,14 +392,15 @@ export function mount(root = document) {
   function rowHtml(row, later, newDay = false) {
     const point = expected[row.id] != null && row.balance != null ? expected[row.id] - row.balance : null;
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
-    const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
+    const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : row.status === 'Pending' ? '<span class="badge">pending</span>' : '';
+    const moving = !row.inserted && !readOnly();
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
-    return `<tr data-id="${escape(row.id)}" tabindex="-1" draggable="true" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
-<td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${escape(row.date)}</td>
-<td>${escape(row.description)}${badge}${row.status === 'Pending' ? ' <span class="muted">pending</span>' : ''}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
+    return `<tr data-id="${escape(row.id)}" tabindex="-1" class="${ticked.has(row.id) ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}" aria-selected="${ticked.has(row.id)}">
+<td class="tick">${ticked.has(row.id) ? '✓' : ''}</td><td class="date">${row.inserted ? '' : `<span class="grip" draggable="true" title="${moving ? 'drag onto another day to change the date (Alt+↑↓)' : 'read-only: run open in the terminal to change dates'}" aria-hidden="true"></span>`}${escape(row.date)}</td>
+<td>${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n">${row.amount == null ? '?' : escape(money(row.amount))}</td><td class="n">${row.balance == null ? '?' : escape(money(row.balance))}</td>
-<td class="n expect"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
-<td class="n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
+<td class="n expect line"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}" placeholder="—"></td>
+<td class="n delta line ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
   }
 
   /** What a transaction's text means for the account, said under the editor as it is typed. */
@@ -562,7 +589,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const link = bridge();
     if (!link) { say('This window has lost touch with the app. Run reconcile again.', true); return; }
     const { date, balance } = statement();
-    const request = { ticked: [...ticked], finish: finish ? { date, balance } : null, edits, inserts, expected, moved, style: markStyle, fingerprint: state.fingerprint };
+    const request = { ticked: [...ticked], finish: finish ? { date, balance } : null, edits, inserts, expected: lineByLine ? expected : {}, moved, style: markStyle, fingerprint: state.fingerprint };
     const result = await link.preview(request);
     const writable = result.writable.some((file) => file.writable);
     const lines = [];
@@ -648,7 +675,8 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
 
   let dragging = null;
   $('rows').addEventListener('dragstart', (event) => {
-    const tr = event.target.closest('tr[data-id]');
+    // Only the grip drags. A row is clicked to tick it, and a click must never be able to move it.
+    const tr = event.target.closest && event.target.closest('.grip') ? event.target.closest('tr[data-id]') : null;
     if (!tr) { event.preventDefault(); return; }
     if (tr.dataset.id.startsWith('new:')) {
       event.preventDefault();
@@ -773,8 +801,20 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     drawSub();
     drawRows();
     const pending = describe();
-    say(`${markStyle === 'transaction' ? 'Marks the whole transaction' : 'Marks the posting'} from now on.`
-      + (pending ? ` ${pending}, and it will be written that way.` : ''));
+    say(`Cleared marks now go on ${markStyle === 'transaction' ? 'the whole transaction' : "this account's line"}`
+      + (pending ? `, including what is not saved yet (${pending}).` : '.'));
+  });
+  $('lines').addEventListener('change', () => {
+    lineByLine = $('lines').checked;
+    $('table').classList.toggle('lines', lineByLine);
+    const link = bridge();
+    if (link && typeof link.setLines === 'function') link.setLines(lineByLine);
+    hidePreview();
+    drawSums();
+    const typed = Object.keys(expected).length;
+    say(lineByLine
+      ? 'Type the statement\'s balance after a line to see where they part; lines that match are asserted when you save.'
+      : `Line by line is off${typed ? `: the ${typed} figure${typed === 1 ? '' : 's'} typed are kept, and not written` : ''}.`);
   });
   for (const id of ['date', 'balance']) $(id).addEventListener('input', () => { hidePreview(); id === 'date' ? drawRows() : drawSums(); });
   $('search').addEventListener('input', drawRows);

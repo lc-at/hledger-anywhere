@@ -1230,8 +1230,8 @@ const TREE_MONTHS = [
  * stood in for by what the fixture prints, plus an assertion check done the way hledger does it,
  * over every posting up to the assertion's date.
  */
-function reconcileHost({ writable = true, failBefore = false, failSave = false } = {}) {
-  const log = { said: [], pages: [], saved: [], asked: [] };
+function reconcileHost({ writable = true, failBefore = false, failSave = false, settings = {} } = {}) {
+  const log = { said: [], pages: [], saved: [], asked: [], remembered: {} };
   const files = { 'fixture.journal': RECONCILE_JOURNAL };
   const assertionsHold = (text) => {
     const balance = (until) => 100000000 + [[-2100000, '2026-09-01'], [500000000, '2026-09-02'], [-30000000, '2026-09-03'], [-900000, '2026-09-05'], [-250000, '2026-10-02']]
@@ -1244,6 +1244,8 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false }
     colors: () => COLORS,
     say: (text) => log.said.push(text),
     files: () => [{ path: 'fixture.journal', writable, main: true }],
+    setting: (key) => (key in log.remembered ? log.remembered[key] : settings[key] ?? null),
+    remember: (key, value) => { log.remembered[key] = value; },
     read: (path) => files[path] ?? null,
     window: () => ({ write: (html) => log.pages.push(html), close() {} }),
     async save(path, text) {
@@ -1339,6 +1341,26 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false }
   const link = Object.values(globalThis.__reconcileBridges).pop();
   const answer = await link.apply({ ticked: [readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking').rows[0].id], finish: null, fingerprint: fingerprint(readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking')) });
   check('a journal hledger already rejects is not written to', /already reports a problem, so nothing was written/.test(answer.error || '') && files['fixture.journal'] === RECONCILE_JOURNAL, answer.error);
+}
+
+{
+  // The window's two options are remembered by the plugin and come back on the next open:
+  // the person sets them once, and the window keeps them.
+  const first = reconcileHost();
+  await Reconcile.run('checking', first.host);
+  const link = globalThis.__reconcileBridges[/"token":"(reconcile-[^"]+)"/.exec(first.log.pages[first.log.pages.length - 1])[1]];
+  link.setLines(true);
+  link.setStyle('transaction');
+  const second = reconcileHost({ settings: first.log.remembered });
+  await Reconcile.run('checking', second.host);
+  const html = second.log.pages[second.log.pages.length - 1];
+  check('the line-by-line and mark-style choices are remembered and come back on the next window',
+    first.log.remembered.lineByLine === 'on' && first.log.remembered.markStyle === 'transaction'
+    && html.includes('"lines":true') && html.includes('"style":"transaction"'),
+    JSON.stringify(first.log.remembered));
+  const off = reconcileHost({ settings: { lineByLine: 'off' } });
+  await Reconcile.run('checking', off.host);
+  check('and off is remembered as off', off.log.pages[off.log.pages.length - 1].includes('"lines":false'), '');
 }
 
 {

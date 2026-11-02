@@ -343,7 +343,7 @@
       ],
       "module": "./reconcile.js",
       "usage": "reconcile <account> [--statement DATE] [--balance N]",
-      "help": "Opens a window listing an account's postings since its last balance assertion, which is the point already proven. Type the statement's date and closing balance and tick what the statement shows; the difference falls to zero as it matches. Finish marks each ticked posting cleared and appends a balance assertion at the end of the file, then runs hledger to confirm it holds, putting the file back if it does not. Each posting shows the balance after it; type the statement's beside it to see where they part. Postings can be edited and added. Save writes the marks and changes without the final assertion. Only standard hledger is written, and only to files from an open folder.",
+      "help": "Opens a window on an account's postings since its last balance assertion. Already cleared lines are hidden, so it opens on what is left. Type the statement's date and closing balance, and tick the lines the statement shows until the difference is zero. Save changes writes the ticks, edits and date changes; Finish writes them and a balance assertion, then runs hledger to check it, putting the files back if it fails. Every write is shown first. Only files from an open folder can be written.",
       "sections": [
         {
           "title": "Options",
@@ -367,81 +367,44 @@
           "rows": [
             [
               "click, Space",
-              "tick or untick a posting"
+              "tick or untick a line as cleared"
             ],
             [
               "up, down, j, k",
-              "move between postings"
+              "move between lines"
             ],
             [
-              "Balance",
-              "the account's balance after each posting"
-            ],
-            [
-              "Statement balance",
-              "type the statement's; the difference shows"
+              "a",
+              "tick every line shown, up to the statement date"
             ],
             [
               "e",
-              "edit the transaction as journal text; empty deletes"
+              "edit the transaction as journal text; empty deletes it"
             ],
             [
               "n",
               "add a transaction the journal is missing"
             ],
             [
-              "Ctrl+Enter",
-              "keep an edit"
-            ],
-            [
-              "a",
-              "tick every posting shown"
+              "drag the grip, Alt+up, Alt+down",
+              "move a transaction to another day; this changes its date"
             ],
             [
               "/",
               "search descriptions, accounts and amounts"
-            ],
-            [
-              "Save",
-              "write the marks, edits, new postings and checks"
-            ],
-            [
-              "Finish",
-              "at a difference of zero: also assert the balance"
             ]
           ]
         },
         {
-          "title": "What it writes",
+          "title": "Options in the window",
           "rows": [
             [
-              "  * Assets:Bank",
-              "a cleared mark on the ticked posting itself"
+              "Mark as cleared",
+              "on this account's line, or on the whole transaction; remembered"
             ],
             [
-              "0 IDR = 664092.01 IDR",
-              "an assertion, in its own transaction at the end"
-            ],
-            [
-              "-50000 IDR = 150000 IDR",
-              "a matching statement balance, on its posting"
-            ]
-          ]
-        },
-        {
-          "title": "Help with a difference",
-          "rows": [
-            [
-              "exactly the difference",
-              "a posting ticked or missed by mistake"
-            ],
-            [
-              "half the difference",
-              "a posting entered with the wrong sign"
-            ],
-            [
-              "divides by 9",
-              "two digits swapped in typing"
+              "Check line by line",
+              "type the statement's balance after each line to find where they part; lines that match are asserted when you save; remembered"
             ]
           ]
         }
