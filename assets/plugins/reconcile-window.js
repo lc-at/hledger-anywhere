@@ -26,6 +26,11 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   const locked = files.filter((file) => !file.writable).map((file) => file.path).join(', ');
   const soft = mix(colors.background, colors.dim, 14);
   const softer = mix(colors.background, colors.dim, 7);
+  // What a cleared line is tinted with. At the same strength as the other tints it measured
+  // 1.13 against the page in dark and 1.18 in light, which is a difference you have to look
+  // for: two hundred cleared rows read as an unmarked list. At this strength it is 1.50 and
+  // 1.48, clearly a different row, while text on it still measures 12 to 1.
+  const cleared = mix(colors.background, colors.dim, 32);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>hledger: reconcile ${escape(data.account)}</title>
 <style>
@@ -108,18 +113,20 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   td.tick { width:24px; text-align:center; }
   /* A date on two lines costs a row twice the height and reads worse. */
   td.date, th.date { white-space:nowrap; width:1%; }
-  /* An optional column of boxes should not outshine the postings themselves: it is a line
-     until it is used, and only the row under the pointer or the cursor shows it. */
+  /* An optional column of boxes should not outshine the postings themselves, but an empty
+     box with no background and no border leaves a column of nothing, which reads as broken
+     rather than as quiet. It is a visible field that stays out of the way, and the row under
+     the pointer or the cursor sharpens it. */
   td.expect input { width:110px; text-align:right; padding:2px 6px; font-variant-numeric:tabular-nums;
-    background:none; border-color:transparent; }
-  tr:hover td.expect input, td.expect input:hover, td.expect input:focus { background:${softer}; border-color:${colors.dim}66; }
+    background:${softer}; border-color:${colors.dim}55; }
+  tr:hover td.expect input, td.expect input:hover, td.expect input:focus { background:${softer}; border-color:${colors.dim}aa; }
   td.delta.off { color:${colors.accent}; font-weight:600; }
   td.delta.ok { color:${colors.dim}; }
   tr { cursor:pointer; }
   /* Cleared is the tint rather than a word: with two hundred and eighty-nine of them in view,
      a word on every row is the noisy half, and the tint plus the lines being hidden until asked
      for already say which are done. The state is still on the row for a screen reader. */
-  tr.on td { background:${soft}; }
+  tr.on td { background:${cleared}; }
   /* The state of the line, in a word. Small and dim so a long list of cleared lines stays
      calm; the word itself, not the colour, is what says which is which. */
   .state { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:${colors.dim}; margin-right:6px; }
@@ -133,7 +140,12 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   .date-btn:hover, .insert:hover { color:${colors.accent}; }
   .insert { color:${colors.dim}; margin-left:6px; font-weight:600; opacity:0; }
   tr:hover .insert, tr:focus-within .insert, .insert:focus-visible { opacity:1; }
-  .date-input { font:inherit; padding:1px 4px; }
+  /* Nothing hovers on a touch screen, so a control that only appears on hover is a control
+     that does not exist there. */
+  @media (hover: none) { .insert { opacity:1; } }
+  /* An explicit width and colour: a date input sized by the browser can collapse to nothing
+     in some engines, and a date field you cannot see is worse than no editor at all. */
+  .date-input { font:inherit; padding:1px 4px; width:10em; box-sizing:border-box; color:${colors.foreground}; }
   tr.hinted td { box-shadow:inset 0 0 0 9999px ${mix(colors.background, colors.accent, 14)}; }
   /* Where the statement and the journal part: one bar at the start of the row, not one per cell. */
   tr.first td:first-child { box-shadow:inset 3px 0 0 ${colors.accent}; }
@@ -469,9 +481,11 @@ export function mount(root = document) {
     // The date is a button that opens an editor in place. A new transaction's date lives in
     // its text, so it is shown as it is rather than edited here.
     let date;
-    if (row.inserted) date = escape(row.date);
+    // A new transaction's date is written in its text, so this is not a control: it says so
+    // rather than looking like a button that does not answer.
+    if (row.inserted) date = `<span class="date-plain" title="this date is part of the transaction's text; e edits it">${escape(row.date)}</span>`;
     else if (dateBeingEdited === row.id) {
-      date = `<input type="date" class="date-input" data-date-input="${escape(row.id)}" value="${escape(row.date)}" aria-label="date of this transaction">`;
+      date = `<input type="date" class="date-input" data-date-input="${escape(row.id)}" value="${escape(row.date)}" title="${escape(row.date)}" aria-label="date of this transaction">`;
     } else {
       date = `<button class="date-btn" data-date="${escape(row.id)}" title="change the date (d)">${escape(row.date)}</button>`
         + `<button class="insert" data-insert="${escape(row.id)}" title="insert a transaction here (i)">+</button>`;
@@ -548,8 +562,21 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       previous = row.date;
       if (editing === row.id) html.push(editorHtml(row));
     }
+    // The rows are replaced wholesale, which takes the focus with them: a line ticked with
+    // Space left the ring on nothing, and the next arrow key then started from wherever the
+    // index happened to be rather than from the line the person was looking at. Focus goes
+    // back to the line that had it, and to nothing else, so typing in the bar or in a field
+    // is never disturbed.
+    const hadRowFocus = Boolean(
+      document.activeElement && document.activeElement.closest
+      && document.activeElement.closest('#rows tr[data-id]'),
+    );
     $('rows').innerHTML = html.join('');
     focus = Math.min(focus, Math.max(0, shown.length - 1));
+    if (hadRowFocus) {
+      const trs = $('rows').querySelectorAll('tr[data-id]');
+      if (trs[focus]) trs[focus].focus();
+    }
     drawSums();
     const field = $('rows').querySelector('tr.editor textarea:not([disabled])');
     if (field && editing) {
@@ -579,9 +606,11 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (group.length > 1) { hidePreview(); drawRows(); return; }
     const tr = [...$('rows').children].find((element) => element.dataset.id === id);
     if (tr) {
+      // The row is redrawn in place rather than by rebuilding the list, and only its state
+      // changes: the tint, and what a screen reader is told. Nothing else about it moves,
+      // least of all the first cell, which carries the date.
       tr.classList.toggle('on', ticked.has(id));
       tr.setAttribute('aria-checked', String(ticked.has(id)));
-      tr.firstElementChild.textContent = ticked.has(id) ? '✓' : '';
     }
     hidePreview();
     drawSums();
@@ -829,6 +858,28 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const input = event.target.closest && event.target.closest('[data-date-input]');
     if (input && dateBeingEdited === input.dataset.dateInput) finishDateEdit(input.dataset.dateInput, input.value);
   });
+  // The date editor is closed by any click away from it, not only by focus leaving it. Some
+  // engines move focus when the date picker opens or is dismissed, so a later click fires no
+  // focusout and the editor is left sitting over a row that then gets ticked, which is how a
+  // date came to look as though it had vanished when a line was checked.
+  //
+  // A click on the row itself only closes the editor: one click does one thing, and the
+  // alternative is ticking a line at the same moment the date disappears under the caret.
+  // Buttons and fields are left alone so each still does its own job on the same click.
+  document.addEventListener('click', (event) => {
+    if (dateBeingEdited == null) return;
+    const target = event.target;
+    if (target.closest && target.closest('.date-input')) return;
+    const id = dateBeingEdited;
+    const open = $('rows').querySelector(`tr[data-id="${CSS.escape(id)}"] .date-input`);
+    finishDateEdit(id, open ? open.value : '');
+    const onRow = target.closest && target.closest('tr[data-id]');
+    const onControl = target.closest && (target.closest('button') || target.closest('input') || target.closest('textarea'));
+    if (onRow && !onControl) {
+      event.stopPropagation();
+      event.preventDefault();
+    }
+  }, true);
 
   $('hidden').addEventListener('click', (event) => {
     if (!event.target.closest('[data-toggle-hidden]')) return;

@@ -1283,6 +1283,76 @@ async function reconcileNarrow(tab) {
   }
 }
 
+// The date cell has to still say the date after a line is ticked, whichever way it was ticked,
+// and the editor must never be left sitting over a row. A date you cannot see looks like it
+// vanished when the line was checked, which is how the window was reported.
+async function reconcileDateEditing(tab) {
+  const read = () => tab.eval(`(() => {
+    const tr = document.querySelector('#rows tr[data-id]');
+    const button = tr.querySelector('.date-btn');
+    const input = tr.querySelector('.date-input');
+    return {
+      date: button ? button.textContent : (input ? input.value : ''),
+      editor: Boolean(input),
+      checked: tr.getAttribute('aria-checked'),
+    };
+  })()`);
+  const onShow = (state) => !state.editor && /^\d{4}-\d{2}-\d{2}$/.test(state.date);
+
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.querySelector('#rows tr[data-id]').click()");
+  let state = await read();
+  check('a click on the row ticks it and the date is still on show',
+    state.checked === 'true' && onShow(state), JSON.stringify(state));
+
+  await tab.show('reconcile', 'dark');
+  await tab.eval(`(() => {
+    const cell = document.querySelector('#rows tr[data-id] td.date');
+    const box = cell.getBoundingClientRect();
+    document.elementFromPoint(box.left + box.width - 3, box.top + box.height - 3).click();
+    return true;
+  })()`);
+  state = await read();
+  check('a click on the date cell itself ticks it and the date is still on show',
+    state.checked === 'true' && onShow(state), JSON.stringify(state));
+
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40 });
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  state = await tab.eval(`(() => {
+    const tr = document.activeElement;
+    const button = tr.querySelector && tr.querySelector('.date-btn');
+    return {
+      tag: tr.tagName,
+      checked: tr.getAttribute && tr.getAttribute('aria-checked'),
+      date: button ? button.textContent : '',
+      ring: getComputedStyle(tr).outlineWidth,
+    };
+  })()`);
+  check('Space ticks the line, keeps its date, and keeps the focus ring on it',
+    state.tag === 'TR' && state.checked === 'true' && /^\d{4}-\d{2}-\d{2}$/.test(state.date)
+    && parseFloat(state.ring) >= 2, JSON.stringify(state));
+
+  // An editor left open over a ticked row is how a date looked like it had disappeared, so a
+  // click away from it closes it and does nothing else: one click, one thing.
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
+  const opened = await read();
+  await tab.eval("document.querySelector('#rows tr[data-id]').children[1].click()");
+  const afterClick = await read();
+  check('clicking the row while the date editor is open closes it and ticks nothing',
+    opened.editor && !afterClick.editor && afterClick.checked === 'false' && onShow(afterClick),
+    JSON.stringify({ opened, afterClick }));
+
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
+  await tab.key('Escape', { code: 'Escape', keyCode: 27 });
+  const escaped = await read();
+  check('Escape closes the date editor and leaves the date on show',
+    !escaped.editor && escaped.checked === 'false' && onShow(escaped), JSON.stringify(escaped));
+}
+
 // Changing a transaction's date is an explicit act: the date is a button that opens an editor in
 // place, Alt+Up/Down steps it onto a neighbouring day, and both go through the same checks. There
 // is no drag and drop, so a row is clicked to tick it and nothing on it can move it.
@@ -1822,6 +1892,7 @@ try {
   await reconciling(tab);
   await reconcileRunning(tab);
   await reconcileDates(tab);
+  await reconcileDateEditing(tab);
   await reconcileNarrow(tab);
   await reconcileGeneric(tab);
   await reconcileStyle(tab);
