@@ -491,6 +491,14 @@ async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted =
       // rows carry, so ids taken from the whole print point at nothing. Read what it reads.
       const own = JSON.parse(await host.hledger(`print ${JSON.stringify('acct:^' + literal(account) + '$')} -O json`));
       const data = readPrint(own, account);
+      // The window puts each row's journal text on it from the file, and nothing else does:
+      // without it every edit, move and insert reads row.text as undefined, takes its branch
+      // as a no-op, and the round writes nothing while reporting that it was accepted.
+      const source = readFileSync(join(copy, file), 'utf8').split('\n');
+      for (const row of data.rows) {
+        row.text = source.slice(row.where.first - 1, Math.max(row.where.last - 1, row.where.first))
+          .join('\n').replace(/\s+$/, '');
+      }
       if (!data || !data.rows.length) {
         notes.push(`${account}: no rows to reconcile, skipped`);
         continue;
