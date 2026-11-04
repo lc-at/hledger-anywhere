@@ -443,6 +443,19 @@ function stub(overrides = {}) {
       JSON.stringify(log));
   }
 
+  {
+    // One account over one period: nothing to compare against, which is where a chart most
+    // easily draws a row of nothing or divides by the distance between one tick and itself.
+    const { host, log, last } = stub({ hledger: async () => '"account","2026-01"\n"expenses:housing:rent","$1,286.40"\n' });
+    await Chart.run('line expenses', host);
+    check('one account over one period still opens a chart',
+      log.pages.length >= 1 && log.said.some((text) => /in a new window/.test(text)), JSON.stringify({ pages: log.pages.length, said: log.said }));
+    check('and its summary counts the one account rather than none',
+      log.said.some((text) => /of 1 account/.test(text) && !/of 0 account/.test(text)), JSON.stringify(log.said));
+    check('with the value it was given rather than a gap',
+      !/NaN|undefined/.test(last()), last().slice(0, 200));
+  }
+
   const { host, log, last } = stub();
   await Chart.run('line expenses', host);
   check('it opens the window before asking hledger', log.events[0] === 'window' && log.events.includes('hledger'), log.events.join(','));
