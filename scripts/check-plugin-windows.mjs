@@ -1699,7 +1699,7 @@ async function reconcileRunning(tab) {
   await tab.key('j', { code: 'KeyJ', keyCode: 74, text: 'j' });
   await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
   await tab.key('e', { code: 'KeyE', keyCode: 69, text: 'e' });
-  check('e opens the transaction as it is written in the journal', (await area()) === '2026-09-01 * Coffee\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking', JSON.stringify(await area()));
+  check('e opens the transaction as it is written in the journal', (await area()) === '2026-09-01 Coffee\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking', JSON.stringify(await area()));
   await typeIn('2026-09-01 * Coffee beans  ; for the office\n    Expenses:Food:Coffee    25000 IDR\n    Assets:Bank:Checking');
   check('the reading follows the text, the amount worked out as hledger would', (await text('reading')) === '2026-09-01: -25,000.00 IDR to Assets:Bank:Checking, against Expenses:Food:Coffee.', await text('reading'));
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");

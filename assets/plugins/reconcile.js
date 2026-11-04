@@ -92,6 +92,10 @@ async function readAccount(host, account, commodity) {
     for (const row of data.rows) {
       row.where.file = fileFor(row.where.file, paths);
       if (!texts.has(row.where.file)) {
+        // Not awaited, and it cannot be: the plan is worked out synchronously, so `read` has
+        // to answer with the text itself. The app does; a host that answers with a promise
+        // would put the promise on the row and the editor would open with [object Promise] in
+        // it, so docs/plugins.md says so where the host API is written down.
         const text = typeof host.read === 'function' ? host.read(row.where.file) : null;
         texts.set(row.where.file, text == null ? null : text.split('\n'));
       }

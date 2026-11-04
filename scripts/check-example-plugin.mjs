@@ -871,6 +871,17 @@ const TREE_MONTHS = [
 // ------------------------------------------------------------------ reconcile
 
 {
+  // The print was cut from this journal, so they have to agree about which lines are cleared:
+  // the window reads the print and the checks read both, and a journal whose transaction lines
+  // carry marks its print does not know about is two different starting states at once.
+  const headers = RECONCILE_JOURNAL.split('\n').filter((line) => /^\d{4}-\d{2}-\d{2} /.test(line));
+  check('the fixture journal and its print agree that nothing is cleared yet',
+    headers.length === RECONCILE_PRINT.length
+    && headers.every((line) => !/^\d{4}-\d{2}-\d{2} [x*!]/.test(line))
+    && RECONCILE_PRINT.every((transaction) => transaction.tstatus === 'Unmarked')
+    && RECONCILE_PRINT.flatMap((transaction) => transaction.tpostings).every((posting) => posting.pstatus !== 'Cleared'),
+    JSON.stringify(headers));
+
   const data = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking');
   check('reconcile starts at the last balance assertion, and lists only what is after it',
     data.start.date === '2026-08-31' && data.start.balance === 100000000 && data.rows.length === 6 && data.rows[0].description === 'Coffee', JSON.stringify(data.start));
@@ -974,13 +985,13 @@ const TREE_MONTHS = [
   const written = (result) => result.files[0] || { changes: [], after: '', replaced: [], inserted: [], appended: '' };
   const alone = written(plan({ data, texts, ticked: new Set(), moved: { [coffee.id]: '2026-09-04' } }));
   check('a move rewrites the date on the transaction line and nothing else',
-    alone.changes.length === 1 && alone.changes[0].before === '2026-09-01 * Coffee'
-    && alone.changes[0].after === '2026-09-04 * Coffee', JSON.stringify(alone.changes));
+    alone.changes.length === 1 && alone.changes[0].before === '2026-09-01 Coffee'
+    && alone.changes[0].after === '2026-09-04 Coffee', JSON.stringify(alone.changes));
 
   const withMark = written(plan({ data, texts, ticked: new Set([coffee.id]), moved: { [coffee.id]: '2026-09-04' } }));
   check('a move and a mark on the same transaction both land, neither dropped nor doubled',
     withMark.changes.length === 2
-    && withMark.changes.some((change) => change.after === '2026-09-04 * Coffee')
+    && withMark.changes.some((change) => change.after === '2026-09-04 Coffee')
     && withMark.changes.some((change) => /^ {2}\* Assets:Bank:Checking/.test(change.after)),
     JSON.stringify(withMark.changes));
 
@@ -992,12 +1003,12 @@ const TREE_MONTHS = [
   const withInsert = written(plan({ data, texts, ticked: new Set(), moved: { [coffee.id]: '2026-09-04' }, inserts: [{ id: 'new:1', text: '2026-09-02 * Fee\n    Assets:Bank:Checking    -1000 IDR\n    Expenses:Fees', after: salary.id }] }));
   const insertedText = withInsert.after.includes('2026-09-02 * Fee');
   check('a move beside an insertion leaves both in the file',
-    insertedText && withInsert.changes.some((change) => change.after === '2026-09-04 * Coffee')
+    insertedText && withInsert.changes.some((change) => change.after === '2026-09-04 Coffee')
     && withInsert.inserted.length === 1, `${insertedText} ${JSON.stringify(withInsert.changes)}`);
 
   const withDelete = written(plan({ data, texts, ticked: new Set(), edits: { [salary.id]: { text: '' } }, moved: { [coffee.id]: '2026-09-04' } }));
   check('a move beside a deletion deletes that transaction and moves only the other',
-    !withDelete.after.includes('* Salary') && withDelete.after.includes('2026-09-04 * Coffee')
+    !withDelete.after.includes('2026-09-02 Salary') && withDelete.after.includes('2026-09-04 Coffee')
     && withDelete.replaced.length === 1, JSON.stringify(withDelete.replaced));
 
   // Hiding already-cleared rows is a view, not a recalculation. The balances are worked out over
@@ -1209,7 +1220,7 @@ const TREE_MONTHS = [
     JSON.stringify(after.split('\n').slice(5, 11)));
   check('an emptied transaction is deleted, leaving no double blank line', !after.includes('Pending transfer') && !after.includes('\n\n\n'), '');
   check('a new one is written straight after the transaction it was added beside, ticked and asserted',
-    after.includes('2026-09-02 * Salary\n    Assets:Bank:Checking    5000000.00 IDR\n    Income:Salary\n\n2026-09-02 Transfer fee\n  * Assets:Bank:Checking  -6500 IDR = 5969500.00 IDR\n    Expenses:Fees\n'), JSON.stringify(after.split('\n').slice(10, 18)));
+    after.includes('2026-09-02 Salary\n    Assets:Bank:Checking    5000000.00 IDR\n    Income:Salary\n\n2026-09-02 Transfer fee\n  * Assets:Bank:Checking  -6500 IDR = 5969500.00 IDR\n    Expenses:Fees\n'), JSON.stringify(after.split('\n').slice(10, 18)));
   check('a typed running balance that does not match is not written', !after.includes('= 0.01 IDR') && done.missing.length === 0 && done.asserted === 2, JSON.stringify(done.missing));
   const unknown = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), edits: { [coffee.id]: { text: '2026-09-01 x\n    A    5 USD\n    Assets:Bank:Checking' } }, expected: { [coffee.id]: 1 } });
   check('an edit whose amount cannot be read is written, and its balance not asserted', unknown.files[0].changes.length === 2 && unknown.asserted === 0 && !unknown.missing.length, JSON.stringify(unknown.files[0].changes));
@@ -1218,7 +1229,7 @@ const TREE_MONTHS = [
     && summarize({ data, ticked: new Set(), statementDate: '2026-09-30', statementBalance: 0, edits: { [coffee.id]: { text: '2026-09-01 x\n    A    5 USD\n    Assets:Bank:Checking' } } }).difference === null, '');
   const both = ordered(data, { edits: { [splitTwo.id]: { text: '2026-09-05 * Split\n    Expenses:Food    9000 IDR\n    Assets:Bank:Checking' } } });
   check('editing one posting of a transaction with two to the account edits it all, as one row', both.filter((row) => row.description === 'Split').length === 1 && both.find((row) => row.description === 'Split').amount === -900000, '');
-  const moved = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL.replace('2026-09-01 * Coffee', 'something else') }, ticked: new Set([coffee.id]) });
+  const moved = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL.replace('2026-09-01 Coffee', 'something else') }, ticked: new Set([coffee.id]) });
   check('a transaction not where hledger said is reported, not guessed', /not where hledger said/.test(moved.missing[0].why), JSON.stringify(moved.missing));
   check('a new transaction without a date line is not written', /needs a first line with its date/.test(plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), inserts: [{ id: 'new:2', text: 'no date here' }] }).missing[0].why), '');
 }

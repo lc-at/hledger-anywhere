@@ -114,7 +114,7 @@ promise, is reported as the plugin failing.
 | `host.setting(key)` | A setting this plugin remembered, or `null`. |
 | `host.remember(key, value)` | Remembers it, in the app's settings. |
 | `host.files()` | The loaded files, as an array of `{path, writable, main}`. `writable` is true only for files that came from an `open`ed folder; `main` marks the journal hledger reads. |
-| `host.read(path)` | One loaded file's contents, or `null`. |
+| `host.read(path)` | One loaded file's contents, or `null`. Answers with the text itself, not a promise: the plan is worked out synchronously. |
 | `host.save(path, contents)` | Writes a file back to the folder an `open` granted. Resolves with `{ok: true}` or `{error: "..."}`, and never rejects. Refuses if the file changed on disk since it was opened. |
 
 `host.hledger` accepts anything the command line accepts, and is bound by the same rules:
