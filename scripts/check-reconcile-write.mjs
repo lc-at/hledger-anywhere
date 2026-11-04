@@ -519,8 +519,15 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
       }
       const rows = ordered(data);
       const ticked = new Set(rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+      // Defaults first, the round second: a literal after ...over replaces it, so putting
+      // edits: {} after the spread threw away every edit, insert and move the round had built
+      // and the journal was asked to change by nothing at all.
+      const requestFor = (over) => ({
+        ticked: [...ticked], finish: null, edits: {}, inserts: [], expected: {}, moved: {},
+        style: 'posting', fingerprint, ...over,
+      });
       const apply = async (over) => {
-        const answer = await bridge.apply({ ...over, ticked: [...ticked], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
+        const answer = await bridge.apply(requestFor(over));
         if (answer && answer.fingerprint) fingerprint = answer.fingerprint;
         if (answer && answer.ok && answer.data) {
           for (const row of answer.data.rows) if (row.status === 'Cleared') ticked.add(row.id);
@@ -559,7 +566,7 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
           }
           continue;
         }
-        const plan = await bridge.preview({ ...request, ticked: [...ticked], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
+        const plan = await bridge.preview(requestFor(request));
         const changed = (plan.files || []).length;
         if (changed) wrote += 1;
         accepted += 1;
