@@ -15,6 +15,15 @@
 (() => {
   /** Imported modules, by absolute URL: a repository that is used twice is loaded once. */
   const modules = new Map();
+  /**
+   * URLs this page had already imported when something was reset.
+   *
+   * The browser keeps its own map by URL for the life of the document, so importing one of
+   * these again returns the module that was already evaluated, whatever the file says now.
+   * Forgetting our record of it lets a plugin added since be imported; it cannot make the
+   * code in an already-imported one any newer.
+   */
+  let stale = new Set();
 
   const absolute = (url) => new URL(url, document.baseURI).href;
 
@@ -84,7 +93,17 @@
   /** Run one plugin command. Errors come back as text, never as a thrown value. */
   async function run(manifestUrl, modulePath, name, args, host) {
     try {
+      const url = absolute(new URL(modulePath, absolute(manifestUrl)).href);
+      const wasStale = stale.has(url);
       const module = await moduleFor(manifestUrl, modulePath);
+      if (wasStale) {
+        stale.delete(url);
+        // The import above returned what this page already had. Saying nothing would leave a
+        // reload looking like it had brought in new code when it could not have.
+        if (host && typeof host.say === 'function') {
+          host.say(`${name}: that plugin was already loaded in this page, so it still runs the code it was loaded with. Reload the page to run new plugin code.`);
+        }
+      }
       const plugin = module && module.default ? module.default : module;
       if (!plugin || typeof plugin.run !== 'function') {
         return { error: `${name} has no run() to call` };
@@ -97,8 +116,9 @@
     }
   }
 
-  /** Forget imported modules, so a reloaded repository is read again. */
+  /** Forget our record of imported modules, so a plugin added since is imported when it runs. */
   function reset() {
+    stale = new Set(modules.keys());
     modules.clear();
   }
 

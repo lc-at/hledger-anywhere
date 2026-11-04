@@ -1824,8 +1824,10 @@ impl App {
                 self.title("reading plugins");
                 let app = Rc::clone(self);
                 spawn_local(async move {
-                    // Modules are forgotten too, so a repository that changed is read
-                    // again rather than served from the import cache.
+                    // Our own record of imported modules is forgotten, so a plugin added
+                    // since is imported when it runs. The browser keeps modules by URL for
+                    // the life of the document, so code already imported does not change
+                    // here: the loader says so when a plugin turns out to be one of those.
                     let _ = plugins::loader::reset().await;
                     for url in &repositories {
                         if let Err(error) = app.install_repository(url).await {

@@ -54,9 +54,16 @@ const PAGE = `<!doctype html>
   // The real app imports when a command runs, long after the worker has taken the page; this
   // test imports on load, which can be before it does. Waiting for the worker first is the
   // difference being tested for, rather than an accident of timing.
-  const load = () => import(new URL('/plugins/demo.js', location.origin).href)
-    .then((m) => { window.__loaded = m.version; window.__controlled = Boolean(navigator.serviceWorker.controller); })
-    .catch((e) => { window.__loaded = 'error: ' + e.message; window.__controlled = Boolean(navigator.serviceWorker.controller); });
+  window.addEventListener('pageshow', (event) => { window.__persisted = event.persisted; });
+  const load = () => {
+    // Captured before the import starts: control at resolution time is not control at request
+    // time, and the request is the one that has to be intercepted.
+    window.__controlled = Boolean(navigator.serviceWorker.controller);
+    window.__navType = (performance.getEntriesByType('navigation')[0] || {}).type || 'unknown';
+    return import(new URL('/plugins/demo.js', location.origin).href)
+      .then((m) => { window.__loaded = m.version; window.__resolvedControlled = Boolean(navigator.serviceWorker.controller); })
+      .catch((e) => { window.__loaded = 'error: ' + e.message; });
+  };
   if (/[?&]nosw=/.test(location.search) || !('serviceWorker' in navigator)) load();
   else Promise.race([
     navigator.serviceWorker.ready,
@@ -252,7 +259,8 @@ async function main() {
   // rather than assumed.
   const workerSource = await readFile(WORKER, 'utf8');
   // Only the first request for a URL, so a later fetch in a check cannot make this look true.
-  const probe = "  event.waitUntil(caches.open('probe').then((c) => c.match(request.url).then((m) => (m ? null : c.put(request.url, new Response('first'))))));\n";
+  // A count per URL, so the handler's traffic can be compared with the server's log.
+  const probe = "  event.waitUntil(caches.open('probe').then((c) => c.match(request.url).then((m) => c.put(request.url, new Response(m ? String(Number(m.headers.get('x-count') || '0') + 1) : '1')))));\n";
   const anchor = '  const url = new URL(request.url);';
   if (!workerSource.includes(anchor)) throw new Error('the worker changed shape; the probe has nowhere to go');
   await writeFile(join(dir, 'sw.js'), workerSource.replace(anchor, `${anchor}\n${probe}`));
@@ -263,6 +271,9 @@ async function main() {
   const page = await openPage(`${base}/`);
   const results = [];
   const notes = [];
+  // The module map: within one document a URL is fetched once, and a later import of it returns
+  // what was already evaluated, whatever the file now says. That is what decides whether an
+  // in-page re-import, which is what `plugins reload` does, can ever see a deploy.
   try {
     // 1. Through the worker: this is the path a returning visitor takes.
     await page.navigate(`${base}/`);
@@ -326,13 +337,29 @@ async function main() {
           .then((c) => c.match('${base}/plugins/demo.js'))
           .then((r) => (r ? r.text() : null)))))
         .then((bodies) => bodies.filter(Boolean).map((b) => b.trim()));
-      return JSON.stringify({ controlledWhenImported: window.__controlled, probe, pageSaw: window.__loaded, viaFetch: viaFetch.trim(), inCache });
+      const probeCount = await caches.open('probe').then((c) => c.match('${base}/plugins/demo.js'))
+        .then((r) => (r ? r.text() : 'none'));
+      return JSON.stringify({ navType: window.__navType, persisted: window.__persisted, controlledAtRequest: window.__controlled, probeCount, pageSaw: window.__loaded, viaFetch: viaFetch.trim(), inCache });
     })()`);
     notes.push(`a second change on a later load: the page imported ${pageSaw}, the server had v3 (${detail})`);
     await page.evaluate(`window.openBlob(new URL('/plugins/demo.js', location.origin).href)`);
     await sleep(700);
     const fromWindow = await page.evaluate('window.__blob && window.__blob.document.title');
     notes.push(`the window opened after that load showed: ${fromWindow}`);
+
+    // A second import of the same URL in this document, after the file changed under it.
+    await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v5'));
+    await page.reload();
+    await pageVersion(page);
+    const firstImport = await page.evaluate(`import(new URL('/plugins/demo.js', location.origin).href).then((m) => m.version)`);
+    await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v6'));
+    const twice = await page.evaluate(`(async () => {
+      const url = new URL('/plugins/demo.js', location.origin).href;
+      const again = await import(url).then((m) => m.version);
+      const server = await fetch(url, { cache: 'no-cache' }).then((r) => r.text());
+      return JSON.stringify({ first: ${JSON.stringify(firstImport)}, again, server: server.trim().split("'")[1] });
+    })()`);
+    notes.push(`the file changed between two imports of the same URL in one document: ${twice}`);
 
     // 3. With no worker, which is a first visit or a browser that refused to install one.
     await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v5'));

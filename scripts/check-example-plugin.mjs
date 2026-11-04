@@ -22,6 +22,11 @@
 // Run with: node scripts/check-example-plugin.mjs
 
 import { readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   COLORS,
@@ -1234,6 +1239,41 @@ const TREE_MONTHS = [
   check('a new transaction without a date line is not written', /needs a first line with its date/.test(plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), inserts: [{ id: 'new:2', text: 'no date here' }] }).missing[0].why), '');
 }
 
+
+{
+  // `plugins reload` forgets this page's record of imported modules, but the browser keeps
+  // them by URL for the life of the document, so importing one again returns what was already
+  // evaluated, whatever the file says now. The loader has to say that rather than look as
+  // though the reload brought in new code. Node caches modules the same way, so the same
+  // conversation can be had here.
+  const dir = await mkdtemp(join(tmpdir(), 'hla-plugin-reload-'));
+  const pluginUrl = new URL('file://' + join(dir, 'demo-plugin.js')).href;
+  const manifestUrl = new URL('file://' + join(dir, 'plugins.json')).href;
+  await writeFile(join(dir, 'demo-plugin.js'), "export default { run(args, host) { host.say('ran v1'); } };\n");
+  // `window` has to be the global itself: the plugin bridges are read back off globalThis by
+  // the checks below, and window-kit writes them to `window` when it exists.
+  globalThis.window = globalThis;
+  globalThis.document = globalThis.document || { baseURI: new URL('file://' + join(dir, 'index.html')).href };
+  await import(new URL('../assets/js/plugins.js', import.meta.url).href);
+  const loader = globalThis.window.hledgerPlugins;
+  const said = [];
+  const host = { say: (text) => said.push(text), colors: () => ({}), files: () => [], setting: () => null, remember: () => {}, window: () => ({ write() {}, close() {} }) };
+  check('the plugin loader is loadable outside a browser', Boolean(loader && loader.run && loader.reset), String(typeof loader));
+  if (loader) {
+    await loader.run(manifestUrl, './demo-plugin.js', 'demo', '', host);
+    check('the first run says nothing about reloading', !said.some((text) => /already loaded/.test(text)), JSON.stringify(said));
+    await writeFile(join(dir, 'demo-plugin.js'), "export default { run(args, host) { host.say('ran v2'); } };\n");
+    await loader.reset();
+    await loader.run(manifestUrl, './demo-plugin.js', 'demo', '', host);
+    check('a run after a reload says the page still has the old code, and what to do about it',
+      /already loaded in this page/.test(said.join(' ')) && /Reload the page to run new plugin code/.test(said.join(' ')),
+      JSON.stringify(said));
+    await loader.run(manifestUrl, './demo-plugin.js', 'demo', '', host);
+    check('and it says it once, not on every command afterwards',
+      said.filter((text) => /already loaded/.test(text)).length === 1, JSON.stringify(said));
+  }
+  await rm(dir, { recursive: true, force: true });
+}
 
 {
   check('reconcile reads an account and its flags', JSON.stringify(parseLine('mandiri --statement 2026-09-30 --balance "664,092.01"'))
