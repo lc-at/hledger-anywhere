@@ -150,10 +150,13 @@ pub const ENTRIES: &[Entry] = &[
         detail: "A plugin is a command the app does not implement itself, fetched at \
                  runtime from a repository. The manifest is authoritative for the words, \
                  the help and the completion, so installing one costs a fetch and runs \
-                 no code until a command of its own is used.",
+                 no code until a command of its own is used. Reloading re-reads the \
+                 repositories, and a plugin this page has already loaded keeps running the \
+                 code it was loaded with: reloading the page is what runs new code.",
         examples: &[
             ("plugins", "list what is installed"),
             ("plugins add /plugins/plugins.json", "install a repository"),
+            ("plugins reload", "re-read the repositories, without new code for one already loaded"),
         ],
     },
     Entry {
