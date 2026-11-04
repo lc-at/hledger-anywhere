@@ -554,6 +554,12 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
           const seed = rows[0].text.replace(/^\d{4}-\d{2}-\d{2}/, '2027-03-05').replace(/ = [^\n]*/g, '');
           request = { inserts: [{ id: `new:${round}`, text: seed, after: row.id }] };
         }
+        const planned = await bridge.preview(requestFor(request));
+        // The preview carries the changes, not the text they are changes against: the window
+        // shows diffs and never needs the original. It is read here, before the write, which
+        // is the only moment it still says what the file was.
+        const befores = {};
+        for (const entry of planned.files || []) befores[entry.path] = await readFile(join(copy, entry.path), 'utf8');
         const answer = await apply(request);
         if (!answer || !answer.ok) {
           const error = (answer && answer.error) || '';
@@ -561,18 +567,22 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
           // to be undone. A fingerprint refusal is the journal changing under the window, which
           // is the guard working.
           check(!/put back/.test(error), `${account}: round ${round} needed no rollback`, error.slice(0, 160));
+          console.log(`trace ${account} round ${round}: pick=${pick} applied=no error=${error.slice(0, 90) || 'none'}`);
           if (error && !/changed since this window was drawn/.test(error)) {
             notes.push(`${account}: round ${round} refused: ${error.slice(0, 110)}`);
           }
           continue;
         }
-        const plan = await bridge.preview(requestFor(request));
+        // The plan was taken before the write (above), so it describes what the write was
+        // about to do; reading the file after it is how the two are compared.
+        const plan = planned;
         const changed = (plan.files || []).length;
         if (changed) wrote += 1;
         accepted += 1;
+        console.log(`trace ${account} round ${round}: pick=${pick} row=${row.id} ticked=${ticked.size} planned=${changed} missing=${JSON.stringify(plan.missing || []).slice(0, 70)}`);
         for (const file of plan.files || []) {
           const written = await readFile(join(copy, file.path), 'utf8');
-          const replayed = replay(file.before, file);
+          const replayed = replay(befores[file.path], file);
           check(replayed === written, `${account}: the preview describes ${file.path} exactly`,
             replayed === written ? '' : firstDifference(replayed, written));
         }
