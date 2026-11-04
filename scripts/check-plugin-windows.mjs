@@ -478,9 +478,11 @@ class Tab {
     await sleep(60);
   }
 
-  async key(key, { code = key, keyCode = 0, text } = {}) {
-    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: keyCode, ...(text ? { text } : {}) });
-    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode });
+  async key(key, { code = key, keyCode = 0, text, modifiers = 0 } = {}) {
+    // `modifiers` is the CDP bit field: 1 Alt, 2 Ctrl, 4 Meta, 8 Shift... as the browser sees
+    // them, so a chord reaches the page the way a real keyboard sends it.
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: keyCode, modifiers, ...(text ? { text } : {}) });
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode, modifiers });
     await sleep(60);
   }
 
@@ -1333,6 +1335,58 @@ async function reconcileDateEditing(tab) {
   check('Space ticks the line, keeps its date, and keeps the focus ring on it',
     state.tag === 'TR' && state.checked === 'true' && /^\d{4}-\d{2}-\d{2}$/.test(state.date)
     && parseFloat(state.ring) >= 2, JSON.stringify(state));
+
+  // A line whose running balance is unknown has no difference to show. Editing a transaction
+  // into another commodity makes every balance after it unknown, and the box used to show the
+  // typed balance as though the line were out by exactly that much.
+  await tab.show('reconcile', 'dark');
+  await tab.eval(`(() => {
+    const box = document.getElementById('lines');
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+    return true;
+  })()`);
+  await tab.eval("document.querySelector('#rows button[data-edit]').click()");
+  await tab.eval(`(() => {
+    const area = document.querySelector('tr.editor textarea');
+    area.value = '2026-09-01 x\\n    A    5 USD\\n    Assets:Bank:Checking';
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('tr.editor [data-keep]').click();
+    return true;
+  })()`);
+  const unknown = await tab.eval(`(() => {
+    const inputs = [...document.querySelectorAll('#rows td.expect input')];
+    const target = inputs[inputs.length - 1];
+    target.value = '123456';
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    const cell = target.closest('tr').querySelector('td.delta');
+    return JSON.stringify({ text: cell.textContent, cls: cell.className });
+  })()`);
+  check('a typed balance against an unknown running balance shows no difference',
+    JSON.parse(unknown).text === '' && JSON.parse(unknown).cls === 'n delta ', unknown);
+
+  // Focus follows the line, not the position it used to be at. The first line is moved to a
+  // day after every other one, so it really does leave where it was sitting: an index would
+  // hand the ring to whichever line took its place.
+  await tab.show('reconcile', 'dark');
+  const focusTarget = await tab.eval(`(() => {
+    const row = document.querySelector('#rows tr[data-id]');
+    row.focus();
+    return row.getAttribute('data-id');
+  })()`);
+  await tab.key('d', { code: 'KeyD', keyCode: 68, text: 'd' });
+  const editorOpened = await tab.eval(`(() => {
+    const input = document.querySelector('.date-input');
+    if (!input) return false;
+    input.value = '2026-10-20';
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    return true;
+  })()`);
+  const afterMove = await tab.eval("document.activeElement.getAttribute('data-id')");
+  const nowAt = await tab.eval(`[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => tr.getAttribute('data-id') === ${JSON.stringify(focusTarget)})`);
+  check('after a line moves to another day and re-sorts, focus stays on that line',
+    editorOpened === true && Boolean(focusTarget) && focusTarget === afterMove && nowAt > 0,
+    JSON.stringify({ focusTarget, afterMove, nowAt, editorOpened }));
 
   // An editor left open over a ticked row is how a date looked like it had disappeared, so a
   // click away from it closes it and does nothing else: one click, one thing.

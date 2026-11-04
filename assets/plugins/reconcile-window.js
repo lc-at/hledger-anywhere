@@ -571,11 +571,20 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       document.activeElement && document.activeElement.closest
       && document.activeElement.closest('#rows tr[data-id]'),
     );
+    // Off the row, not off the element: while the date editor is open the focused thing is an
+    // input inside the row, and it has no id of its own to come back to.
+    const focusedId = hadRowFocus
+      ? document.activeElement.closest('tr[data-id]').getAttribute('data-id')
+      : null;
     $('rows').innerHTML = html.join('');
     focus = Math.min(focus, Math.max(0, shown.length - 1));
     if (hadRowFocus) {
-      const trs = $('rows').querySelectorAll('tr[data-id]');
-      if (trs[focus]) trs[focus].focus();
+      const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
+      const at = trs.findIndex((tr) => tr.dataset.id === focusedId);
+      // By identity, not by position: a line that re-sorted is still the line that had focus,
+      // and the index it used to be at now belongs to a different one.
+      if (at >= 0) focus = at;
+      if (trs[Math.min(focus, trs.length - 1)]) trs[Math.min(focus, trs.length - 1)].focus();
     }
     drawSums();
     const field = $('rows').querySelector('tr.editor textarea:not([disabled])');
@@ -844,7 +853,10 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (value == null) delete expected[id]; else expected[id] = value;
     const row = rows().find((entry) => entry.id === id);
     const cell = event.target.closest('tr').querySelector('td.delta');
-    const point = value == null || !row ? null : value - row.balance;
+    // A row whose running balance is unknown (an edit in another commodity makes every balance
+    // after it unknown) has no difference to show: `value - null` would be the typed balance
+    // itself, presented as though the line were out by exactly that much.
+    const point = value == null || !row || row.balance == null ? null : value - row.balance;
     cell.textContent = point == null ? '' : point === 0 ? '✓' : money(point);
     cell.className = `n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}`;
     hidePreview();
