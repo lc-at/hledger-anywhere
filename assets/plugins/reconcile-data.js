@@ -779,7 +779,10 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     const path = beside ? beside.where.file : insert.file || lastFile();
     const file = path ? fileOf(path) : null;
     if (!file) { missing.push({ id: insert.id, why: 'there is no file to add it to' }); continue; }
-    if (beside) file.inserted.push({ index: beside.where.last - 1, line: beside.where.last - 1, text });
+    // `index` is where the splice goes, zero-based like every other index here; `line` is what
+    // the preview prints as "after line N", and the preview numbers from one like the editor
+    // does. They were the same expression, which announced every insert one line too high.
+    if (beside) file.inserted.push({ index: beside.where.last - 1, line: beside.where.last, text });
     else file.appended += `${file.appended ? '\n' : ''}${text}`;
   }
   // The assertion, whether or not there is a file to append it to: a read-only journal still
