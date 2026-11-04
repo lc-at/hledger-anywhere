@@ -104,7 +104,14 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     (async () => {
       try {
-        const response = await fetch(request);
+        // `cache: 'no-cache'` is what makes this network-first rather than merely "not
+        // cache-first": a plain fetch still answers from the HTTP cache inside its max-age,
+        // and GitHub Pages gives every asset ten minutes. The worker's own comment promised
+        // that online you get the current build, and without this a deploy could serve a
+        // returning visitor the previous one for up to ten minutes, plugin modules included.
+        // 'no-cache' revalidates against the ETag instead of re-downloading, so an unchanged
+        // file costs a 304, and the cache below is still what answers when there is no network.
+        const response = await fetch(request, { cache: 'no-cache' });
         remember(event, request, response);
         return response;
       } catch (error) {
