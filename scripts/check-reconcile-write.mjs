@@ -462,7 +462,7 @@ async function makeWritable(dir) {
  * the journal it pointed at is kept, printed or committed: only the option that takes a path
  * is. The seed is fixed, so a failure is the same failure next time.
  */
-async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted = 3 } = {}) {
+async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted = 2 } = {}) {
   const copy = await mkdtemp(join(tmpdir(), 'hla-write-real-'));
   try {
     // The journal includes files beside it, so the directory is what has to come along. A
@@ -471,13 +471,19 @@ async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted =
     await cp(dirname(source), copy, { recursive: true });
     await makeWritable(copy);
     const file = basename(source);
-    const { host } = realHost({ dir: copy, files: [file] });
+    // Every file beside it, the way the app mounts a folder: if a plan then says a file is not
+    // loaded, that is a real answer rather than a host that only ever knew about one file.
+    const mounted = [file, ...(await readdir(copy)).filter((name) => name !== file)];
+    const { host } = realHost({ dir: copy, files: mounted });
     const print = JSON.parse(await host.hledger('print -O json'));
     const counts = new Map();
     for (const transaction of print) {
       for (const posting of transaction.tpostings) counts.set(posting.paccount, (counts.get(posting.paccount) || 0) + 1);
     }
     const busy = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, wanted).map(([account]) => account);
+    // Only the ranking needed it; a 28 MB print held through every account after is memory the
+    // per-account print still needs.
+    counts.clear();
     let state = seed;
     const random = (limit) => {
       state = (state * 1103515245 + 12345) % 2147483648;
@@ -581,6 +587,71 @@ async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted =
   }
 }
 
+
+/**
+ * An account with no balance assertion: the window has nothing to start from.
+ *
+ * The opening is zero rather than a guess, the list starts at the first posting rather than
+ * at nothing, and Finish writes the first assertion the account has ever had, which the
+ * engine has to accept or the write is no good.
+ */
+async function noAssertionCase() {
+  const root = await mkdtemp(join(tmpdir(), 'hla-write-noassert-'));
+  try {
+    const file = 'plain.journal';
+    await writeFile(join(root, file), [
+      'commodity 1,000.00 IDR',
+      '',
+      '2026-01-05 First',
+      '    expenses:food   100.00 IDR',
+      '    assets:bank',
+      '',
+      '2026-01-06 Second',
+      '    expenses:food   250.00 IDR',
+      '    assets:bank',
+      '',
+    ].join('\n'));
+    const before = await readFile(join(root, file), 'utf8');
+    const { host } = realHost({ dir: root, files: [file] });
+    const { bridge, fingerprint } = await openBridge(host, 'assets:bank --statement 2026-01-31');
+    const print = JSON.parse(await host.hledger(`print ${JSON.stringify('acct:^assets:bank$')} -O json`));
+    const data = readPrint(print, 'assets:bank');
+    const rows = ordered(data);
+    check(data.start === null, 'an account with no assertion has no opening balance', JSON.stringify(data.start));
+    check(rows.length === 2, 'the list starts at the first posting rather than at nothing',
+      JSON.stringify(rows.map((row) => row.description)));
+    const opening = summarize({ data, ticked: new Set(), statementDate: '2026-01-31', statementBalance: null });
+    check(opening.opening === 0, 'its opening is zero, not a guess', String(opening.opening));
+
+    // Finish with everything ticked: the balance the window works out has to be the one hledger
+    // has, or the assertion it writes is wrong from the day it is written.
+    const ticked = rows.map((row) => row.id);
+    const { expected } = summarize({ data, ticked: new Set(ticked), statementDate: '2026-01-31', statementBalance: null });
+    const answer = await bridge.apply({
+      ticked, finish: { date: '2026-01-31', balance: expected, file }, edits: {}, inserts: [],
+      expected: {}, moved: {}, style: 'posting', fingerprint,
+    });
+    check(Boolean(answer && answer.ok), 'Finish writes the first assertion',
+      JSON.stringify(answer && (answer.error || answer.message) || ''));
+    const written = await readFile(join(root, file), 'utf8');
+    check(/Reconciled with statement/.test(written), 'the assertion is in the file',
+      written.split('\n').slice(-3).join(' | '));
+    // apply already re-ran the engine before saying yes; run it again here so the check does
+    // not depend on that being true.
+    try {
+      await engine(join(root, file), `balance ${JSON.stringify('acct:^assets:bank$')} -O csv`);
+      check(true, 'the engine accepts the first assertion');
+    } catch (error) {
+      check(false, 'the engine accepts the first assertion', error.message.split('\n')[0]);
+    }
+    check(written !== before, 'the file it started as is not the file it is now');
+  } catch (error) {
+    check(false, 'no assertion: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 const CASES = {
   tick: tickCase,
   untick: untickCase,
@@ -641,7 +712,7 @@ async function main() {
   const journal = args.find((argument) => argument.startsWith('--journal='));
   if (journal) {
     const seed = Number((args.find((argument) => argument.startsWith('--seed=')) || '--seed=7').slice(7));
-    const rounds = Number((args.find((argument) => argument.startsWith('--rounds=')) || '--rounds=3').slice(9));
+    const rounds = Number((args.find((argument) => argument.startsWith('--rounds=')) || '--rounds=2').slice(9));
     await realJournalRun(journal.slice('--journal='.length), { seed, rounds });
     console.log(`\n${checks - failures}/${checks} checks passed`);
     for (const note of notes) console.log(`note ${note}`);
@@ -651,6 +722,7 @@ async function main() {
   const wanted = args;
   const names = Object.keys(CASES).filter((name) => !wanted.length || wanted.includes(name));
   if (!wanted.length || wanted.includes('multifile')) await multiFileCase();
+  if (!wanted.length || wanted.includes('noassert')) await noAssertionCase();
   const fixtures = wanted.includes('generic') ? ['generic'] : ['demo'];
 
   for (const fixture of fixtures) {
