@@ -248,8 +248,10 @@ Two quiet options sit above the bar, and both are remembered:
   first line where they part is found. Lines that match are asserted when you save. Off,
   nothing typed there is written.
 
-Each line says whether it is cleared, so there is no column for it: a ticked line is
-tinted and says so in a small word. `e` edits a transaction as journal text (empty deletes
+There is no column for whether a line is cleared: a ticked line is tinted, and its state
+is in the line's name for a screen reader rather than in a word on it. Pending and not
+counted do carry small words, because a colour cannot say those. `e` edits a transaction
+as journal text (empty deletes
 it), `n` adds a new one at the end, and `i` adds one after the line with the cursor. To
 change a date, click it and edit it in place (`d` on the focused line), or step to a
 neighbouring day with Alt+Up or Alt+Down. A date is never set before the asserted balance,
