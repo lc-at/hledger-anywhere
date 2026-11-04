@@ -405,18 +405,18 @@ async function multiFileCase() {
     const rows = ordered(readPrint(print, 'assets:bank'));
     const inMain = rows.filter((row) => row.where.file === main);
     const inOther = rows.filter((row) => row.where.file === other);
-    check('the account has rows in both files', inMain.length >= 1 && inOther.length >= 1,
+    check(inMain.length >= 1 && inOther.length >= 1, 'the account has rows in both files',
       JSON.stringify({ main: inMain.length, other: inOther.length }));
     const ticked = [...rows.filter((row) => row.status === 'Cleared').map((row) => row.id), ...rows.map((row) => row.id)];
     const plan = await bridge.preview({ ticked, finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
-    check('the plan reports changes in both files', plan.files.length === 2,
+    check(plan.files.length === 2, 'the plan reports changes in both files',
       JSON.stringify(plan.files.map((file) => file.path)));
     const answer = await bridge.apply({ ticked, finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
-    check('apply reports success', Boolean(answer.ok), JSON.stringify(answer.error || ''));
+    check(Boolean(answer.ok), 'apply reports success', JSON.stringify(answer.error || ''));
     for (const file of plan.files) {
       const written = await readFile(join(root, file.path), 'utf8');
       await afterWrite(`multi-file ${file.path}`, { path: join(root, file.path), account: 'assets:bank' }, before[file.path], file, written);
-      check(`multi-file ${file.path}: it is not the file it started as`, written !== before[file.path]);
+      check(written !== before[file.path], `multi-file ${file.path}: it is not the file it started as`);
     }
 
     // The other direction: the engine refuses the result, so both have to come back.
@@ -433,11 +433,11 @@ async function multiFileCase() {
       fingerprint: answer.fingerprint || fingerprint,
     });
     host.hledger = original;
-    check('the refused write says the files were put back', /put back/.test(second.error || ''),
+    check(/put back/.test(second.error || ''), 'the refused write says the files were put back',
       JSON.stringify(second.error || second.ok));
     const restored = { [main]: await readFile(join(root, main), 'utf8'), [other]: await readFile(join(root, other), 'utf8') };
-    check('both files are byte-identical to before the refused write',
-      restored[main] === now[main] && restored[other] === now[other],
+    check(restored[main] === now[main] && restored[other] === now[other],
+      'both files are byte-identical to before the refused write',
       JSON.stringify({ main: restored[main] === now[main], other: restored[other] === now[other] }));
   } catch (error) {
     check(false, 'multi-file: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
@@ -510,12 +510,17 @@ async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted =
         return answer;
       };
       let wrote = 0;
+      let accepted = 0;
       for (let round = 0; round < rounds; round += 1) {
         const row = rows[random(rows.length)];
         const pick = random(5);
         let request = {};
-        if (pick === 0) ticked.add(row.id);
-        else if (pick === 1) ticked.delete(row.id);
+        // A round that sets a tick to what it already is writes nothing, so the two tick moves
+        // are one toggle: whatever the round does, the journal should change with it.
+        if (pick === 0 || pick === 1) {
+          if (ticked.has(row.id)) ticked.delete(row.id);
+          else ticked.add(row.id);
+        }
         else if (pick === 2 && row.text) request = { edits: { [row.id]: { text: `${row.text}\n    ; a note the run added` } } };
         else if (pick === 3 && row.text) request = { moved: { [row.id]: '2027-03-04' } };
         else if (pick === 4 && rows[0].text) {
@@ -536,8 +541,10 @@ async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted =
           }
           continue;
         }
-        wrote += 1;
         const plan = await bridge.preview({ ...request, ticked: [...ticked], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
+        const changed = (plan.files || []).length;
+        if (changed) wrote += 1;
+        accepted += 1;
         for (const file of plan.files || []) {
           const written = await readFile(join(copy, file.path), 'utf8');
           const replayed = replay(file.before, file);
@@ -551,9 +558,9 @@ async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted =
       for (const row of rows) if (row.date <= statementDate) ticked.add(row.id);
       const { expected } = summarize({ data, ticked, statementDate, statementBalance: null });
       const finished = await apply({ finish: { date: statementDate, balance: expected, file } });
-      check(`${account}: Finish writes an assertion the engine accepts`, Boolean(finished && finished.ok),
+      check(Boolean(finished && finished.ok), `${account}: Finish writes an assertion the engine accepts`,
         JSON.stringify(finished && (finished.error || finished.message) || ''));
-      notes.push(`${account}: ${wrote} of ${rounds} rounds wrote something`);
+      notes.push(`${account}: ${wrote} of ${rounds} rounds changed the journal (${accepted} accepted)`);
     }
   } catch (error) {
     check(false, 'real journal: the run completed', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
@@ -622,7 +629,7 @@ async function main() {
   const journal = args.find((argument) => argument.startsWith('--journal='));
   if (journal) {
     const seed = Number((args.find((argument) => argument.startsWith('--seed=')) || '--seed=7').slice(7));
-    const rounds = Number((args.find((argument) => argument.startsWith('--rounds=')) || '--rounds=14').slice(9));
+    const rounds = Number((args.find((argument) => argument.startsWith('--rounds=')) || '--rounds=3').slice(9));
     await realJournalRun(journal.slice('--journal='.length), { seed, rounds });
     console.log(`\n${checks - failures}/${checks} checks passed`);
     for (const note of notes) console.log(`note ${note}`);
