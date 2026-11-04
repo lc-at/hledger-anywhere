@@ -16,7 +16,7 @@
 // Usage: node scripts/check-reconcile-write.mjs [case ...]
 // Cases: tick untick tickall edit delete insert move linebyline finish rollback
 
-import { mkdtemp, mkdir, readFile, rm, writeFile, copyFile } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -34,6 +34,7 @@ const ENGINE = join(HERE, 'hledger-wasm.mjs');
 
 let checks = 0;
 let failures = 0;
+const notes = [];
 const check = (ok, label, detail = '') => {
   checks += 1;
   if (ok) console.log(`ok   ${label}`);
@@ -62,8 +63,9 @@ async function engine(journal, command) {
  * as the WASI root) and the plugin strips the leading slash off what it reads, so the paths
  * handed to the plugin are basenames, mapped back to the copy on disk.
  */
-function realHost({ dir, file, writable = true }) {
-  const path = join(dir, file);
+function realHost({ dir, file, files: many = null, writable = true }) {
+  const names = many || [file];
+  const path = join(dir, names[0]);
   const log = { said: [], saved: [] };
   let checks = 0;
   const host = {
@@ -72,21 +74,21 @@ function realHost({ dir, file, writable = true }) {
     say: (text) => log.said.push(text),
     setting: () => null,
     remember: () => {},
-    files: () => [{ path: file, writable, main: true }],
+    files: () => names.map((name, at) => ({ path: name, writable, main: at === 0 })),
     window: () => ({ write: (html) => { host.page = html; }, close() {} }),
     // Synchronous, like the app's: the plan is worked out in one turn, so `read` has to
     // answer with the text itself rather than a promise of it.
     read(name) {
-      if (name !== file) return null;
+      if (!names.includes(name)) return null;
       try {
-        return readFileSync(path, 'utf8');
+        return readFileSync(join(dir, name), 'utf8');
       } catch {
         return null;
       }
     },
     async save(name, text) {
-      if (name !== file) return { error: `${name} is not this journal` };
-      await writeFile(path, text);
+      if (!names.includes(name)) return { error: `${name} is not this journal` };
+      await writeFile(join(dir, name), text);
       log.saved.push(name);
       return { ok: true };
     },
@@ -358,6 +360,208 @@ async function rollbackCase(ctx) {
   check(after === before, 'rollback: the file is byte-identical to before', firstDifference(before, after));
 }
 
+
+/**
+ * An account spread over two files, and a rollback that has to put both of them back.
+ *
+ * One file includes the other, so the engine reads them together and the window sees rows in
+ * both. Every write has to land in the file the row is actually in, and when the re-check
+ * refuses, both files have to come back byte for byte.
+ */
+async function multiFileCase() {
+  const root = await mkdtemp(join(tmpdir(), 'hla-write-multifile-'));
+  try {
+    const main = 'main.journal';
+    const other = 'other.journal';
+    await writeFile(join(root, main), [
+      '; one account, two files',
+      'include other.journal',
+      '',
+      'commodity 1,000.00 IDR',
+      '',
+      '2026-01-01 Opening',
+      '    assets:bank   1000.00 IDR = 1000.00 IDR',
+      '    equity:opening',
+      '',
+      '2026-01-05 In main',
+      '    expenses:food  100.00 IDR',
+      '    assets:bank',
+      '',
+    ].join('\n'));
+    await writeFile(join(root, other), [
+      '2026-01-06 In other, one',
+      '    expenses:food  200.00 IDR',
+      '    assets:bank',
+      '',
+      '2026-01-07 In other, two',
+      '    expenses:food  300.00 IDR',
+      '    assets:bank',
+      '',
+    ].join('\n'));
+    const before = { [main]: await readFile(join(root, main), 'utf8'), [other]: await readFile(join(root, other), 'utf8') };
+    const { host } = realHost({ dir: root, files: [main, other] });
+    const { bridge, fingerprint } = await openBridge(host, 'assets:bank --statement 2026-01-31');
+    const print = JSON.parse(await host.hledger(`print ${JSON.stringify('acct:^assets:bank$')} -O json`));
+    const rows = ordered(readPrint(print, 'assets:bank'));
+    const inMain = rows.filter((row) => row.where.file === main);
+    const inOther = rows.filter((row) => row.where.file === other);
+    check('the account has rows in both files', inMain.length >= 1 && inOther.length >= 1,
+      JSON.stringify({ main: inMain.length, other: inOther.length }));
+    const ticked = [...rows.filter((row) => row.status === 'Cleared').map((row) => row.id), ...rows.map((row) => row.id)];
+    const plan = await bridge.preview({ ticked, finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
+    check('the plan reports changes in both files', plan.files.length === 2,
+      JSON.stringify(plan.files.map((file) => file.path)));
+    const answer = await bridge.apply({ ticked, finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
+    check('apply reports success', Boolean(answer.ok), JSON.stringify(answer.error || ''));
+    for (const file of plan.files) {
+      const written = await readFile(join(root, file.path), 'utf8');
+      await afterWrite(`multi-file ${file.path}`, { path: join(root, file.path), account: 'assets:bank' }, before[file.path], file, written);
+      check(`multi-file ${file.path}: it is not the file it started as`, written !== before[file.path]);
+    }
+
+    // The other direction: the engine refuses the result, so both have to come back.
+    const now = { [main]: await readFile(join(root, main), 'utf8'), [other]: await readFile(join(root, other), 'utf8') };
+    let balanceRuns = 0;
+    const original = host.hledger.bind(host);
+    host.hledger = async (command) => {
+      if (command.startsWith('balance')) balanceRuns += 1;
+      if (balanceRuns === 2) throw new Error('Balance assertion failed in the account being reconciled');
+      return original(command);
+    };
+    const second = await bridge.apply({
+      ticked: [], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting',
+      fingerprint: answer.fingerprint || fingerprint,
+    });
+    host.hledger = original;
+    check('the refused write says the files were put back', /put back/.test(second.error || ''),
+      JSON.stringify(second.error || second.ok));
+    const restored = { [main]: await readFile(join(root, main), 'utf8'), [other]: await readFile(join(root, other), 'utf8') };
+    check('both files are byte-identical to before the refused write',
+      restored[main] === now[main] && restored[other] === now[other],
+      JSON.stringify({ main: restored[main] === now[main], other: restored[other] === now[other] }));
+  } catch (error) {
+    check(false, 'multi-file: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** Make every file in a copied tree writable, leaving the source alone. */
+async function makeWritable(dir) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) await makeWritable(path);
+    else await chmod(path, 0o644);
+  }
+}
+
+/**
+ * A deterministic run of random edits against a copy of a real journal.
+ *
+ * The path comes from the command line and the copy is thrown away afterwards, so nothing of
+ * the journal it pointed at is kept, printed or committed: only the option that takes a path
+ * is. The seed is fixed, so a failure is the same failure next time.
+ */
+async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted = 3 } = {}) {
+  const copy = await mkdtemp(join(tmpdir(), 'hla-write-real-'));
+  try {
+    // The journal includes files beside it, so the directory is what has to come along. A
+    // read-only source stays read-only in the copy, so every file in it is made writable: the
+    // whole point is to write to the copy and never to the original.
+    await cp(dirname(source), copy, { recursive: true });
+    await makeWritable(copy);
+    const file = basename(source);
+    const { host } = realHost({ dir: copy, files: [file] });
+    const print = JSON.parse(await host.hledger('print -O json'));
+    const counts = new Map();
+    for (const transaction of print) {
+      for (const posting of transaction.tpostings) counts.set(posting.paccount, (counts.get(posting.paccount) || 0) + 1);
+    }
+    const busy = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, wanted).map(([account]) => account);
+    let state = seed;
+    const random = (limit) => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return limit <= 0 ? 0 : state % limit;
+    };
+    const literal = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    for (const account of busy) {
+      const data = readPrint(print, account);
+      if (!data || !data.rows.length) {
+        notes.push(`${account}: no rows to reconcile, skipped`);
+        continue;
+      }
+      let bridge;
+      let fingerprint;
+      try {
+        ({ bridge, fingerprint } = await openBridge(host, `"${account}" --statement 2030-01-01`));
+      } catch (error) {
+        notes.push(`${account}: the window would not open (${String(error).slice(0, 90)}), skipped`);
+        continue;
+      }
+      const rows = ordered(data);
+      const ticked = new Set(rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+      const apply = async (over) => {
+        const answer = await bridge.apply({ ...over, ticked: [...ticked], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
+        if (answer && answer.fingerprint) fingerprint = answer.fingerprint;
+        if (answer && answer.ok && answer.data) {
+          for (const row of answer.data.rows) if (row.status === 'Cleared') ticked.add(row.id);
+        }
+        return answer;
+      };
+      let wrote = 0;
+      for (let round = 0; round < rounds; round += 1) {
+        const row = rows[random(rows.length)];
+        const pick = random(5);
+        let request = {};
+        if (pick === 0) ticked.add(row.id);
+        else if (pick === 1) ticked.delete(row.id);
+        else if (pick === 2 && row.text) request = { edits: { [row.id]: { text: `${row.text}\n    ; a note the run added` } } };
+        else if (pick === 3 && row.text) request = { moved: { [row.id]: '2027-03-04' } };
+        else if (pick === 4 && rows[0].text) {
+          // An assertion copied to a later date would fail on its own arithmetic, and the run
+          // must not manufacture that and then blame the write path for it.
+          const seed = rows[0].text.replace(/^\d{4}-\d{2}-\d{2}/, '2027-03-05').replace(/ = [^\n]*/g, '');
+          request = { inserts: [{ id: `new:${round}`, text: seed, after: row.id }] };
+        }
+        const answer = await apply(request);
+        if (!answer || !answer.ok) {
+          const error = (answer && answer.error) || '';
+          // The engine refusing the result is the signal worth having: a write happened and had
+          // to be undone. A fingerprint refusal is the journal changing under the window, which
+          // is the guard working.
+          check(!/put back/.test(error), `${account}: round ${round} needed no rollback`, error.slice(0, 160));
+          if (error && !/changed since this window was drawn/.test(error)) {
+            notes.push(`${account}: round ${round} refused: ${error.slice(0, 110)}`);
+          }
+          continue;
+        }
+        wrote += 1;
+        const plan = await bridge.preview({ ...request, ticked: [...ticked], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint });
+        for (const file of plan.files || []) {
+          const written = await readFile(join(copy, file.path), 'utf8');
+          const replayed = replay(file.before, file);
+          check(replayed === written, `${account}: the preview describes ${file.path} exactly`,
+            replayed === written ? '' : firstDifference(replayed, written));
+        }
+      }
+      // Finish last: tick everything up to the statement date and assert, which is only
+      // correct if the running total the window worked out is the one hledger has.
+      const statementDate = '2030-01-01';
+      for (const row of rows) if (row.date <= statementDate) ticked.add(row.id);
+      const { expected } = summarize({ data, ticked, statementDate, statementBalance: null });
+      const finished = await apply({ finish: { date: statementDate, balance: expected, file } });
+      check(`${account}: Finish writes an assertion the engine accepts`, Boolean(finished && finished.ok),
+        JSON.stringify(finished && (finished.error || finished.message) || ''));
+      notes.push(`${account}: ${wrote} of ${rounds} rounds wrote something`);
+    }
+  } catch (error) {
+    check(false, 'real journal: the run completed', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await rm(copy, { recursive: true, force: true });
+  }
+}
+
 const CASES = {
   tick: tickCase,
   untick: untickCase,
@@ -414,8 +618,20 @@ const FIXTURES = {
 };
 
 async function main() {
-  const wanted = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const journal = args.find((argument) => argument.startsWith('--journal='));
+  if (journal) {
+    const seed = Number((args.find((argument) => argument.startsWith('--seed=')) || '--seed=7').slice(7));
+    const rounds = Number((args.find((argument) => argument.startsWith('--rounds=')) || '--rounds=14').slice(9));
+    await realJournalRun(journal.slice('--journal='.length), { seed, rounds });
+    console.log(`\n${checks - failures}/${checks} checks passed`);
+    for (const note of notes) console.log(`note ${note}`);
+    if (failures) process.exitCode = 1;
+    return;
+  }
+  const wanted = args;
   const names = Object.keys(CASES).filter((name) => !wanted.length || wanted.includes(name));
+  if (!wanted.length || wanted.includes('multifile')) await multiFileCase();
   const fixtures = wanted.includes('generic') ? ['generic'] : ['demo'];
 
   for (const fixture of fixtures) {
