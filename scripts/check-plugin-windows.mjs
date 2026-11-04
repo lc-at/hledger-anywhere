@@ -219,6 +219,42 @@ function editorFor(writable, theme, { library = true } = {}) {
   });
 }
 
+/**
+ * A print with `count` postings to the account, built rather than run.
+ *
+ * The window renders from what the page is handed, so timing it does not need the engine; it
+ * needs the shape the engine would produce. The first transaction is an opening assertion so
+ * the arithmetic has somewhere to start.
+ */
+function syntheticPrint(count) {
+  const style = { ascommodityside: 'R', ascommodityspaced: true, asdecimalmark: '.', asprecision: 2 };
+  const amount = (minor) => [{ acommodity: 'IDR', aquantity: { decimalMantissa: minor, decimalPlaces: 2 }, astyle: style }];
+  const transactions = [{
+    tindex: 1, tdate: '2026-01-01', tdescription: 'Opening', tstatus: 'Unmarked',
+    tsourcepos: [{ sourceName: '/fixture.journal', sourceLine: 3 }, { sourceName: '/fixture.journal', sourceLine: 6 }],
+    tpostings: [
+      { paccount: 'Assets:Bank:Checking', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: amount(100000),
+        pbalanceassertion: { baamount: { acommodity: 'IDR', aquantity: { decimalMantissa: 100000, decimalPlaces: 2 }, astyle: style } } },
+      { paccount: 'Equity:Opening', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: amount(-100000), pbalanceassertion: null },
+    ],
+  }];
+  let line = 7;
+  for (let index = 0; index < count; index += 1) {
+    const day = String(1 + (index % 27)).padStart(2, '0');
+    const month = String(1 + (index % 12)).padStart(2, '0');
+    transactions.push({
+      tindex: index + 2, tdate: `2026-${month}-${day}`, tdescription: `Row ${index}`, tstatus: 'Unmarked',
+      tsourcepos: [{ sourceName: '/fixture.journal', sourceLine: line }, { sourceName: '/fixture.journal', sourceLine: line + 2 }],
+      tpostings: [
+        { paccount: 'Expenses:Food', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: amount(-(index + 1) * 100), pbalanceassertion: null },
+        { paccount: 'Assets:Bank:Checking', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: amount((index + 1) * 100), pbalanceassertion: null },
+      ],
+    });
+    line += 3;
+  }
+  return transactions;
+}
+
 // ------------------------------------------------------------------ a server and a browser
 
 function serve() {
@@ -236,8 +272,10 @@ function serve() {
       response.writeHead(200, { 'content-type': types['.html'] });
       const theme = url.searchParams.get('theme');
       response.end(reconcilePage({
-        data: url.searchParams.get('generic') ? RECONCILE_DATA_GENERIC
-          : url.searchParams.get('marked') ? RECONCILE_DATA_MARKED : RECONCILE_DATA,
+        data: url.searchParams.get('many')
+          ? readReconcile(syntheticPrint(Number(url.searchParams.get('many')) || 0), 'Assets:Bank:Checking')
+          : url.searchParams.get('generic') ? RECONCILE_DATA_GENERIC
+            : url.searchParams.get('marked') ? RECONCILE_DATA_MARKED : RECONCILE_DATA,
         colors: theme === 'dark' ? DARK : COLORS, token: 'check',
         files: [{ path: 'fixture.journal', writable: url.searchParams.get('writable') !== 'no' }],
         statementDate: '2026-09-30', statementBalance: url.searchParams.get('balance') || '', fingerprint: 'before',
@@ -1387,6 +1425,83 @@ async function reconcileDateEditing(tab) {
   check('after a line moves to another day and re-sorts, focus stays on that line',
     editorOpened === true && Boolean(focusTarget) && focusTarget === afterMove && nowAt > 0,
     JSON.stringify({ focusTarget, afterMove, nowAt, editorOpened }));
+
+  // Tick all does not touch `touched`, so the question is whether a line can vanish after it:
+  // a line in the cleared-at-open set that is on screen got there by being touched already, and
+  // one that is not in that set is never hidden. Showing them, unticking one and ticking all
+  // has to leave every line where it was.
+  await tab.show('reconcile', 'dark');
+  const countBefore = await tab.eval("document.querySelectorAll('#rows tr[data-id]').length");
+  const revealed = await tab.eval(`(() => {
+    const toggle = document.querySelector('[data-toggle-hidden]');
+    if (toggle) toggle.click();
+    return document.querySelectorAll('#rows tr[data-id]').length;
+  })()`);
+  await tab.eval("(() => { const row = document.querySelector('#rows tr.on'); if (row) row.click(); return true; })()");
+  await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  const countAfter = await tab.eval("document.querySelectorAll('#rows tr[data-id]').length");
+  check('ticking every line leaves every line in view, none disappearing',
+    countAfter >= revealed && revealed >= countBefore,
+    JSON.stringify({ countBefore, revealed, countAfter }));
+
+  // Keys belong to a line only while a line has focus: a space in the search box is that box's
+  // space, and a space in the date editor is the editor's.
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.getElementById('search').focus()");
+  const tickedBefore = await tab.eval("document.querySelectorAll('#rows tr.on').length");
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  const searchState = await tab.eval(`JSON.stringify({
+    value: document.getElementById('search').value,
+    on: document.querySelectorAll('#rows tr.on').length,
+  })`);
+  check('a space typed in the search box is a space, and ticks nothing',
+    JSON.parse(searchState).value === ' ' && JSON.parse(searchState).on === tickedBefore, searchState);
+
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
+  const beforeSpace = await tab.eval("document.querySelectorAll('#rows tr.on').length");
+  await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  const editorState = await tab.eval(`JSON.stringify({
+    editor: Boolean(document.querySelector('.date-input')),
+    on: document.querySelectorAll('#rows tr.on').length,
+  })`);
+  check('a space in the date editor stays in the editor, and ticks nothing',
+    JSON.parse(editorState).editor && JSON.parse(editorState).on === beforeSpace, editorState);
+
+  // After a save there is no editor left standing: the row it was open on was re-read with the
+  // rest of the list, and nothing keeps an input on a line that has already been written.
+  await tab.show('reconcile', 'dark');
+  await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
+  const editing = await tab.eval("Boolean(document.querySelector('.date-input'))");
+  await tab.key('Escape', { code: 'Escape', keyCode: 27 });
+  await tab.eval("document.querySelector('#rows tr[data-id]').click()");
+  await tab.eval("document.getElementById('progress').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  await tab.eval("document.getElementById('apply').click()");
+  await tab.until("document.getElementById('status').textContent.indexOf('saved') >= 0 || document.getElementById('preview').hidden");
+  const afterSave = await tab.eval(`JSON.stringify({
+    editors: document.querySelectorAll('.date-input').length,
+    rows: document.querySelectorAll('#rows tr[data-id]').length,
+  })`);
+  check('a save leaves the list re-read with no editor standing',
+    editing && JSON.parse(afterSave).editors === 0 && JSON.parse(afterSave).rows > 0, afterSave);
+
+  // Two thousand postings: what the redesign has to survive is the redraw, not the first paint,
+  // so the tick-everything path is timed inside the page, where navigation is not counted.
+  await tab.show('reconcile', 'dark', '&many=2000');
+  const many = await tab.eval(`(() => {
+    const rows = document.querySelectorAll('#rows tr[data-id]');
+    const start = performance.now();
+    document.getElementById('all').click();
+    const took = performance.now() - start;
+    return JSON.stringify({ rows: rows.length, took: Math.round(took), ticked: document.querySelectorAll('#rows tr.on').length });
+  })()`);
+  const manyState = JSON.parse(many);
+  check('two thousand postings draw, and tick every one of them, within a moment',
+    // The statement date is 2026-09-30 and the rows run to December, so ticking every line up
+    // to that date has to stop short of all two thousand: both halves of the rule matter.
+    manyState.rows === 2000 && manyState.took < 1500
+      && manyState.ticked >= 1500 && manyState.ticked < 2000, many);
 
   // An editor left open over a ticked row is how a date looked like it had disappeared, so a
   // click away from it closes it and does nothing else: one click, one thing.
