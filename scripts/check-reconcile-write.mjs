@@ -486,7 +486,11 @@ async function realJournalRun(source, { seed = 7, rounds = 3, accounts: wanted =
     const literal = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     for (const account of busy) {
-      const data = readPrint(print, account);
+      // The plugin reads one account's print, and hledger numbers transactions from one in
+      // whatever it prints: tindex in a whole-journal print is not the tindex the window's
+      // rows carry, so ids taken from the whole print point at nothing. Read what it reads.
+      const own = JSON.parse(await host.hledger(`print ${JSON.stringify('acct:^' + literal(account) + '$')} -O json`));
+      const data = readPrint(own, account);
       if (!data || !data.rows.length) {
         notes.push(`${account}: no rows to reconcile, skipped`);
         continue;
