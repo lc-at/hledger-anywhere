@@ -311,6 +311,7 @@ impl Registry {
 }
 
 pub mod loader;
+pub mod refresh;
 
 #[cfg(test)]
 mod tests {

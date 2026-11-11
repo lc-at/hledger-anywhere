@@ -116,6 +116,7 @@ promise, is reported as the plugin failing.
 | `host.files()` | The loaded files, as an array of `{path, writable, main}`. `writable` is true only for files that came from an `open`ed folder; `main` marks the journal hledger reads. |
 | `host.read(path)` | One loaded file's contents, or `null`. Answers with the text itself, not a promise: the plan is worked out synchronously. |
 | `host.save(path, contents)` | Writes a file back to the folder an `open` granted. Resolves with `{ok: true}` or `{error: "..."}`, and never rejects. Refuses if the file changed on disk since it was opened. |
+| `host.refresh()` | Reads the `open`ed folder again, for files another program (an editor, say) changed. Resolves with `{changed: [...], missing: [...]}`, the paths taken in afresh and the paths that could no longer be read, plus `error` if the browser refused something, and never rejects. A changed file is what `host.read` returns from then on, hledger reads it, and `host.save` writes over it without refusing. A missing file is left as it was. With no folder open it changes nothing and both lists are empty. |
 
 `host.hledger` accepts anything the command line accepts, and is bound by the same rules:
 `add` and `import` are refused, and `-o` may not write over a loaded file. A command that

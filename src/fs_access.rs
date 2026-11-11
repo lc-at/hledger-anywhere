@@ -25,6 +25,7 @@ use web_sys::{
     FileSystemPermissionMode, FileSystemWritableFileStream, WritableStream,
 };
 
+use crate::plugins::refresh::{self, Stat};
 use crate::upload::{self, PickError, Picked};
 
 /// How deep a directory walk may go. A journal tree is shallow; this exists so a
@@ -157,6 +158,62 @@ pub async fn stat(handle: &FileSystemFileHandle) -> Result<(u64, f64), String> {
         .dyn_into()
         .map_err(|_| "the file could not be read back".to_string())?;
     Ok((file.size() as u64, file.last_modified()))
+}
+
+/// What reading one mounted file again found. See [`reread`].
+pub enum Reread {
+    /// Same size and modification time as `known`.
+    Unchanged,
+    /// Moved on disk, and admitted again: the new text and the stat it was read at.
+    Changed { contents: String, file: FileRef },
+    /// Deleted, renamed away, or no longer admissible as text.
+    Missing,
+    /// The browser refused for another reason, such as a withdrawn permission.
+    Failed(String),
+}
+
+/// Stat a mounted file and, if it moved since `known`, read it again.
+///
+/// The text is admitted by the same rules a first read uses, and the returned
+/// [`FileRef`] carries the stat of the very `File` the text came from, so a save made
+/// after this compares against what was actually read.
+pub async fn reread(known: &FileRef) -> Reread {
+    let file: File = match JsFuture::from(known.handle.get_file()).await {
+        Ok(value) => match value.dyn_into() {
+            Ok(file) => file,
+            Err(_) => return Reread::Missing,
+        },
+        Err(error) if named(&error, "NotFoundError") || named(&error, "TypeMismatchError") => {
+            return Reread::Missing;
+        }
+        Err(error) => return Reread::Failed(describe(&error)),
+    };
+    let on_disk = Stat {
+        size: file.size() as u64,
+        last_modified: file.last_modified(),
+    };
+    let was = Stat {
+        size: known.size,
+        last_modified: known.last_modified,
+    };
+    if !refresh::differs(was, on_disk) {
+        return Reread::Unchanged;
+    }
+    if upload::admit_size(file.size()).is_some() {
+        return Reread::Missing;
+    }
+    let contents = upload::read_text(&file).await;
+    if upload::admit_text(&contents).is_some() {
+        return Reread::Missing;
+    }
+    Reread::Changed {
+        contents: contents.expect("admitted"),
+        file: FileRef {
+            handle: known.handle.clone(),
+            size: on_disk.size,
+            last_modified: on_disk.last_modified,
+        },
+    }
 }
 
 /// Write `contents` over `path`'s file, refusing if it changed on disk since read.
@@ -328,10 +385,15 @@ async fn admit_one(
 
 /// A `DOMException` name, if the value is one.
 fn aborted(error: &JsValue) -> bool {
+    named(error, "AbortError")
+}
+
+/// Whether the value is a `DOMException` (or any error) with this `name`.
+fn named(error: &JsValue, expected: &str) -> bool {
     Reflect::get(error, &JsValue::from_str("name"))
         .ok()
         .and_then(|name| name.as_string())
-        .is_some_and(|name| name == "AbortError")
+        .is_some_and(|name| name == expected)
 }
 
 /// The best available description of a `JsValue`.

@@ -25,8 +25,9 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{FileSystemDirectoryHandle, HtmlElement};
 
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
-use crate::fs_access::{self, Opened};
+use crate::fs_access::{self, Opened, Reread};
 use crate::journal;
+use crate::plugins::refresh::{self, Outcome, Report, Stat};
 use crate::plugins::{self, Registry};
 use crate::settings::{Alias, Settings};
 use crate::theme::Theme;
@@ -1567,6 +1568,34 @@ impl App {
         let _ = Reflect::set(&host, &"save".into(), save.as_ref().unchecked_ref());
         save.forget();
 
+        // refresh(): read the open folder again, for files an outside editor changed.
+        // Resolves with `{changed: [...], missing: [...]}` (and `error` when the browser
+        // refused something) and never rejects, like `save`.
+        let app = Rc::clone(self);
+        let refresh = Closure::<dyn FnMut() -> Promise>::new(move || {
+            let app = Rc::clone(&app);
+            Promise::new(&mut move |resolve, _reject| {
+                let app = Rc::clone(&app);
+                spawn_local(async move {
+                    let report = app.host_refresh().await;
+                    let answer = Object::new();
+                    for (key, paths) in [("changed", &report.changed), ("missing", &report.missing)] {
+                        let array = js_sys::Array::new();
+                        for path in paths {
+                            array.push(&JsValue::from_str(path));
+                        }
+                        let _ = Reflect::set(&answer, &JsValue::from_str(key), &array);
+                    }
+                    if let Some(error) = &report.error {
+                        let _ = Reflect::set(&answer, &"error".into(), &JsValue::from_str(error));
+                    }
+                    let _ = resolve.call1(&JsValue::NULL, &answer);
+                });
+            })
+        });
+        let _ = Reflect::set(&host, &"refresh".into(), refresh.as_ref().unchecked_ref());
+        refresh.forget();
+
         // window(title), and the plugin's own name, are added by the loader in
         // JavaScript: a pop-up has to be opened by the browser, before the plugin awaits.
         let host: JsValue = host.into();
@@ -1635,6 +1664,67 @@ impl App {
         self.remember();
         self.configure();
         Ok(())
+    }
+
+    /// Read the open folder again, taking in every file that moved on disk.
+    ///
+    /// A changed file replaces its copy in memory and its remembered stat, so the next
+    /// `host.save` of it compares against what was just read rather than refusing. A
+    /// file that cannot be read is left as it was. With no folder open there is
+    /// nothing to read, and the report is empty.
+    async fn host_refresh(self: &Rc<App>) -> Report {
+        let known: Vec<(String, fs_access::FileRef)> = match self.writable.borrow().as_ref() {
+            Some(opened) => opened
+                .files
+                .iter()
+                .map(|(path, file)| (path.clone(), file.clone()))
+                .collect(),
+            None => return Report::default(),
+        };
+
+        let mut report = Report::default();
+        for (path, known) in known {
+            let outcome = match fs_access::reread(&known).await {
+                Reread::Unchanged => Outcome::Unchanged,
+                Reread::Missing => Outcome::Missing,
+                Reread::Failed(reason) => Outcome::Failed(reason),
+                Reread::Changed { contents, file } => {
+                    // Taken in only if nothing moved this file while it was being
+                    // read: a save, another refresh, or a new `open` that finished
+                    // first has the newer word on it.
+                    let current = {
+                        let mut writable = self.writable.borrow_mut();
+                        match writable
+                            .as_mut()
+                            .and_then(|opened| opened.files.get_mut(&path))
+                        {
+                            Some(entry) if !refresh::differs(stat_of(entry), stat_of(&known)) => {
+                                *entry = file;
+                                true
+                            }
+                            _ => false,
+                        }
+                    };
+                    if !current {
+                        continue;
+                    }
+                    let mut files = self.files.borrow_mut();
+                    files.retain(|loaded| loaded.path != path);
+                    files.push(JournalFile::new(&path, contents));
+                    files.sort_by(|left, right| left.path.cmp(&right.path));
+                    Outcome::Changed
+                }
+            };
+            report.record(&path, outcome);
+        }
+
+        if report.any_changed() {
+            // The account names were read from the text just replaced.
+            *self.accounts.borrow_mut() = None;
+            self.remember();
+            self.configure();
+        }
+        report
     }
 
     /// Run an hledger command for a plugin, under the same rules as the command line.
@@ -2607,6 +2697,14 @@ impl App {
             let _ = store.save_files(&files).await;
             let _ = store.save_session(&session).await;
         });
+    }
+}
+
+/// A mounted file's remembered stat, in the form [`refresh::differs`] compares.
+fn stat_of(file: &fs_access::FileRef) -> Stat {
+    Stat {
+        size: file.size,
+        last_modified: file.last_modified,
     }
 }
 
