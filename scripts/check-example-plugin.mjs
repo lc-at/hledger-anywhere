@@ -47,7 +47,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, fillCommodity, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, fillCommodity, markConflicts, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -1085,12 +1085,14 @@ const TREE_MONTHS = [
     const both = output(plan({ data: unmarked, texts: plainTexts, ticked: new Set(split.map((row) => row.id)), finish: null, style: 'transaction' }));
     check('a transaction with two postings to this account takes one mark, on its own line',
       both.changes.length === 1 && both.changes[0].after === '2026-09-05 * Split', JSON.stringify(both.changes));
-    // Un-ticking a cleared transaction marks it pending, which is hledger's honest "not cleared".
+    // Un-ticking a cleared transaction takes the mark off its line: not cleared is unmarked, and
+    // pending would be a word the person never said. The pending posting stays pending.
     const cleared = readPrint(RECONCILE_PRINT.map((transaction) => ({ ...transaction, tstatus: 'Cleared' })), 'Assets:Bank:Checking');
-    const off = output(plan({ data: cleared, texts, ticked: new Set(), finish: null, style: 'transaction' }));
-    check('un-ticking a cleared transaction marks the transaction pending, and every other one too',
-      off.changes.length === 4 && off.changes[0].after === '2026-09-01 ! Coffee'
-      && off.changes.every((change) => / ! /.test(change.after)), JSON.stringify(off.changes));
+    const markedTexts = { 'fixture.journal': RECONCILE_JOURNAL.replace(/^(2026-\d\d-\d\d) /gm, '$1 * ') };
+    const off = output(plan({ data: cleared, texts: markedTexts, ticked: new Set(), finish: null, style: 'transaction' }));
+    check('un-ticking a cleared transaction takes the mark off its line, and writes no pending',
+      off.changes.length === 4 && off.changes[0].after === '2026-09-01 Coffee'
+      && off.changes.every((change) => !/ [!*] /.test(change.after)), JSON.stringify(off.changes));
     // A stray posting mark inside a transaction being ticked is normalised onto the header.
     const strayed = readPrint(RECONCILE_PRINT.map((transaction) => (transaction.tindex === 2
       ? { ...transaction, tstatus: 'Unmarked', tpostings: transaction.tpostings.map((posting) => (posting.paccount === 'Assets:Bank:Checking' ? { ...posting, pstatus: 'Pending' } : posting)) }
@@ -1121,14 +1123,14 @@ const TREE_MONTHS = [
   }
 
   // Un-ticking a posting that was only cleared by its transaction. Removing a mark it never had
-  // would leave it cleared, so Save would report nothing and the row would come back ticked.
+  // would leave it cleared; writing pending would say something nobody said. The transaction's
+  // mark moves down onto the postings that were reading it, and only this one changes.
   const clocked = readPrint(RECONCILE_PRINT.map((transaction) => (transaction.tindex === 2 ? { ...transaction, tstatus: 'Cleared' } : transaction)), 'Assets:Bank:Checking');
-  const unticked = written(plan({ data: clocked, texts, ticked: new Set(), finish: null }));
-  check('un-ticking a posting cleared by its transaction writes pending, so it is really not cleared',
-    unticked.changes.length === 1 && unticked.changes[0].before === '    Assets:Bank:Checking'
-    && unticked.changes[0].after === '  ! Assets:Bank:Checking', JSON.stringify(unticked.changes));
-  check('and that mark reads back as pending, so Save and the re-read agree',
-    readPrint([{ ...RECONCILE_PRINT[1], tstatus: 'Cleared', tpostings: RECONCILE_PRINT[1].tpostings.map((posting) => (posting.paccount === 'Assets:Bank:Checking' ? { ...posting, pstatus: 'Pending' } : posting)) }], 'Assets:Bank:Checking').rows[0].status === 'Pending', '');
+  const clockedTexts = { 'fixture.journal': RECONCILE_JOURNAL.replace('2026-09-01 Coffee', '2026-09-01 * Coffee') };
+  const unticked = written(plan({ data: clocked, texts: clockedTexts, ticked: new Set(), finish: null }));
+  check('un-ticking a posting cleared by its transaction moves the mark onto the other postings, and writes no pending',
+    unticked.changes.length === 2 && unticked.changes[0].after === '2026-09-01 Coffee'
+    && unticked.changes[1].after === '  * Expenses:Food    21000 IDR' && !unticked.after.includes('! Assets:Bank:Checking\n\n2026-09-02'), JSON.stringify(unticked.changes));
 }
 
 {
@@ -1233,8 +1235,8 @@ const TREE_MONTHS = [
   const expected = { [coffee.id]: rowsNow[0].balance, 'new:1': rowsNow[2].balance, [split.id]: 1 };
   const done = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set([coffee.id, 'new:1']), edits, inserts, expected });
   const after = done.files[0].after;
-  check('an edit replaces the transaction\'s lines with its text, the account\'s posting ticked and its worked-out amount asserted',
-    after.includes('2026-09-01 * Coffee and a cake  ; bought together\n    Expenses:Food:Coffee    15000 IDR\n    Expenses:Food:Cake       9000 IDR  ; birthday\n  * Assets:Bank:Checking  -24000.00 IDR = 976000.00 IDR\n') && done.files[0].replaced.length === 2,
+  check('an edit replaces the transaction\'s lines with its text, marks as written, and its worked-out amount asserted',
+    after.includes('2026-09-01 * Coffee and a cake  ; bought together\n    Expenses:Food:Coffee    15000 IDR\n    Expenses:Food:Cake       9000 IDR  ; birthday\n    Assets:Bank:Checking  -24000.00 IDR = 976000.00 IDR\n') && done.files[0].replaced.length === 2,
     JSON.stringify(after.split('\n').slice(5, 11)));
   check('an emptied transaction is deleted, leaving no double blank line', !after.includes('Pending transfer') && !after.includes('\n\n\n'), '');
   check('a new one is written straight after the transaction it was added beside, ticked and asserted',
@@ -1938,6 +1940,56 @@ check('every bundled plugin documents itself for `<command>?`',
     && fillCommodity('2026-01-01 x\n    a    5\n    b', { ...data.style, commodity: '' }) === '2026-01-01 x\n    a    5\n    b',
     fillCommodity('2026-01-01 x\n    a    -5 = 10\n    b', { ...data.style, commodity: '$', side: 'L', spaced: false }));
   void account;
+}
+
+{
+  // One rule for marks, hledger's: a posting is its own mark, else its transaction's. Every way
+  // of writing a transaction's marks, in both styles, ticked and unticked: the postings asked
+  // about end up as asked, and in posting style no other posting changes.
+  const effective = (lines) => {
+    const header = (parseHeader(lines[0]).status || '').trim();
+    return lines.slice(1).map((line) => { const mark = parsePosting(line).mark; return (mark || header) === '*'; });
+  };
+  const marks = ['', '*', '!'];
+  const wrong = [];
+  for (const header of marks) for (const ours of marks) for (const sibling of marks) for (const other of ['', '*']) {
+    for (const style of ['posting', 'transaction']) for (const want of [true, false]) for (const both of [false, true]) {
+      const line = (mark, text) => (mark ? `  ${mark} ${text}` : `    ${text}`);
+      const lines = [`2026-09-01${header ? ` ${header}` : ''} Coffee`, line(ours, 'assets:bank    -5 IDR'), line(sibling, 'assets:bank    -5 IDR'), line(other, 'expenses:food')];
+      const before = effective(lines);
+      const entries = both ? [{ at: 1, want }, { at: 2, want }] : [{ at: 1, want }];
+      const after = [...lines];
+      setMarks(after, entries, style);
+      const now = effective(after);
+      const label = JSON.stringify({ header, ours, sibling, other, style, want, both });
+      // Not cleared is all that unticking promises: a posting that was pending may stay pending.
+      for (const entry of entries) if (now[entry.at - 1] !== want) wrong.push(`${label}: line ${entry.at} reads ${now[entry.at - 1]}`);
+      if (style === 'posting') {
+        for (let at = 1; at < lines.length; at += 1) {
+          if (entries.some((entry) => entry.at === at)) continue;
+          if (now[at - 1] !== before[at - 1]) wrong.push(`${label}: line ${at} changed from ${before[at - 1]} to ${now[at - 1]}`);
+        }
+      }
+      if (after.some((text) => /^ +! /.test(text) && !lines.includes(text))) wrong.push(`${label}: wrote pending`);
+    }
+  }
+  check('every way of marking, both styles, ticked and unticked: the postings asked about read as asked, and no other changes in posting style',
+    wrong.length === 0, wrong.slice(0, 3).join(' | '));
+  const untouched = ['2026-09-01 * Coffee', '    assets:bank    -5 IDR', '    expenses:food'];
+  const copy = [...untouched];
+  setMarks(copy, [{ at: 1, want: true }], 'transaction');
+  check('a transaction already reading as asked is not rewritten', copy.join('\n') === untouched.join('\n'), copy.join(' | '));
+  check('a line that is not a transaction is left alone', setMarks(['  just words'], [{ at: 0, want: true }]) === false, '');
+
+  // What the preview lists as conflicting, and what it does not.
+  const row = (over) => ({ id: over.id || 'a', date: '2026-09-01', description: 'Coffee', where: { file: 'f', first: over.first || 1 }, status: 'Cleared', ownMark: false, transactionMark: 'Cleared', ...over });
+  check('a posting whose own mark disagrees with its transaction\'s line is a conflict in either style',
+    markConflicts([row({ ownMark: true, status: 'Pending' })], 'posting').length === 1 && /line says cleared but this account's posting says pending/.test(markConflicts([row({ ownMark: true, status: 'Pending' })], 'posting')[0].why), '');
+  check('in transaction style, a posting mark that marking would take off, and two postings in different states, are conflicts',
+    markConflicts([row({ ownMark: true, transactionMark: 'Unmarked' })], 'transaction').length === 1
+    && markConflicts([row({ id: 'a' }), row({ id: 'b', status: 'Unmarked', ownMark: true, transactionMark: 'Unmarked' })].map((entry) => ({ ...entry, transactionMark: 'Unmarked', ownMark: entry.id === 'b' ? false : true })), 'transaction').some((entry) => /not in the same state/.test(entry.why)), '');
+  check('and a journal whose marks agree has none', markConflicts([row({}), row({ id: 'b', first: 9, status: 'Unmarked', transactionMark: 'Unmarked' })], 'transaction').length === 0
+    && markConflicts([row({ ownMark: true, transactionMark: 'Unmarked' })], 'posting').length === 0, '');
 }
 
 // ------------------------------------------------------------------ the verdict

@@ -686,6 +686,89 @@ async function noAssertionCase() {
   }
 }
 
+/**
+ * Marks in every shape a journal keeps them, written in both styles: after each tick or untick
+ * the engine's re-read is what the window asked for, row by row, and in posting style no posting
+ * of another account changes state.
+ */
+async function marksCase() {
+  const journal = [
+    'commodity 1,000.00 IDR',
+    '',
+    '2026-01-01 Opening',
+    '    assets:bank   1000.00 IDR = 1000.00 IDR',
+    '    equity:opening',
+    '',
+    '2026-01-05 * Cleared by its line',
+    '    expenses:food  10.00 IDR',
+    '    assets:bank',
+    '',
+    '2026-01-06 * Cleared by its line and its posting',
+    '    expenses:food  20.00 IDR',
+    '  * assets:bank',
+    '',
+    '2026-01-07 Cleared by its posting',
+    '    expenses:food  30.00 IDR',
+    '  * assets:bank',
+    '',
+    '2026-01-08 * Two postings to the account',
+    '    expenses:food  40.00 IDR',
+    '    assets:bank   -15.00 IDR',
+    '    assets:bank',
+    '',
+    '2026-01-09 Not marked',
+    '    expenses:food  50.00 IDR',
+    '    assets:bank',
+    '',
+    '2026-01-10 * Line cleared, posting pending',
+    '    expenses:food  60.00 IDR',
+    '  ! assets:bank',
+    '',
+  ].join('\n');
+  const others = (print) => print.flatMap((transaction) => transaction.tpostings
+    .filter((posting) => posting.paccount !== 'assets:bank')
+    .map((posting) => `${transaction.tdescription}=${posting.pstatus !== 'Unmarked' ? posting.pstatus : transaction.tstatus}`));
+  for (const style of ['posting', 'transaction']) {
+    const root = await mkdtemp(join(tmpdir(), `hla-write-marks-${style}-`));
+    try {
+      const file = 'marks.journal';
+      await writeFile(join(root, file), journal);
+      const { host } = realHost({ dir: root, files: [file] });
+      const { bridge, fingerprint } = await openBridge(host, 'assets:bank --statement 2026-01-31');
+      let current = fingerprint;
+      let data = JSON.parse(/<script type="application\/json" id="reconcile-data">([\s\S]*?)<\/script>/.exec(host.page)[1].replace(/\\u003c/g, '<')).data;
+      const count = data.rows.length;
+      for (let at = 0; at < count; at += 1) {
+        const row = data.rows[at];
+        const ticked = new Set(data.rows.filter((entry) => entry.status === 'Cleared').map((entry) => entry.id));
+        const turnOn = !ticked.has(row.id);
+        const group = style === 'transaction' ? data.rows.filter((entry) => entry.id.split(':')[0] === row.id.split(':')[0]) : [row];
+        for (const entry of group) if (turnOn) ticked.add(entry.id); else ticked.delete(entry.id);
+        const othersBefore = others(JSON.parse(await host.hledger('print -O json')));
+        const answer = await bridge.apply({ ticked: [...ticked], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style, fingerprint: current });
+        const label = `marks (${style}): ${turnOn ? 'tick' : 'untick'} "${row.description}"`;
+        if (!answer.ok) { check(false, `${label}: written`, answer.error); break; }
+        current = answer.fingerprint;
+        data = answer.data;
+        const disagree = data.rows.filter((entry) => (entry.status === 'Cleared') !== ticked.has(entry.id));
+        check(disagree.length === 0, `${label}: the re-read is what the window asked for`,
+          disagree.map((entry) => `${entry.description}=${entry.status}`).join(', '));
+        if (style === 'posting') {
+          const othersAfter = others(JSON.parse(await host.hledger('print -O json')));
+          check(othersAfter.join() === othersBefore.join(), `${label}: no other account's posting changed state`,
+            `${othersBefore.join()} -> ${othersAfter.join()}`);
+        }
+        const text = await readFile(join(root, file), 'utf8');
+        check(!/^\s+! assets:bank\n\n2026-01-0[5-9]/m.test(text), `${label}: no pending written as a stand-in`, '');
+      }
+    } catch (error) {
+      check(false, `marks (${style}): the case ran`, error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+}
+
 const CASES = {
   tick: tickCase,
   untick: untickCase,
@@ -758,6 +841,7 @@ async function main() {
   const names = Object.keys(CASES).filter((name) => !wanted.length || wanted.includes(name));
   if (!wanted.length || wanted.includes('multifile')) await multiFileCase();
   if (!wanted.length || wanted.includes('noassert')) await noAssertionCase();
+  if (!wanted.length || wanted.includes('marks')) await marksCase();
   const fixtures = wanted.includes('generic') ? ['generic'] : ['demo'];
 
   for (const fixture of fixtures) {

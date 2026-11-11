@@ -655,6 +655,92 @@ export function assertionText(date, account, minor, style, inclusive = false) {
 }
 
 /**
+ * Set the cleared state of some of a transaction's postings, by the one rule hledger reads
+ * marks with: a posting is what its own mark says, and with no mark of its own, what its
+ * transaction's line says.
+ *
+ * `lines` is the transaction's text, changed in place; `entries` are the lines of the postings
+ * this window is about, each with whether it should be cleared. A change reaches exactly those
+ * postings and leaves every other posting reading as it did:
+ *
+ *   posting style      ticking marks the posting `*`, or takes off a stray own mark when the
+ *                      transaction's line already clears it. Unticking takes the posting's own
+ *                      mark off; when the transaction's line is what clears it, that mark moves
+ *                      down onto the other postings that were reading it, and off this one. A
+ *                      pending `!` is never written as a stand-in for "not cleared".
+ *   transaction style  the transaction's line carries the state for the whole transaction, and
+ *                      these postings lose their own marks so that they read it. Unticking takes
+ *                      the mark off the line, rather than writing pending.
+ *
+ * Returns false when the first line is not a transaction's, and changes nothing then.
+ */
+export function setMarks(lines, entries, style = 'posting') {
+  const top = lines.findIndex((line) => parseHeader(line));
+  if (top < 0) return false;
+  let header = parseHeader(lines[top]).status.trim();
+  const own = (at) => (parsePosting(lines[at]) || {}).mark || '';
+  const cleared = (at) => (own(at) || header) === '*';
+  const setHeader = (mark) => { lines[top] = markTransaction(lines[top], mark); header = mark; };
+  const postings = lines.map((line, at) => (at > top && /^[ \t]/.test(line) && !line.trim().startsWith(';') && parsePosting(line) ? at : -1)).filter((at) => at > top);
+  if (style === 'transaction') {
+    const want = entries.some((entry) => entry.want);
+    if (entries.every((entry) => cleared(entry.at) === want && !own(entry.at))) return true;
+    if (want && header !== '*') setHeader('*');
+    if (!want && header === '*') setHeader('');
+    for (const entry of entries) if (own(entry.at)) lines[entry.at] = remark(lines[entry.at], '');
+    return true;
+  }
+  const off = entries.filter((entry) => !entry.want && cleared(entry.at));
+  if (off.length && header === '*') {
+    // The transaction's line is what clears these: it comes off, and every posting that was
+    // reading it gets the mark itself, so only the ones being unticked change.
+    const leaving = new Set(off.map((entry) => entry.at));
+    for (const at of postings) if (!leaving.has(at) && !own(at)) lines[at] = remark(lines[at], '*');
+    setHeader('');
+  }
+  for (const entry of off) if (own(entry.at)) lines[entry.at] = remark(lines[entry.at], '');
+  for (const entry of entries) {
+    if (!entry.want || cleared(entry.at)) continue;
+    lines[entry.at] = remark(lines[entry.at], header === '*' ? '' : '*');
+  }
+  return true;
+}
+
+/**
+ * Where the marks of the transactions in view disagree with each other, best said before a
+ * write: a posting whose own mark says one thing and its transaction's line another, and, when
+ * marking whole transactions, a posting mark that marking will take off or two postings to this
+ * account in one transaction that are not in the same state.
+ */
+export function markConflicts(rows, style = 'posting') {
+  const out = [];
+  const groups = new Map();
+  for (const row of rows) {
+    if (!row.where) continue;
+    const key = transactionOf(row);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const word = (status) => (status === 'Cleared' ? 'cleared' : status === 'Pending' ? 'pending' : 'not marked');
+  for (const group of groups.values()) {
+    const first = group[0];
+    const said = new Set();
+    for (const row of group) {
+      if (row.ownMark && row.transactionMark !== 'Unmarked' && row.status !== row.transactionMark) {
+        said.add(`its line says ${word(row.transactionMark)} but this account's posting says ${word(row.status)}`);
+      } else if (row.ownMark && style === 'transaction') {
+        said.add(`this account's posting carries its own mark (${word(row.status)}); marking the transaction takes it off`);
+      }
+    }
+    if (style === 'transaction' && new Set(group.map((row) => row.status)).size > 1) {
+      said.add(`its ${group.length} postings to this account are not in the same state; marking the transaction makes them one`);
+    }
+    for (const why of said) out.push({ id: first.id, date: first.date, description: first.description, why });
+  }
+  return out;
+}
+
+/**
  * The text changes that record a reconciliation, for each file touched.
  *
  * `texts` maps a file path to its contents as the app has it. A transaction is changed as a
@@ -700,28 +786,17 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
   }
   for (const group of groups.values()) {
     const editedRow = group.find((row) => edits[row.id] && edits[row.id].text != null);
-    /**
-     * The mark to write on a posting the ticks disagree with.
-     *
-     * Ticking writes a cleared mark. Un-ticking removes it, unless the posting had none of its
-     * own and was only cleared by its transaction: removing a mark it never had would leave it
-     * cleared, so Save would report nothing and the row would come back ticked. Pending is
-     * hledger's honest state for that, and it overrides the transaction's mark for this posting.
-     */
-    const markFor = (row) => {
-      if (ticked.has(row.id)) return '*';
-      return row.ownMark ? '' : '!';
-    };
-    const marks = editedRow ? (ticked.has(editedRow.id) ? [editedRow] : []) : group.filter((row) => {
-      const wanted = ticked.has(row.id) ? 'Cleared' : 'Unmarked';
-      return !(row.status === wanted || (wanted === 'Unmarked' && row.status === 'Pending'));
-    });
+    // What the ticks ask of this transaction. In transaction style the transaction is one thing,
+    // cleared if any of its rows here is ticked; in posting style each row is its own.
+    const groupWant = group.some((row) => ticked.has(row.id));
+    const wantOf = (row) => (style === 'transaction' ? groupWant : ticked.has(row.id));
+    // A transaction whose ticks agree with what hledger reads for it is never rewritten. An
+    // edited one is written as the person wrote it, marks and all.
+    const markWork = !editedRow && group.some((row) => wantOf(row) !== (row.status === 'Cleared'));
     const assertRow = group.find((row) => asserting.has(row.id));
     // A move on its own is a change to write, so it counts as work like a mark does.
     const movedDate = group.map((row) => moved[row.id]).find(Boolean) || null;
-    const wantedClear = group.some((row) => ticked.has(row.id));
-    const transactionWork = style === 'transaction' ? wantedClear !== group.every((row) => row.status === 'Cleared') : false;
-    if (!editedRow && !marks.length && !assertRow && !movedDate && !transactionWork) continue;
+    if (!editedRow && !markWork && !assertRow && !movedDate) continue;
     const first = group[0];
     if (group.some((row) => row.generated)) { missing.push({ id: first.id, why: 'generated by a rule, not written in the file' }); continue; }
     const file = fileOf(first.where.file);
@@ -734,51 +809,26 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     if (editedRow) {
       const text = fillCommodity(edits[editedRow.id].text, data.style, editedRow.text);
       next = text.trim() ? text.replace(/\s+$/, '').split('\n') : [];
-      if (next.length && ticked.has(editedRow.id)) for (const entry of ourLines(next)) next[entry.at] = remark(next[entry.at], '*');
       if (next.length && assertRow) {
         const ours = ourLines(next);
         const read = readTransaction(next.join('\n'), data.account, data.style, data.inclusive);
         const last = ours[ours.length - 1];
         if (!last || !assertOn(next, last.at, read.values[read.values.length - 1], asserting.get(assertRow.id))) {
-          missing.push({ id: editedRow.id, why: 'the edited transaction\'s amount cannot be worked out here, so its running balance cannot be asserted; Save it first' });
+          missing.push({ id: editedRow.id, why: 'the edited transaction\'s amount cannot be worked out here, so its running balance cannot be asserted; write it first' });
           continue;
         }
       }
     } else {
       next = [...block];
+      const entries = [];
       for (const row of group) {
         const own = ourLines(next, row.account)[row.where.occurrence];
         if (!own) { missing.push({ id: row.id, why: 'its line was not found where hledger said it was' }); next = null; break; }
-        if (style !== 'transaction' && marks.includes(row)) next[own.at] = remark(next[own.at], markFor(row));
+        entries.push({ at: own.at, want: wantOf(row) });
         if (asserting.has(row.id)) assertOn(next, own.at, row.amount, asserting.get(row.id));
       }
       if (!next) continue;
-    }
-    // In transaction mode the mark belongs on the transaction's own line. A group is only
-    // touched when the ticks disagree with what the marks already say, so an untouched journal
-    // is never rewritten, and when it is touched our postings lose their own marks so that the
-    // transaction's line is the one thing that says how it stands.
-    if (style === 'transaction') {
-      const nowCleared = group.every((row) => row.status === 'Cleared');
-      const wantCleared = group.some((row) => ticked.has(row.id));
-      const stray = group.some((row) => row.ownMark);
-      // Only a group whose ticks disagree with its marks is written: an untouched journal is never
-      // rewritten, and a stray posting mark is normalised only when the person acts on that
-      // transaction. `stray` is what makes the normalising write worth explaining in the preview.
-      void stray;
-      if (wantCleared !== nowCleared) {
-        const mark = wantCleared ? '*' : '!';
-        const header = parseHeader(next[0] || '');
-        if (!header) {
-          missing.push({ id: first.id, why: 'its first line is not a date and description, so its transaction mark cannot be set here' });
-        } else {
-          next[0] = markTransaction(next[0], mark);
-          for (const row of group) {
-            const own = ourLines(next, row.account)[row.where.occurrence];
-            if (own) next[own.at] = remark(next[own.at], '');
-          }
-        }
-      }
+      if (markWork) setMarks(next, entries, style);
     }
 
     // A move rewrites the date on the transaction's own first line. It is done inside this block,
@@ -808,7 +858,9 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     const lines = fillCommodity(String(insert.text || ''), data.style).replace(/\s+$/, '').split('\n');
     const read = readTransaction(lines.join('\n'), data.account, data.style, data.inclusive);
     if (!read.header) { missing.push({ id: insert.id, why: 'a new transaction needs a first line with its date' }); continue; }
-    if (ticked.has(insert.id)) for (const entry of ourLines(lines)) lines[entry.at] = remark(lines[entry.at], '*');
+    // A new transaction is added because the statement shows it, so it is cleared the way this
+    // journal marks things, unless its text already says how it stands.
+    if (ticked.has(insert.id)) setMarks(lines, ourLines(lines).map((entry) => ({ at: entry.at, want: true })), style);
     if (asserting.has(insert.id)) {
       const ours = ourLines(lines);
       const last = ours[ours.length - 1];
