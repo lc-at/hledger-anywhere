@@ -358,6 +358,47 @@ export function placement(rows, { anchor = null, date } = {}) {
 }
 
 /**
+ * What a window knows of a row, sent with a change so the plugin can find the same transaction
+ * in the file as it is by then: where it was, and exactly what it said.
+ */
+export function snapshot(row) {
+  return { file: row.where.file, first: row.where.first, text: row.text == null ? null : row.text, account: row.account, occurrence: row.where.occurrence, date: row.date, description: row.description };
+}
+
+/**
+ * Which row of a re-read journal each row of the old one is now, as a Map of old id to new id.
+ *
+ * Row ids are positions in hledger's print, so any line added or moved renames every row after
+ * it. A row is the same row when it is the same posting of the same transaction text, nearest
+ * where it was (an edit elsewhere moved it); failing that, the posting at the same place (its
+ * own transaction's text changed: a tick, a date, an edit). Each new row is claimed once.
+ */
+export function carry(oldRows, newRows) {
+  const map = new Map();
+  const used = new Set();
+  const key = (row) => `${row.where.file}|${row.account}|${row.where.occurrence}`;
+  const text = (row) => String(row.text == null ? '' : row.text).replace(/\s+$/, '');
+  const byKey = new Map();
+  for (const row of newRows) {
+    if (!byKey.has(key(row))) byKey.set(key(row), []);
+    byKey.get(key(row)).push(row);
+  }
+  const claim = (old, test, nearest = false) => {
+    const choices = (byKey.get(key(old)) || []).filter((row) => !used.has(row.id) && test(row));
+    if (!choices.length) return;
+    const best = nearest
+      ? choices.reduce((a, b) => (Math.abs(b.where.first - old.where.first) < Math.abs(a.where.first - old.where.first) ? b : a))
+      : choices[0];
+    map.set(old.id, best.id);
+    used.add(best.id);
+  };
+  for (const old of oldRows) claim(old, (row) => row.where.first === old.where.first && text(row) === text(old));
+  for (const old of oldRows) if (!map.has(old.id)) claim(old, (row) => text(row) === text(old), true);
+  for (const old of oldRows) if (!map.has(old.id)) claim(old, (row) => row.where.first === old.where.first);
+  return map;
+}
+
+/**
  * Where moving a row up or down within its day puts it, as `{ to: { id, side } }`, or why it
  * cannot move as `{ refused }`. A day's order in hledger is file order, so the row's transaction
  * goes in front of the previous transaction of that day, or after the next one. A transaction's

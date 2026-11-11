@@ -17,7 +17,7 @@
 // Cases: tick untick tickall edit delete insert insertbare insertorder move linebyline finish rollback
 
 import { chmod, cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import reconcile from '../assets/plugins/reconcile.js';
-import { moveAccount, neighbour, ordered, readPrint, summarize } from '../assets/plugins/reconcile-data.js';
+import { moveAccount, neighbour, ordered, readPrint, snapshot, summarize } from '../assets/plugins/reconcile-data.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
 const run = promisify(execFile);
@@ -57,17 +57,33 @@ async function engine(journal, command) {
 }
 
 /**
- * A host that reads and writes real files and asks the real engine.
+ * A host that reads and writes real files and asks the real engine, the way the app does.
  *
- * The engine reports a journal by its basename (the script mounts the journal's own directory
- * as the WASI root) and the plugin strips the leading slash off what it reads, so the paths
- * handed to the plugin are basenames, mapped back to the copy on disk.
+ * Like the app it holds each file in memory: `read` answers from there, the engine reads the
+ * copies in memory (written to a directory of their own before each run), `save` refuses a file
+ * that changed on disk since it was last read or written, and `refresh` takes in what another
+ * program changed. So an outside edit is invisible until the plugin asks for it, as in the app,
+ * and a plugin that wrote without asking would be refused here as it is there.
+ *
+ * The engine reports a journal by its basename and the plugin strips the leading slash off what
+ * it reads, so the paths handed to the plugin are basenames, mapped back to the copy on disk.
  */
 function realHost({ dir, file, files: many = null, writable = true }) {
   const names = many || [file];
-  const path = join(dir, names[0]);
   const log = { said: [], saved: [] };
-  let checks = 0;
+  const memory = {};
+  const stats = {};
+  const stat = (name) => { const info = statSync(join(dir, name)); return `${info.size}:${info.mtimeMs}`; };
+  const load = (name) => {
+    try {
+      memory[name] = readFileSync(join(dir, name), 'utf8');
+      stats[name] = stat(name);
+    } catch {
+      memory[name] = null;
+    }
+  };
+  for (const name of names) load(name);
+  const shadow = mkdtempSync(join(tmpdir(), 'hla-write-engine-'));
   const host = {
     name: 'reconcile',
     colors: () => ({ background: '#000', foreground: '#fff', dim: '#888', accent: '#f90', softer: '#111', soft: '#222' }),
@@ -79,32 +95,45 @@ function realHost({ dir, file, files: many = null, writable = true }) {
     // Synchronous, like the app's: the plan is worked out in one turn, so `read` has to
     // answer with the text itself rather than a promise of it.
     read(name) {
-      if (!names.includes(name)) return null;
-      try {
-        return readFileSync(join(dir, name), 'utf8');
-      } catch {
-        return null;
-      }
+      return names.includes(name) ? memory[name] : null;
     },
     async save(name, text) {
       if (!names.includes(name)) return { error: `${name} is not this journal` };
+      if (stat(name) !== stats[name]) return { error: `${name} changed on disk since it was opened; run \`open\` again before saving` };
       await writeFile(join(dir, name), text);
+      load(name);
       log.saved.push(name);
+      if (host.failNextCheck) host.armed = true;
       return { ok: true };
     },
+    async refresh() {
+      host.refreshes += 1;
+      const changed = names.filter((name) => { try { return stat(name) !== stats[name]; } catch { return false; } });
+      for (const name of changed) load(name);
+      return { changed, missing: [] };
+    },
     async hledger(command) {
-      // The pre-write check has to pass and the re-check after the write has to fail, because
-      // only that exercises putting the files back. The first balance run is the former.
-      if (command.startsWith('balance')) host.balances += 1;
-      if (host.failNextCheck && host.balances === 2) {
+      // A check that has to fail after a write, because only that exercises putting the files
+      // back: the first read after a save is the check.
+      if (host.armed && command.startsWith('print')) {
+        host.armed = false;
+        host.failNextCheck = false;
         throw new Error('Balance assertion failed in the account being reconciled');
       }
-      return engine(path, command);
+      for (const name of names) {
+        if (memory[name] == null) continue;
+        mkdirSync(dirname(join(shadow, name)), { recursive: true });
+        writeFileSync(join(shadow, name), memory[name]);
+      }
+      host.runs += 1;
+      return engine(join(shadow, names[0]), command);
     },
   };
-  host.balances = 0;
   host.failNextCheck = false;
-  return { host, log, path };
+  host.armed = false;
+  host.runs = 0;
+  host.refreshes = 0;
+  return { host, log, path: join(dir, names[0]) };
 }
 
 /** Open the window on one journal and hand back the plugin's own bridge. */
@@ -479,18 +508,11 @@ async function multiFileCase() {
 
     // The other direction: the engine refuses the result, so both have to come back.
     const now = { [main]: await readFile(join(root, main), 'utf8'), [other]: await readFile(join(root, other), 'utf8') };
-    let balanceRuns = 0;
-    const original = host.hledger.bind(host);
-    host.hledger = async (command) => {
-      if (command.startsWith('balance')) balanceRuns += 1;
-      if (balanceRuns === 2) throw new Error('Balance assertion failed in the account being reconciled');
-      return original(command);
-    };
+    host.failNextCheck = true;
     const second = await bridge.apply({
       ticked: [], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting',
       fingerprint: answer.fingerprint || fingerprint,
     });
-    host.hledger = original;
     check(/put back/.test(second.error || ''), 'the refused write says the files were put back',
       JSON.stringify(second.error || second.ok));
     const restored = { [main]: await readFile(join(root, main), 'utf8'), [other]: await readFile(join(root, other), 'utf8') };
@@ -903,7 +925,18 @@ async function reorderCase() {
 async function accountCase() {
   const ctx = await busyWindow('account');
   try {
-    const text = '2026-01-06 Groceries, booked to the wrong account\n    expenses:food  15.00 IDR\n    assets:cash';
+    // Found the way the window finds it: by the amount the statement shows, near its date.
+    const found = await ctx.bridge.find({ amount: -1500, date: '2026-01-07', words: '' });
+    const best = (found.candidates || [])[0];
+    check(Boolean(best) && /Groceries/.test(best.description) && best.postings.filter((posting) => posting.matches).length === 2
+      && best.postings.map((posting) => posting.at).join() === '1,2' && best.reasons.includes('the amount'),
+      'account: found by its amount, either sign, with its postings and their lines', JSON.stringify(found).slice(0, 300));
+    const byWords = await ctx.bridge.find({ amount: null, date: '2026-01-07', words: 'grocer' });
+    check((byWords.candidates || []).some((candidate) => /Groceries/.test(candidate.description)) && !(byWords.candidates || []).some((candidate) => /First|Second/.test(candidate.description)),
+      'account: and by words from its description, never one already in this account', JSON.stringify((byWords.candidates || []).map((candidate) => candidate.description)));
+    const nothing = await ctx.bridge.find({ amount: null, date: null, words: '' });
+    check(/Give an amount/.test(nothing.error || ''), 'account: a search with nothing to look for says so', JSON.stringify(nothing));
+    const text = best ? best.text : '';
     const after = moveAccount(text, 2, 'assets:bank');
     const before = await readFile(ctx.path, 'utf8');
     const first = before.split('\n').indexOf('2026-01-06 Groceries, booked to the wrong account') + 1;
@@ -924,6 +957,233 @@ async function accountCase() {
     check(/changed outside this window/.test(stale.missing.map((entry) => entry.why).join()), 'account: a transaction that changed since it was found is not touched', JSON.stringify(stale.missing));
   } catch (error) {
     check(false, 'account: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
+/**
+ * The window as it drives the plugin now: one change at a time, each written at once and read
+ * back, with the window's own snapshot of the rows it means. `window.rows` is what the window
+ * shows; `send` is what one keypress or click sends.
+ */
+function windowOn(ctx) {
+  const window = {
+    data: ctx.data,
+    stages: [],
+    row(name, nth = 0) { return ordered(window.data).filter((row) => row.description === name)[nth]; },
+    async send(change) {
+      const targets = {};
+      for (const id of [change.id, change.after, ...(change.changes || []).map((entry) => entry.id)].filter(Boolean)) {
+        const row = window.data.rows.find((entry) => entry.id === id);
+        if (row) targets[id] = snapshot(row);
+      }
+      window.stages = [];
+      const answer = await ctx.bridge.change({ style: 'posting', ...change, targets }, (stage) => window.stages.push(stage));
+      if (answer.data) window.data = answer.data;
+      return answer;
+    },
+  };
+  return window;
+}
+
+/** The lines two texts differ in, counted: a change should touch only its own lines. */
+function changedLines(before, after) {
+  const a = before.split('\n');
+  const b = after.split('\n');
+  let start = 0;
+  while (start < a.length && a[start] === b[start]) start += 1;
+  let end = 0;
+  while (end < a.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end += 1;
+  return { removed: a.slice(start, a.length - end), added: b.slice(start, b.length - end) };
+}
+
+/**
+ * Every kind of change, written as it is made, in sequence, each re-checked by hledger, and the
+ * window's state after each equal to what hledger reads back.
+ */
+async function sequenceCase() {
+  const ctx = await busyWindow('sequence');
+  try {
+    const window = windowOn(ctx);
+    const steps = [
+      ['tick First', () => ({ kind: 'tick', changes: [{ id: window.row('First').id, on: true }] }), (text) => /\* assets:bank\n\n2026-01-05 Another/.test(text)],
+      ['tick Second', () => ({ kind: 'tick', changes: [{ id: window.row('Second').id, on: true }] }), (text) => /Second\n {4}expenses:food {2}20\.00 IDR\n {2}\* assets:bank/.test(text)],
+      ['edit Third', () => ({ kind: 'edit', id: window.row('Third').id, text: '2026-01-05 Third, edited\n    expenses:food  33.00 IDR\n    assets:bank' }), (text) => text.includes('Third, edited')],
+      ['insert after Second', () => ({ kind: 'insert', after: window.row('Second').id, text: '2026-01-05 Inserted\n    expenses:food  5\n    assets:bank' }), (text) => /Inserted\n {4}expenses:food {2}5 IDR\n {2}\* assets:bank/.test(text)],
+      ['move Next day to 2026-01-08', () => ({ kind: 'date', id: window.row('Next day').id, date: '2026-01-08' }), (text) => text.includes('2026-01-08 Next day')],
+      ['reorder Inserted up', () => ({ kind: 'reorder', id: window.row('Inserted').id, direction: 'up' }), (text) => text.indexOf('Inserted') < text.indexOf('Second')],
+      ['untick First', () => ({ kind: 'tick', changes: [{ id: window.row('First').id, on: false }] }), (text) => /First\n {4}expenses:food {2}10\.00 IDR\n {4}assets:bank/.test(text)],
+    ];
+    for (const [label, make, landed] of steps) {
+      const before = await readFile(ctx.path, 'utf8');
+      const runs = ctx.host.runs;
+      const answer = await window.send(make());
+      const after = await readFile(ctx.path, 'utf8');
+      check(Boolean(answer.ok), `in sequence, ${label}: written`, JSON.stringify(answer.error || ''));
+      check(landed(after), `in sequence, ${label}: the file says so`, after.split('\n').slice(6, 26).join(' | '));
+      check(window.stages.join() === 'writing,checking', `in sequence, ${label}: the window was told writing, then checking`, window.stages.join());
+      check(ctx.host.runs - runs === 1, `in sequence, ${label}: one run of hledger, which checks and reads back at once`, String(ctx.host.runs - runs));
+      try {
+        await engine(ctx.path, 'balance assets:bank -O csv');
+        check(true, `in sequence, ${label}: the engine parses the file and its assertions hold`);
+      } catch (error) {
+        check(false, `in sequence, ${label}: the engine parses the file and its assertions hold`, error.message.split('\n')[0]);
+      }
+      const reread = readPrint(JSON.parse(await engine(ctx.path, 'print acct:^assets:bank$ -O json')), 'assets:bank');
+      check(JSON.stringify(reread.rows.map((row) => [row.date, row.description, row.status, row.amount])) === JSON.stringify(window.data.rows.map((row) => [row.date, row.description, row.status, row.amount])),
+        `in sequence, ${label}: the window holds exactly what hledger reads back`, '');
+      const diff = changedLines(before, after);
+      check(diff.removed.length + diff.added.length <= 12, `in sequence, ${label}: only its own lines changed`, JSON.stringify(diff));
+    }
+    // Two clicks before the first write is back: one write, and the second has nothing to do.
+    const id = window.row('Third, edited').id;
+    const target = { [id]: snapshot(window.data.rows.find((row) => row.id === id)) };
+    const [one, two] = await Promise.all([
+      ctx.bridge.change({ kind: 'tick', changes: [{ id, on: true }], targets: target, style: 'posting' }),
+      ctx.bridge.change({ kind: 'tick', changes: [{ id, on: true }], targets: target, style: 'posting' }),
+    ]);
+    check(one.ok && /Ticked/.test(one.message) && (two.ok && /Nothing to change/.test(two.message) || /changed outside/.test(two.error || '')),
+      'a double click writes once, the second waiting its turn and finding nothing to do', JSON.stringify([one.message || one.error, two.message || two.error]));
+    // Undo, last first.
+    const ticked = await readFile(ctx.path, 'utf8');
+    const undo = await ctx.bridge.undo();
+    const undone = await readFile(ctx.path, 'utf8');
+    check(Boolean(undo.ok) && /Undid: Ticked/.test(undo.message) && !/Third, edited\n {4}expenses:food {2}33\.00 IDR\n {2}\*/.test(undone),
+      'undo takes the last change back', JSON.stringify(undo.error || undo.message));
+    check(changedLines(ticked, undone).removed.length === 1, 'and only that change', JSON.stringify(changedLines(ticked, undone)));
+    const again = await ctx.bridge.undo();
+    check(Boolean(again.ok) && /Undid: Unticked 2026-01-05 First/.test(again.message) && /First\n {4}expenses:food {2}10\.00 IDR\n {2}\* assets:bank/.test(await readFile(ctx.path, 'utf8')),
+      'and the one before it, the untick, so First is ticked again', JSON.stringify(again.error || again.message));
+  } catch (error) {
+    check(false, 'in sequence: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
+/**
+ * Another program edits the file between two changes made in the window, the way vim beside
+ * it would: lines added above, and a transaction added at the end. The next change is written
+ * where its transaction now is, and the outside edit is kept.
+ */
+async function outsideCase() {
+  const ctx = await busyWindow('outside');
+  try {
+    const window = windowOn(ctx);
+    const first = await window.send({ kind: 'tick', changes: [{ id: window.row('First').id, on: true }] });
+    check(Boolean(first.ok), 'outside edit: the first change is written', JSON.stringify(first.error || ''));
+    // The window still shows the file as it was after its own write; the file moves on.
+    const stale = window.row('Third');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const edited = (await readFile(ctx.path, 'utf8'))
+      .replace('2026-01-01 Opening', '; a comment typed in vim\n; and another\n\n2026-01-01 Opening')
+      .concat('\n2026-01-20 Typed in vim\n    expenses:food  1.00 IDR\n    assets:bank\n');
+    await writeFile(ctx.path, edited);
+    const second = await window.send({ kind: 'tick', changes: [{ id: stale.id, on: true }] });
+    const text = await readFile(ctx.path, 'utf8');
+    check(Boolean(second.ok) && second.outside, 'outside edit: the next change is written, and says the file changed outside', JSON.stringify(second.error || second));
+    check(text.includes('; a comment typed in vim') && text.includes('Typed in vim'), 'outside edit: what vim wrote is still in the file', '');
+    check(/Third\n {4}expenses:food {2}30\.00 IDR\n {2}\* assets:bank/.test(text), 'outside edit: the tick landed on its transaction, three lines lower now', text.split('\n').slice(18, 24).join(' | '));
+    check(window.data.rows.some((row) => row.description === 'Typed in vim'), 'outside edit: the window now lists what vim added', '');
+    // A poll notices the next outside edit on its own, without a change being made.
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    await writeFile(ctx.path, `${text}\n2026-01-21 Also typed in vim\n    expenses:food  2.00 IDR\n    assets:bank\n`);
+    const poll = await ctx.bridge.poll();
+    check(poll.changed && poll.data.rows.some((row) => row.description === 'Also typed in vim'), 'outside edit: a poll reads the file again when it changed', JSON.stringify({ changed: poll.changed }));
+    const quiet = await ctx.bridge.poll();
+    check(!quiet.changed && !quiet.data, 'and a poll of an unchanged file costs no run of hledger', JSON.stringify(quiet));
+    // Undo after an outside edit would write over it, so it is refused.
+    const undo = await ctx.bridge.undo();
+    check(/changed since .* so it was not undone/.test(undo.error || '') && (await readFile(ctx.path, 'utf8')).includes('Also typed in vim'), 'outside edit: undo refuses to write over it', JSON.stringify(undo.error || undo.message));
+  } catch (error) {
+    check(false, 'outside edit: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
+/**
+ * Another program edits the very transaction the next change is about. That one change is
+ * refused, said plainly, and the file is exactly what the other program left.
+ */
+async function sameTransactionCase() {
+  const ctx = await busyWindow('same');
+  try {
+    const window = windowOn(ctx);
+    const stale = window.row('Second');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const edited = (await readFile(ctx.path, 'utf8')).replace('expenses:food  20.00 IDR', 'expenses:food  25.00 IDR');
+    await writeFile(ctx.path, edited);
+    for (const [label, change] of [
+      ['a tick', { kind: 'tick', changes: [{ id: stale.id, on: true }] }],
+      ['an edit', { kind: 'edit', id: stale.id, text: '2026-01-05 Second\n    expenses:food  21.00 IDR\n    assets:bank' }],
+      ['a date', { kind: 'date', id: stale.id, date: '2026-01-06' }],
+      ['a reorder', { kind: 'reorder', id: stale.id, direction: 'up' }],
+    ]) {
+      window.data = ctx.data;
+      const answer = await window.send(change);
+      check(/Second changed outside this window, so this change was not made/.test(answer.error || ''), `same transaction: ${label} on it is refused, and says why`, JSON.stringify(answer.error || answer.message));
+      check((await readFile(ctx.path, 'utf8')) === edited, `same transaction: after ${label}, the file is what the other program left`, '');
+    }
+    // A candidate found before the outside edit changed it is not moved either.
+    const groceries = '2026-01-06 Groceries, booked to the wrong account\n    expenses:food  15.00 IDR\n    assets:cash';
+    const first = edited.split('\n').indexOf('2026-01-06 Groceries, booked to the wrong account') + 1;
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const again = edited.replace('expenses:food  15.00 IDR', 'expenses:food  16.00 IDR');
+    await writeFile(ctx.path, again);
+    const answer = await ctx.bridge.change({ kind: 'account', candidate: { file: ctx.file, first, last: first + 3, text: groceries, description: 'Groceries' }, at: 2 });
+    check(/changed outside this window/.test(answer.error || '') && (await readFile(ctx.path, 'utf8')) === again, 'same transaction: a posting found before it changed is not moved', JSON.stringify(answer.error || answer.message));
+  } catch (error) {
+    check(false, 'same transaction: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
+/** A change hledger refuses after it is written: the file comes back byte for byte, said so. */
+async function immediateRollbackCase() {
+  const ctx = await busyWindow('immediate-rollback');
+  try {
+    const window = windowOn(ctx);
+    const before = await readFile(ctx.path, 'utf8');
+    ctx.host.failNextCheck = true;
+    const answer = await window.send({ kind: 'tick', changes: [{ id: window.row('First').id, on: true }] });
+    check(/^hledger refused it, so busy\.journal was put back as it was\. hledger said: Balance assertion failed/.test(answer.error || ''), 'immediate rollback: the error says what was restored and why', JSON.stringify(answer.error || answer.message));
+    check((await readFile(ctx.path, 'utf8')) === before, 'immediate rollback: the file is byte-identical to before', '');
+    check(window.data.rows.every((row) => row.status !== 'Cleared'), 'immediate rollback: the window shows the file as it is, not the refused tick', '');
+    // A real failure, not a stood-in one: an edit that breaks the opening assertion.
+    const broken = await window.send({ kind: 'edit', id: window.row('First').id, text: '2026-01-05 First\n    expenses:food  10.00 IDR\n    assets:bank  -10.00 IDR = 5.00 IDR' });
+    check(/^hledger refused it, so busy\.journal was put back as it was\. hledger said: .*[Bb]alance assertion/s.test(broken.error || '') && (await readFile(ctx.path, 'utf8')) === before,
+      'immediate rollback: an edit whose assertion fails is put back, with hledger\'s own words', JSON.stringify((broken.error || '').slice(0, 160)));
+    const undo = await ctx.bridge.undo();
+    check(/Nothing to undo/.test(undo.error || ''), 'and a refused change leaves nothing to undo', JSON.stringify(undo.error || undo.message));
+  } catch (error) {
+    check(false, 'immediate rollback: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
+/** Finish still previews, then writes the assertion with the same check and put-back. */
+async function immediateFinishCase() {
+  const ctx = await busyWindow('immediate-finish');
+  try {
+    const window = windowOn(ctx);
+    const early = await ctx.bridge.preview({ kind: 'finish', finish: { date: '2026-01-31', balance: 0, file: ctx.file }, style: 'posting' });
+    check(/not ticked in the file/.test(early.missing.map((entry) => entry.why).join()), 'finish: refused while lines up to the date are not ticked', JSON.stringify(early.missing));
+    const ids = ordered(window.data).filter((row) => row.date <= '2026-01-31').map((row) => ({ id: row.id, on: true }));
+    const ticked = await window.send({ kind: 'tick', changes: ids });
+    check(Boolean(ticked.ok), 'finish: ticking everything is one write', JSON.stringify(ticked.error || ''));
+    const { expected } = summarize({ data: window.data, ticked: new Set(window.data.rows.map((row) => row.id)), statementDate: '2026-01-31', statementBalance: null });
+    const before = await readFile(ctx.path, 'utf8');
+    const preview = await ctx.bridge.preview({ kind: 'finish', finish: { date: '2026-01-31', balance: expected, file: ctx.file }, style: 'posting' });
+    check(preview.assertion.includes('Reconciled with statement') && (await readFile(ctx.path, 'utf8')) === before, 'finish: the preview shows the assertion and writes nothing', preview.assertion);
+    const answer = await window.send({ kind: 'finish', finish: { date: '2026-01-31', balance: expected, file: ctx.file } });
+    check(Boolean(answer.ok) && (await readFile(ctx.path, 'utf8')).includes('= 900.00 IDR'), 'finish: written and checked', JSON.stringify(answer.error || answer.message));
+    await afterWrite('finish (immediate)', { path: ctx.path, account: 'assets:bank' }, before, preview.files[0], await readFile(ctx.path, 'utf8'));
+  } catch (error) {
+    check(false, 'finish: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
   } finally {
     await ctx.close();
   }
@@ -1005,6 +1265,11 @@ async function main() {
   if (!wanted.length || wanted.includes('marks')) await marksCase();
   if (!wanted.length || wanted.includes('reorder')) await reorderCase();
   if (!wanted.length || wanted.includes('account')) await accountCase();
+  if (!wanted.length || wanted.includes('sequence')) await sequenceCase();
+  if (!wanted.length || wanted.includes('outside')) await outsideCase();
+  if (!wanted.length || wanted.includes('same')) await sameTransactionCase();
+  if (!wanted.length || wanted.includes('immediaterollback')) await immediateRollbackCase();
+  if (!wanted.length || wanted.includes('immediatefinish')) await immediateFinishCase();
   const fixtures = wanted.includes('generic') ? ['generic'] : ['demo'];
 
   for (const fixture of fixtures) {
