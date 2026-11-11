@@ -25,7 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import reconcile from '../assets/plugins/reconcile.js';
-import { moveAccount, neighbour, ordered, readPrint, snapshot, summarize } from '../assets/plugins/reconcile-data.js';
+import { moveAccount, neighbour, ordered, parsePosting, readPrint, snapshot, summarize } from '../assets/plugins/reconcile-data.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
 const run = promisify(execFile);
@@ -667,15 +667,91 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
             replayed === written ? '' : firstDifference(replayed, written));
         }
       }
-      // Finish last: tick everything up to the statement date and assert, which is only
-      // correct if the running total the window worked out is the one hledger has.
-      const statementDate = '2030-01-01';
-      for (const row of rows) if (row.date <= statementDate) ticked.add(row.id);
-      const { expected } = summarize({ data, ticked, statementDate, statementBalance: null });
-      const finished = await apply({ finish: { date: statementDate, balance: expected, file } });
-      check(Boolean(finished && finished.ok), `${account}: Finish writes an assertion the engine accepts`,
-        JSON.stringify(finished && (finished.error || finished.message) || ''));
       notes.push(`${account}: ${wrote} of ${rounds} rounds changed the journal (${accepted} accepted)`);
+
+      // Then the way the window works now: each change written as it is made, found by its
+      // text, with another program editing the file in between. Nothing of the journal is printed.
+      const live = {};
+      const reread = async () => {
+        const fresh = readPrint(JSON.parse(await host.hledger(`print ${JSON.stringify('acct:^' + literal(account) + '$')} -O json`)), account);
+        const lines = readFileSync(join(copy, file), 'utf8').split('\n');
+        for (const row of fresh.rows) row.text = row.where.file.replace(/^\/+/, '') === file ? lines.slice(row.where.first - 1, Math.max(row.where.last - 1, row.where.first)).join('\n').replace(/\s+$/, '') : null;
+        for (const row of fresh.rows) row.where.file = row.where.file.replace(/^\/+/, '');
+        live.data = fresh;
+      };
+      await reread();
+      const send = async (change, label, { expectOk = true } = {}) => {
+        const ids = [change.id, change.after, ...(change.changes || []).map((entry) => entry.id)].filter(Boolean);
+        const targets = {};
+        for (const id of ids) { const found = live.data.rows.find((row) => row.id === id); if (found) targets[id] = snapshot(found); }
+        const before = readFileSync(join(copy, file), 'utf8');
+        const answer = await bridge.change({ style: 'transaction', ...change, targets });
+        if (answer.data) live.data = answer.data;
+        if (!expectOk) return answer;
+        const after = readFileSync(join(copy, file), 'utf8');
+        check(Boolean(answer.ok), `${account}: immediate ${label} is written and hledger accepts it`, String(answer.error || '').slice(0, 160));
+        if (answer.ok) {
+          // What "only its own lines" means differs by kind: a tick rewrites a few lines in place
+          // per transaction, a reorder moves whole transactions and changes none of them, and an
+          // insert adds its own lines and removes nothing.
+          const a = before.split('\n');
+          const b = after.split('\n');
+          let ok;
+          let said;
+          if (change.kind === 'tick') {
+            const differ = a.length === b.length ? a.filter((line, at) => line !== b[at]).length : Infinity;
+            ok = differ <= 3 * change.changes.length;
+            said = `${differ} lines changed for ${change.changes.length} ticks`;
+          } else if (change.kind === 'reorder') {
+            ok = blocksOf(before).join('|') === blocksOf(after).join('|') && a.length === b.length;
+            said = 'the transactions are not the same transactions';
+          } else {
+            const diff = changedLines(before, after);
+            ok = diff.removed.length === 0 && diff.added.length <= 6;
+            said = `${diff.removed.length} removed, ${diff.added.length} added`;
+          }
+          check(ok, `${account}: immediate ${label} touches only its own lines`, said);
+        }
+        return answer;
+      };
+      const mine = () => live.data.rows.filter((row) => row.where.file === file && row.text);
+      const pick = (offset) => mine()[Math.max(0, mine().length - 1 - offset)];
+      await send({ kind: 'tick', changes: [{ id: pick(3).id, on: pick(3).status !== 'Cleared' }] }, 'tick');
+      // Another program adds lines at the top, which renames every row after them.
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      const stale = pick(5);
+      writeFileSync(join(copy, file), `; a line another program added\n${readFileSync(join(copy, file), 'utf8')}`);
+      const second = await send({ kind: 'tick', changes: [{ id: stale.id, on: stale.status !== 'Cleared' }] }, 'tick after an outside edit');
+      check(Boolean(second.outside), `${account}: and it read the outside edit first`, JSON.stringify(second.outside));
+      const sorted = ordered(live.data);
+      const day = sorted.find((row, at) => row.where.file === file && row.text && sorted[at + 1] && sorted[at + 1].date === row.date
+        && sorted[at + 1].where.file === file && sorted[at + 1].where.first !== row.where.first);
+      if (day) await send({ kind: 'reorder', id: day.id, direction: 'down' }, 'reorder within a day');
+      else notes.push(`${account}: no day with two transactions in one file, reorder skipped`);
+      const anchor = pick(2);
+      const other = anchor.text.split('\n').slice(1).map((line) => (/^[ \t]/.test(line) ? parsePosting(line) : null)).find((parts) => parts && parts.account !== account && !parts.open);
+      await send({ kind: 'insert', text: `${anchor.date} A transaction the check added\n    ${other ? other.account : 'expenses:check'}    1\n    ${account}`, after: anchor.id }, 'insert with a bare amount after a row');
+      const added = live.data.rows.find((row) => row.description === 'A transaction the check added');
+      check(Boolean(added) && added.counted && added.amount != null, `${account}: the new row is counted, its amount worked out`, JSON.stringify(added ? { counted: added.counted } : null));
+      const undo = await bridge.undo();
+      if (undo.data) live.data = undo.data;
+      check(Boolean(undo.ok) && !readFileSync(join(copy, file), 'utf8').includes('A transaction the check added'), `${account}: undo takes the insert back out`, String(undo.error || '').slice(0, 160));
+      // hledger refusing a write puts the file back byte for byte.
+      const before = readFileSync(join(copy, file), 'utf8');
+      host.failNextCheck = true;
+      const refused = await send({ kind: 'tick', changes: [{ id: pick(4).id, on: pick(4).status !== 'Cleared' }] }, 'refused tick', { expectOk: false });
+      check(/put back as it was/.test(refused.error || '') && readFileSync(join(copy, file), 'utf8') === before, `${account}: a write hledger refuses is put back byte for byte`, String(refused.error || refused.message).slice(0, 120));
+
+      // Finish last, as the window does it now: tick everything up to the statement date in one
+      // write, then assert what the window works out, which is only right if it is what hledger
+      // has. A tick hledger refused above leaves nothing behind to count.
+      const statementDate = '2030-01-01';
+      const everything = ordered(live.data).filter((row) => row.date <= statementDate && row.status !== 'Cleared' && row.text);
+      if (everything.length) await send({ kind: 'tick', changes: everything.map((row) => ({ id: row.id, on: true })) }, 'tick all');
+      const { expected } = summarize({ data: live.data, ticked: new Set(live.data.rows.map((row) => row.id)), statementDate, statementBalance: null });
+      const finished = await send({ kind: 'finish', finish: { date: statementDate, balance: expected, file } }, 'Finish', { expectOk: false });
+      check(Boolean(finished && finished.ok), `${account}: Finish writes an assertion the engine accepts`,
+        JSON.stringify(finished && (finished.error || finished.message) || '').slice(0, 160));
     }
   } catch (error) {
     check(false, 'real journal: the run completed', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
@@ -929,7 +1005,7 @@ async function accountCase() {
     const found = await ctx.bridge.find({ amount: -1500, date: '2026-01-07', words: '' });
     const best = (found.candidates || [])[0];
     check(Boolean(best) && /Groceries/.test(best.description) && best.postings.filter((posting) => posting.matches).length === 2
-      && best.postings.map((posting) => posting.at).join() === '1,2' && best.reasons.includes('the amount'),
+      && best.postings.map((posting) => posting.at).join() === '1,2' && best.reasons.includes('same amount'),
       'account: found by its amount, either sign, with its postings and their lines', JSON.stringify(found).slice(0, 300));
     const byWords = await ctx.bridge.find({ amount: null, date: '2026-01-07', words: 'grocer' });
     check((byWords.candidates || []).some((candidate) => /Groceries/.test(candidate.description)) && !(byWords.candidates || []).some((candidate) => /First|Second/.test(candidate.description)),
