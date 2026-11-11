@@ -170,14 +170,21 @@ export default {
     // A request from the window carries the ticks, edits, new postings and typed running totals.
     // They come from another window's realm, so they are copied into plain data here first.
     const work = (request) => {
-      const { ticked, finish, edits = {}, inserts = [], expected = {}, moved = {}, style } = JSON.parse(JSON.stringify(request));
+      const { ticked, finish, edits = {}, inserts = [], expected = {}, moved = {}, style, relocate = [], replace = [] } = JSON.parse(JSON.stringify(request));
       const set = new Set(ticked);
       const texts = {};
       for (const { path } of writableFiles(host, data)) {
         const text = host.read(path);
         if (text != null) texts[path] = text;
       }
-      return plan({ data, texts, ticked: set, finish, edits, inserts, expected, moved, style: style === 'transaction' ? 'transaction' : 'posting' });
+      // A transaction of another account may be in a file none of these rows are in.
+      for (const entry of replace) {
+        if (texts[entry.file] == null && typeof host.read === 'function') {
+          const text = host.read(entry.file);
+          if (text != null) texts[entry.file] = text;
+        }
+      }
+      return plan({ data, texts, ticked: set, finish, edits, inserts, expected, moved, relocate, replace, style: style === 'transaction' ? 'transaction' : 'posting' });
     };
 
     // The window asks the plugin to preview and apply, since only this side can reach the files.

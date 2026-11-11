@@ -47,7 +47,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, fillCommodity, markConflicts, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, fillCommodity, markConflicts, moveAccount, neighbour, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -2019,6 +2019,22 @@ check('every bundled plugin documents itself for `<command>?`',
   const order = written.split('\n').filter((line) => /^\d{4}-/.test(line)).map((line) => line.replace(/^\S+ (\* )?/, ''));
   check('in the file, in the same order',
     order.slice(1, 6).join() === 'Coffee,From the bar,Between days,Salary,Same day', order.join());
+}
+
+{
+  // Moving within a day, and moving a posting to this account.
+  const row = (id, date, first, file = 'f') => ({ id, date, description: id, where: { file, first, last: first + 3 } });
+  const rows = [row('a', '2026-01-05', 1), row('b', '2026-01-05', 5), { ...row('b2', '2026-01-05', 5) }, row('c', '2026-01-05', 9), row('d', '2026-01-06', 13), row('e', '2026-01-06', 1, 'g')];
+  check('up goes in front of the previous transaction of the day, down after the next, a transaction\'s own rows aside',
+    JSON.stringify(neighbour(rows, 'c', 'up')) === '{"to":{"id":"b2","side":"before"}}' && JSON.stringify(neighbour(rows, 'a', 'down')) === '{"to":{"id":"b","side":"after"}}'
+    && JSON.stringify(neighbour(rows, 'b2', 'up')) === '{"to":{"id":"a","side":"before"}}', JSON.stringify(neighbour(rows, 'c', 'up')));
+  check('and the edges of a day, another file, and a line no longer listed are refused with a reason',
+    /first of 2026-01-05/.test(neighbour(rows, 'a', 'up').refused) && /last of 2026-01-05/.test(neighbour(rows, 'c', 'down').refused)
+    && /in g/.test(neighbour(rows, 'd', 'down').refused) && /not in this list/.test(neighbour(rows, 'zz', 'up').refused), JSON.stringify(neighbour(rows, 'd', 'down')));
+  check('moving a posting to another account changes its account and nothing else',
+    moveAccount('2026-01-01 x\n    expenses:food              10.00 IDR  ; c\n  * assets:cash', 2, 'assets:bank') === '2026-01-01 x\n    expenses:food              10.00 IDR  ; c\n  * assets:bank'
+    && moveAccount('2026-01-01 x\n    assets:cash      -10.00 IDR\n    e', 1, 'assets:bank:checking') === '2026-01-01 x\n    assets:bank:checking  -10.00 IDR\n    e'
+    && moveAccount('2026-01-01 x', 0, 'a') === null, moveAccount('2026-01-01 x\n    assets:cash      -10.00 IDR\n    e', 1, 'assets:bank:checking'));
 }
 
 // ------------------------------------------------------------------ the verdict

@@ -25,7 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import reconcile from '../assets/plugins/reconcile.js';
-import { ordered, readPrint, summarize } from '../assets/plugins/reconcile-data.js';
+import { moveAccount, neighbour, ordered, readPrint, summarize } from '../assets/plugins/reconcile-data.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
 const run = promisify(execFile);
@@ -810,6 +810,125 @@ async function marksCase() {
   }
 }
 
+/** A journal with a busy day, for the cases that move transactions within it. */
+const BUSY_DAY = [
+  'commodity 1,000.00 IDR',
+  '',
+  '2026-01-01 Opening',
+  '    assets:bank   1000.00 IDR = 1000.00 IDR',
+  '    equity:opening',
+  '',
+  '2026-01-05 First',
+  '    expenses:food  10.00 IDR',
+  '    assets:bank',
+  '',
+  '2026-01-05 Another account between them',
+  '    expenses:food  1.00 IDR',
+  '    assets:cash',
+  '',
+  '2026-01-05 Second',
+  '    expenses:food  20.00 IDR',
+  '    assets:bank',
+  '',
+  '2026-01-05 Third',
+  '    expenses:food  30.00 IDR',
+  '    assets:bank',
+  '',
+  '2026-01-06 Groceries, booked to the wrong account',
+  '    expenses:food  15.00 IDR',
+  '    assets:cash',
+  '',
+  '2026-01-07 Next day',
+  '    expenses:food  40.00 IDR',
+  '    assets:bank',
+  '',
+].join('\n');
+
+/** Open a window on a journal written into a fresh directory, for the cases below. */
+async function busyWindow(name, journal = BUSY_DAY) {
+  const root = await mkdtemp(join(tmpdir(), `hla-write-${name}-`));
+  const file = 'busy.journal';
+  await writeFile(join(root, file), journal);
+  const { host } = realHost({ dir: root, files: [file] });
+  const { bridge, fingerprint } = await openBridge(host, 'assets:bank --statement 2026-01-31');
+  const data = JSON.parse(/<script type="application\/json" id="reconcile-data">([\s\S]*?)<\/script>/.exec(host.page)[1].replace(/\\u003c/g, '<')).data;
+  return { root, file, path: join(root, file), host, bridge, fingerprint, data, async close() { await rm(root, { recursive: true, force: true }); } };
+}
+
+/** The blocks of a journal, as a sorted list, to show a move changed no character of any. */
+const blocksOf = (text) => text.split(/\n\s*\n/).map((block) => block.trim()).filter(Boolean).sort();
+
+/** Same-day order is file order: moving a transaction up and down its day moves its lines. */
+async function reorderCase() {
+  const ctx = await busyWindow('reorder');
+  try {
+    let { data, fingerprint } = ctx;
+    const names = () => ordered(data).filter((row) => row.date === '2026-01-05').map((row) => row.description).join();
+    const step = async (name, direction, expect) => {
+      const row = ordered(data).find((entry) => entry.description === name);
+      const where = neighbour(ordered(data), row.id, direction);
+      if (expect === null) {
+        check(Boolean(where.refused), `reorder: ${name} ${direction} is refused at the edge of its day`, JSON.stringify(where));
+        return;
+      }
+      const before = await readFile(ctx.path, 'utf8');
+      const request = { ticked: [], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint, relocate: [{ id: row.id, to: where.to }] };
+      const plan = await ctx.bridge.preview(request);
+      const answer = await ctx.bridge.apply(request);
+      check(Boolean(answer.ok), `reorder: ${name} ${direction} is written`, JSON.stringify(answer.error || ''));
+      if (!answer.ok) return;
+      data = answer.data;
+      fingerprint = answer.fingerprint;
+      const written = await readFile(ctx.path, 'utf8');
+      await afterWrite(`reorder ${name} ${direction}`, { path: ctx.path, account: 'assets:bank' }, before, plan.files[0], written);
+      check(names() === expect, `reorder: ${name} ${direction} leaves the day as ${expect}`, names());
+      check(blocksOf(written).join('|') === blocksOf(before).join('|'), `reorder: ${name} ${direction} changes the order and no character of any transaction`, '');
+    };
+    check(names() === 'First,Second,Third', 'reorder: the day starts in file order', names());
+    await step('Third', 'up', 'First,Third,Second');
+    await step('First', 'down', 'Third,First,Second');
+    await step('Second', 'down', null);
+    await step('Third', 'up', null);
+  } catch (error) {
+    check(false, 'reorder: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
+/**
+ * A transaction booked to the wrong account is moved to this one: its posting's account changes,
+ * in place, and nothing is added. The other account loses it, this one gains it, once.
+ */
+async function accountCase() {
+  const ctx = await busyWindow('account');
+  try {
+    const text = '2026-01-06 Groceries, booked to the wrong account\n    expenses:food  15.00 IDR\n    assets:cash';
+    const after = moveAccount(text, 2, 'assets:bank');
+    const before = await readFile(ctx.path, 'utf8');
+    const first = before.split('\n').indexOf('2026-01-06 Groceries, booked to the wrong account') + 1;
+    const request = { ticked: [], finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style: 'posting', fingerprint: ctx.fingerprint, replace: [{ file: ctx.file, first, last: first + 3, before: text, after }] };
+    const plan = await ctx.bridge.preview(request);
+    check(plan.missing.length === 0, 'account: the plan has nothing missing', JSON.stringify(plan.missing));
+    const answer = await ctx.bridge.apply(request);
+    check(Boolean(answer.ok), 'account: written', JSON.stringify(answer.error || ''));
+    const written = await readFile(ctx.path, 'utf8');
+    await afterWrite('account', { path: ctx.path, account: 'assets:bank' }, before, plan.files[0], written);
+    const rows = answer.data ? answer.data.rows.filter((row) => /Groceries/.test(row.description)) : [];
+    check(rows.length === 1 && rows[0].amount === -1500, 'account: the transaction is now in this account, once', JSON.stringify(rows.map((row) => row.amount)));
+    check((written.match(/Groceries/g) || []).length === 1, 'account: no copy of it was added', '');
+    const cash = JSON.parse(await ctx.host.hledger('print acct:^assets:cash$ -O json'));
+    check(!cash.some((transaction) => /Groceries/.test(transaction.tdescription)), 'account: the account it was booked to no longer has it', '');
+    // The window found it before an outside edit changed it: the move is refused, not forced.
+    const stale = await ctx.bridge.preview({ ...request, replace: [{ file: ctx.file, first, last: first + 3, before: text, after }] });
+    check(/changed outside this window/.test(stale.missing.map((entry) => entry.why).join()), 'account: a transaction that changed since it was found is not touched', JSON.stringify(stale.missing));
+  } catch (error) {
+    check(false, 'account: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
 const CASES = {
   tick: tickCase,
   untick: untickCase,
@@ -884,6 +1003,8 @@ async function main() {
   if (!wanted.length || wanted.includes('multifile')) await multiFileCase();
   if (!wanted.length || wanted.includes('noassert')) await noAssertionCase();
   if (!wanted.length || wanted.includes('marks')) await marksCase();
+  if (!wanted.length || wanted.includes('reorder')) await reorderCase();
+  if (!wanted.length || wanted.includes('account')) await accountCase();
   const fixtures = wanted.includes('generic') ? ['generic'] : ['demo'];
 
   for (const fixture of fixtures) {
