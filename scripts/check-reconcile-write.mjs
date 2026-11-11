@@ -14,7 +14,7 @@
 //   * when the engine refuses the result, the file is back to its original bytes.
 //
 // Usage: node scripts/check-reconcile-write.mjs [case ...]
-// Cases: tick untick tickall edit delete insert move linebyline finish rollback
+// Cases: tick untick tickall edit delete insert insertbare move linebyline finish rollback
 
 import { chmod, cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -304,6 +304,23 @@ async function insertCase(ctx) {
   const written = await readFile(ctx.path, 'utf8');
   await afterWrite('insert', ctx, ctx.ws.before, plan.files[0], written);
   check(/Coffee[\s\S]*Inserted[\s\S]*Salary/.test(written), 'insert: it landed between its neighbours', written.slice(0, 200));
+}
+
+/**
+ * A new transaction typed with a bare number and this account's amount left out: the window's
+ * reading of it has to be what hledger reads once it is written.
+ */
+async function insertBareCase(ctx) {
+  const text = '2026-09-04 Typed with a bare number\n    Expenses:Food    15000\n    Assets:Bank:Checking';
+  const shown = ordered(ctx.data, { inserts: [{ id: 'new-1', text }] }).find((row) => row.id === 'new-1');
+  const req = request(ctx.fingerprint, { inserts: [{ id: 'new-1', text }] });
+  const plan = await ctx.preview(req);
+  const result = await ctx.apply(req);
+  check(Boolean(result.ok), 'insert bare: apply reports success', JSON.stringify(result.error || ''));
+  await afterWrite('insert bare', ctx, ctx.ws.before, plan.files[0], await readFile(ctx.path, 'utf8'));
+  const read = result.data && result.data.rows.find((row) => row.description === 'Typed with a bare number');
+  check(Boolean(read) && shown.counted && read.amount === shown.amount && read.counted,
+    'insert bare: the window counted the amount hledger reads', JSON.stringify({ shown: shown.amount, read: read && read.amount }));
 }
 
 /** Move a transaction to another day. */
@@ -676,6 +693,7 @@ const CASES = {
   edit: editCase,
   delete: deleteCase,
   insert: insertCase,
+  insertbare: insertBareCase,
   move: moveCase,
   linebyline: lineByLineCase,
   finish: finishCase,

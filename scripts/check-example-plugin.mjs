@@ -47,7 +47,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, fillCommodity, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -1908,6 +1908,36 @@ check('every bundled plugin documents itself for `<command>?`',
     inserts: [{ id: 'new:2', text: '2026-01-11 Another on the same day\n    Assets:Bank    10.00 IDR\n    Expenses:Food', after: neighbour.id }] });
   check('and one dated like its neighbour is placed there too',
     Boolean(sameDay.files[0]) && sameDay.files[0].inserted.length === 1 && sameDay.files[0].appended === '', '');
+}
+
+// ------------------------------------------------------------------ reconcile, from a real reconciliation
+//
+// Each block is one problem met reconciling a real journal, checked the way it was met.
+
+{
+  // A new transaction read the way hledger reads it: the amount left out is worked out, a bare
+  // number is the account's commodity, and the row is counted rather than shown as "?".
+  const data = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking');
+  const account = 'Assets:Bank:Checking';
+  const elided = '2026-09-04 Groceries\n    Assets:Bank:Checking\n    Expenses:Food    15000 IDR';
+  const bare = '2026-09-04 Groceries\n    Expenses:Food    15000\n    Assets:Bank:Checking';
+  const row = (text) => ordered(data, { inserts: [{ id: 'new:1', text }] }).find((entry) => entry.id === 'new:1');
+  check('a new transaction with this account\'s amount left out is worked out, counted, and not "?"',
+    row(elided).amount === -1500000 && row(elided).counted === true && !row(elided).unknown, JSON.stringify(row(elided)));
+  check('a bare number is this account\'s commodity, as the window reads it',
+    row(bare).amount === -1500000 && row(bare).counted === true && readAmount('15000', data.style) === 1500000, JSON.stringify(row(bare)));
+  const edited = ordered(data, { edits: { [data.rows[0].id]: { text: bare } } }).find((entry) => entry.id === data.rows[0].id);
+  check('an edited transaction is counted too', edited.counted === true && edited.amount === -1500000, JSON.stringify(edited));
+  const written = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), inserts: [{ id: 'new:1', text: bare }] });
+  check('and the bare number is written with its commodity, so hledger reads what the window showed',
+    /Expenses:Food +15000 IDR\n/.test(written.files[0].appended), written.files[0].appended);
+  check('a line the person did not change keeps what the journal had, commodity or none',
+    fillCommodity('2026-01-01 x\n    a    5\n    b', data.style, '2026-01-01 x\n    a    5\n    b') === '2026-01-01 x\n    a    5\n    b'
+    && fillCommodity('2026-01-01 x\n    a    -5 = 10\n    b', { ...data.style, commodity: '$', side: 'L', spaced: false }) === '2026-01-01 x\n    a  -$5 = $10\n    b'
+    && fillCommodity('2026-01-01 x\n    a    5 USD\n    b', data.style) === '2026-01-01 x\n    a    5 USD\n    b'
+    && fillCommodity('2026-01-01 x\n    a    5\n    b', { ...data.style, commodity: '' }) === '2026-01-01 x\n    a    5\n    b',
+    fillCommodity('2026-01-01 x\n    a    -5 = 10\n    b', { ...data.style, commodity: '$', side: 'L', spaced: false }));
+  void account;
 }
 
 // ------------------------------------------------------------------ the verdict

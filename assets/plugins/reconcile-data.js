@@ -283,7 +283,7 @@ export function ordered(data, { edits = {}, inserts = [], moved = {} } = {}) {
     if (edit && edit.text != null) {
       if (!edit.text.trim()) return;
       const read = readTransaction(edit.text, data.account, data.style, data.inclusive);
-      rows.push({ ...row, date: read.date || row.date, description: read.description != null ? read.description : row.description, against: read.against, amount: read.amount, at, edited: true, unknown: read.amount == null });
+      rows.push({ ...row, date: read.date || row.date, description: read.description != null ? read.description : row.description, against: read.against, amount: read.amount, at, edited: true, unknown: read.amount == null, counted: true, stated: null });
       return;
     }
     // A transaction edited through another of its rows is that row now.
@@ -296,7 +296,9 @@ export function ordered(data, { edits = {}, inserts = [], moved = {} } = {}) {
     const beside = insert.after != null ? data.rows.findIndex((row) => row.id === insert.after && row.date === date) : -1;
     rows.push({
       id: insert.id, date, description: read.description || '', account: data.account, against: read.against,
-      amount: read.amount, unknown: read.amount == null, status: 'Unmarked', inserted: true,
+      // Written by hand in this window, in this account's commodity or worked out in it: it is
+      // counted. An amount that cannot be read shows "?" and says why under the editor.
+      amount: read.amount, unknown: read.amount == null, counted: true, stated: null, status: 'Unmarked', inserted: true,
       at: beside >= 0 ? beside + 0.5 + at / 1000 : data.rows.length + at,
       where: { file: insert.file || null, first: 0, last: 0, occurrence: 0 },
     });
@@ -371,15 +373,59 @@ function transactionOf(row) {
  * the amount.
  */
 export function readAmount(text, style) {
+  const parts = amountParts(text);
+  if (!parts) return null;
+  // A bare number is this account's commodity. hledger reads it as one only with a default
+  // commodity directive, so a bare number the window reads this way is written with its
+  // commodity (see fillCommodity), and the file then says what the window showed.
+  if (parts.commodity && parts.commodity !== (style.commodity || '')) return null;
+  const minor = parseInput(parts.number, style);
+  if (minor == null) return null;
+  return parts.negative ? -minor : minor;
+}
+
+/** An amount's sign, commodity and digits as written, or null if it is not one amount. */
+function amountParts(text) {
   const plain = String(text).split(/\s=|^=/)[0].split('@')[0].trim();
   if (!plain) return null;
   const match = /^(-?)\s*([^\d\s.,+-][^\d\s-]*?|"[^"]+")?\s*(-?)\s*([\d][\d.,]*)\s*([^\d\s.,][^\s]*|"[^"]+")?$/.exec(plain);
   if (!match) return null;
-  const commodity = (match[2] || match[5] || '').replace(/^"|"$/g, '');
-  if (commodity !== (style.commodity || '')) return null;
-  const minor = parseInput(match[4], style);
-  if (minor == null) return null;
-  return match[1] === '-' || match[3] === '-' ? -minor : minor;
+  return { negative: match[1] === '-' || match[3] === '-', commodity: (match[2] || match[5] || '').replace(/^"|"$/g, ''), number: match[4] };
+}
+
+/**
+ * A transaction's text with each bare number given this account's commodity, so hledger reads
+ * the amount the window showed. Only lines that are not in `original` are touched: a line the
+ * person did not write keeps exactly what the journal already had, commodity or none.
+ */
+export function fillCommodity(text, style, original = '') {
+  if (!style.commodity) return text;
+  const kept = new Set(String(original || '').split('\n'));
+  return String(text).split('\n').map((line) => {
+    if (kept.has(line) || !/^[ \t]/.test(line) || line.trim().startsWith(';')) return line;
+    const parts = parsePosting(line);
+    if (!parts || !parts.amount || /^=/.test(parts.amount) || /@/.test(parts.amount)) return line;
+    const amount = amountParts(parts.amount);
+    if (!amount || amount.commodity) return line;
+    const assertion = /\s(=\*?)\s*(.*)$/.exec(parts.amount);
+    const number = parts.amount.slice(0, assertion ? assertion.index : undefined).trim();
+    let asserted = '';
+    if (assertion) {
+      const balance = amountParts(assertion[2]);
+      asserted = ` ${assertion[1]} ${balance && !balance.commodity ? withSymbol(assertion[2].trim(), style) : assertion[2].trim()}`;
+    }
+    // The amount keeps its right edge, so a column of right-aligned amounts stays one.
+    const end = line.indexOf(parts.amount) + parts.amount.length;
+    return formatPosting({ ...parts, amount: `${withSymbol(number, style)}${asserted}` }, end, parts);
+  }).join('\n');
+}
+
+/** A bare number as written, with the commodity on the side hledger's style puts it. */
+function withSymbol(number, style) {
+  const name = symbol(style.commodity);
+  const gap = style.spaced ? ' ' : '';
+  if (style.side !== 'L') return `${number}${gap}${name}`;
+  return number.startsWith('-') ? `-${name}${gap}${number.slice(1)}` : `${name}${gap}${number}`;
 }
 
 /**
@@ -686,7 +732,7 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     if (!parseHeader(block[0] || '')) { missing.push({ id: first.id, why: 'its first line is not where hledger said it was' }); continue; }
     let next;
     if (editedRow) {
-      const text = edits[editedRow.id].text;
+      const text = fillCommodity(edits[editedRow.id].text, data.style, editedRow.text);
       next = text.trim() ? text.replace(/\s+$/, '').split('\n') : [];
       if (next.length && ticked.has(editedRow.id)) for (const entry of ourLines(next)) next[entry.at] = remark(next[entry.at], '*');
       if (next.length && assertRow) {
@@ -759,7 +805,7 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     return last ? last.where.file : Object.keys(texts)[0];
   };
   for (const insert of inserts) {
-    const lines = String(insert.text || '').replace(/\s+$/, '').split('\n');
+    const lines = fillCommodity(String(insert.text || ''), data.style).replace(/\s+$/, '').split('\n');
     const read = readTransaction(lines.join('\n'), data.account, data.style, data.inclusive);
     if (!read.header) { missing.push({ id: insert.id, why: 'a new transaction needs a first line with its date' }); continue; }
     if (ticked.has(insert.id)) for (const entry of ourLines(lines)) lines[entry.at] = remark(lines[entry.at], '*');
