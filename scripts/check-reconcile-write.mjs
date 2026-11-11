@@ -14,7 +14,7 @@
 //   * when the engine refuses the result, the file is back to its original bytes.
 //
 // Usage: node scripts/check-reconcile-write.mjs [case ...]
-// Cases: tick untick tickall edit delete insert insertbare move linebyline finish rollback
+// Cases: tick untick tickall edit delete insert insertbare insertorder move linebyline finish rollback
 
 import { chmod, cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile, copyFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -146,7 +146,9 @@ function replay(before, plan) {
     ...(plan.inserted || []).map((entry, at) => ({
       index: entry.line - 1,
       count: 0,
-      lines: ['', ...String(entry.text || '').replace(/\s+$/, '').split('\n')],
+      lines: entry.side === 'before'
+        ? [...String(entry.text || '').replace(/\s+$/, '').split('\n'), '']
+        : ['', ...String(entry.text || '').replace(/\s+$/, '').split('\n')],
       at: 1000 + at,
     })),
   ].sort((left, right) => right.index - left.index || right.at - left.at);
@@ -321,6 +323,45 @@ async function insertBareCase(ctx) {
   const read = result.data && result.data.rows.find((row) => row.description === 'Typed with a bare number');
   check(Boolean(read) && shown.counted && read.amount === shown.amount && read.counted,
     'insert bare: the window counted the amount hledger reads', JSON.stringify({ shown: shown.amount, read: read && read.amount }));
+}
+
+/**
+ * New transactions put between rows, on the same day and on another, and from the bar with no
+ * row at all: the list the window shows before writing, the list hledger reads back, and the
+ * order in the file all have to agree.
+ */
+async function insertOrderCase(ctx) {
+  let data = ctx.data;
+  const byName = (name) => ordered(data).find((row) => row.description === name);
+  const steps = [
+    { label: 'same day, between two rows', anchor: () => byName('Coffee').id, date: '2026-09-01', name: 'Same day as Coffee' },
+    { label: 'the next day, between two rows', anchor: () => byName('Same day as Coffee').id, date: '2026-09-02', name: 'First on the second' },
+    { label: 'from the bar, on a day that has rows', anchor: () => null, date: '2026-09-02', name: 'Last on the second' },
+    { label: 'from the bar, before every row', anchor: () => null, date: '2026-08-31', name: 'Before them all' },
+    { label: 'between two rows of other days', anchor: () => byName('Pending transfer').id, date: '2026-09-04', name: 'On a day of its own' },
+  ];
+  for (const step of steps) {
+    const text = `${step.date} ${step.name}\n    Expenses:Food    1000 IDR\n    Assets:Bank:Checking`;
+    const insert = { id: 'new-1', text, after: step.anchor() };
+    const shown = ordered(data, { inserts: [insert] }).map((row) => row.description);
+    const before = await readFile(ctx.path, 'utf8');
+    const plan = await ctx.preview({ ticked: data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id), inserts: [insert], edits: {}, moved: {}, expected: {}, style: 'posting' });
+    const result = await ctx.apply({ ticked: data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id), inserts: [insert], edits: {}, moved: {}, expected: {}, style: 'posting' });
+    check(Boolean(result.ok), `insert order, ${step.label}: written`, JSON.stringify(result.error || ''));
+    if (!result.ok) return;
+    const written = await readFile(ctx.path, 'utf8');
+    await afterWrite(`insert order, ${step.label}`, ctx, before, plan.files[0], written);
+    data = result.data;
+    const reread = ordered(data).map((row) => row.description);
+    check(reread.join() === shown.join(), `insert order, ${step.label}: the window listed it where hledger reads it`,
+      `${shown.join()} vs ${reread.join()}`);
+    // The account's own rows, in file order, are the same day's rows in list order.
+    const inFile = written.split('\n').filter((line) => /^\d{4}-/.test(line)).map((line) => line.replace(/^(\S+) (\* )?/, '$1 '));
+    const day = (date) => inFile.filter((line) => line.startsWith(date)).map((line) => line.slice(11));
+    const listDay = (date) => ordered(data).filter((row) => row.date === date).map((row) => row.description);
+    check(day(step.date).filter((name) => listDay(step.date).includes(name)).join() === listDay(step.date).join(),
+      `insert order, ${step.label}: its day in the file is its day in the list`, `${day(step.date).join()} vs ${listDay(step.date).join()}`);
+  }
 }
 
 /** Move a transaction to another day. */
@@ -777,6 +818,7 @@ const CASES = {
   delete: deleteCase,
   insert: insertCase,
   insertbare: insertBareCase,
+  insertorder: insertOrderCase,
   move: moveCase,
   linebyline: lineByLineCase,
   finish: finishCase,

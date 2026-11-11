@@ -290,16 +290,20 @@ export function ordered(data, { edits = {}, inserts = [], moved = {} } = {}) {
     if (edited.has(transactionOf(row))) return;
     rows.push({ ...row, at, edited: false });
   });
+  // Where each new transaction goes is decided against the journal as it is, the same way the
+  // file is written (see placement), so the list and the file agree before anything is written.
+  const base = inserts.length ? ordered(data, { edits, moved }) : [];
   inserts.forEach((insert, at) => {
     const read = readTransaction(insert.text || '', data.account, data.style, data.inclusive);
     const date = read.date || insert.date;
-    const beside = insert.after != null ? data.rows.findIndex((row) => row.id === insert.after && row.date === date) : -1;
+    const place = placement(base, { anchor: insert.after, date });
+    const index = place ? data.rows.findIndex((row) => row.id === place.id) : -1;
     rows.push({
       id: insert.id, date, description: read.description || '', account: data.account, against: read.against,
       // Written by hand in this window, in this account's commodity or worked out in it: it is
       // counted. An amount that cannot be read shows "?" and says why under the editor.
       amount: read.amount, unknown: read.amount == null, counted: true, stated: null, status: 'Unmarked', inserted: true,
-      at: beside >= 0 ? beside + 0.5 + at / 1000 : data.rows.length + at,
+      at: index < 0 ? data.rows.length + at : index + (place.side === 'after' ? 0.5 : -0.5) + at / 1000,
       where: { file: insert.file || null, first: 0, last: 0, occurrence: 0 },
     });
   });
@@ -321,6 +325,36 @@ export function ordered(data, { edits = {}, inserts = [], moved = {} } = {}) {
     row.balance = balance;
   }
   return rows;
+}
+
+/**
+ * Where a new transaction dated `date` goes, as `{ id, side }`: before or after the transaction
+ * of row `id`, or null for the end of the file. `rows` are the account's rows in hledger's order.
+ *
+ * hledger lists by date, and a day's transactions in file order, so the file position is what
+ * puts a new line where it was asked for. With an `anchor` (the row it was inserted after):
+ *
+ *   dated like the anchor            right after the anchor's transaction;
+ *   later, with rows on that date    just before the first of them that follows the anchor, so
+ *   after the anchor                 it is the first of its day after the anchor, in the file too.
+ *
+ * Otherwise, and with no anchor, it goes after the last row dated on or before it, which is
+ * where the list puts it, else before the first row, else at the end of the file. An anchor
+ * dated after the new line cannot be what precedes it, so it is placed the same way.
+ * Rows that hledger generated have no lines to stand beside and are skipped.
+ */
+export function placement(rows, { anchor = null, date } = {}) {
+  const real = rows.filter((row) => !row.generated && !row.inserted && row.where && row.where.first);
+  const at = anchor == null ? -1 : real.findIndex((row) => row.id === anchor);
+  if (at >= 0 && real[at].date <= date) {
+    const here = real[at];
+    if (here.date === date) return { id: here.id, side: 'after' };
+    const next = real.slice(at + 1).find((row) => row.date === date && transactionOf(row) !== transactionOf(here));
+    if (next) return { id: next.id, side: 'before' };
+  }
+  const before = real.filter((row) => row.date <= date);
+  if (before.length) return { id: before[before.length - 1].id, side: 'after' };
+  return real.length ? { id: real[0].id, side: 'before' } : null;
 }
 
 /**
@@ -761,6 +795,7 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     return files.get(path);
   };
   const rows = ordered(data, { edits, inserts, moved });
+  const baseRows = ordered(data, { edits, moved });
   const asserting = new Map(checkpoints(rows, expected).points.filter((point) => point.difference === 0).map((point) => [point.id, point.balance]));
   const sign = data.inclusive ? '=*' : '=';
 
@@ -870,17 +905,16 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
       }
     }
     const text = `${lines.join('\n')}\n`;
-    // Beside the neighbouring transaction, whatever the date. hledger sorts by date first, so a
-    // different date lands in its own group, while appending to the end of the file would put a
-    // same-dated line after every other line of that day, which is not where the person put it.
-    const beside = insert.after != null ? data.rows.find((row) => row.id === insert.after && !row.generated) : null;
+    // Where the list will show it, which is where the file has to have it (see placement).
+    const place = placement(baseRows, { anchor: insert.after, date: read.date });
+    const beside = place ? data.rows.find((row) => row.id === place.id) : null;
     const path = beside ? beside.where.file : insert.file || lastFile();
     const file = path ? fileOf(path) : null;
     if (!file) { missing.push({ id: insert.id, why: 'there is no file to add it to' }); continue; }
-    // `index` is where the splice goes, zero-based like every other index here; `line` is what
-    // the preview prints as "after line N", and the preview numbers from one like the editor
-    // does. They were the same expression, which announced every insert one line too high.
-    if (beside) file.inserted.push({ index: beside.where.last - 1, line: beside.where.last, text });
+    // `index` is where the splice goes, zero-based like every other index here; `line` is the
+    // same place numbered from one like the editor: the line the new text is put in front of.
+    if (beside && place.side === 'after') file.inserted.push({ index: beside.where.last - 1, line: beside.where.last, side: 'after', text });
+    else if (beside) file.inserted.push({ index: beside.where.first - 1, line: beside.where.first, side: 'before', text });
     else file.appended += `${file.appended ? '\n' : ''}${text}`;
   }
   // The assertion, whether or not there is a file to append it to: a read-only journal still
@@ -899,7 +933,7 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     const lines = [...file.lines];
     const edits = [
       ...file.blocks.map((entry, at) => ({ index: entry.index, count: entry.count, lines: entry.lines, at })),
-      ...file.inserted.map((entry, at) => ({ index: entry.index, count: 0, lines: ['', ...entry.text.trimEnd().split('\n')], at: 1000 + at })),
+      ...file.inserted.map((entry, at) => ({ index: entry.index, count: 0, lines: entry.side === 'before' ? [...entry.text.trimEnd().split('\n'), ''] : ['', ...entry.text.trimEnd().split('\n')], at: 1000 + at })),
     ].sort((left, right) => right.index - left.index || right.at - left.at);
     for (const entry of edits) {
       let count = entry.count;
@@ -911,7 +945,7 @@ export function plan({ data, texts, ticked, finish = null, edits = {}, inserts =
     if (file.appended) after = `${after}${after.endsWith('\n') ? '' : '\n'}\n${file.appended}`;
     out.push({
       path: file.path, before: file.before, after, changes: file.changes, appended: file.appended,
-      inserted: file.inserted.map(({ line, text }) => ({ line, text })),
+      inserted: file.inserted.map(({ line, side, text }) => ({ line, side, text })),
       replaced: file.blocks.map(({ line, before, after: written }) => ({ line, before, after: written })),
     });
   }

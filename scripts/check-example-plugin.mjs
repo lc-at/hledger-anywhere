@@ -47,7 +47,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, fingerprint, parseLine, resolveAccount } from '../assets/plugins/reconcile.js';
-import { assertionText, checkpoints, fillCommodity, markConflicts, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
+import { assertionText, checkpoints, fillCommodity, markConflicts, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -1932,7 +1932,7 @@ check('every bundled plugin documents itself for `<command>?`',
   check('an edited transaction is counted too', edited.counted === true && edited.amount === -1500000, JSON.stringify(edited));
   const written = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), inserts: [{ id: 'new:1', text: bare }] });
   check('and the bare number is written with its commodity, so hledger reads what the window showed',
-    /Expenses:Food +15000 IDR\n/.test(written.files[0].appended), written.files[0].appended);
+    /Expenses:Food +15000 IDR\n/.test(written.files[0].inserted[0].text), JSON.stringify(written.files[0].inserted));
   check('a line the person did not change keeps what the journal had, commodity or none',
     fillCommodity('2026-01-01 x\n    a    5\n    b', data.style, '2026-01-01 x\n    a    5\n    b') === '2026-01-01 x\n    a    5\n    b'
     && fillCommodity('2026-01-01 x\n    a    -5 = 10\n    b', { ...data.style, commodity: '$', side: 'L', spaced: false }) === '2026-01-01 x\n    a  -$5 = $10\n    b'
@@ -1990,6 +1990,35 @@ check('every bundled plugin documents itself for `<command>?`',
     && markConflicts([row({ id: 'a' }), row({ id: 'b', status: 'Unmarked', ownMark: true, transactionMark: 'Unmarked' })].map((entry) => ({ ...entry, transactionMark: 'Unmarked', ownMark: entry.id === 'b' ? false : true })), 'transaction').some((entry) => /not in the same state/.test(entry.why)), '');
   check('and a journal whose marks agree has none', markConflicts([row({}), row({ id: 'b', first: 9, status: 'Unmarked', transactionMark: 'Unmarked' })], 'transaction').length === 0
     && markConflicts([row({ ownMark: true, transactionMark: 'Unmarked' })], 'posting').length === 0, '');
+}
+
+{
+  // A new transaction lands where it was asked for, in the list and in the file, by one rule.
+  const data = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking');
+  const rows = ordered(data);
+  const id = (name, nth = 0) => rows.filter((row) => row.description === name)[nth].id;
+  const where = (anchor, date) => {
+    const place = placement(rows, { anchor, date });
+    return place ? `${place.side} ${rows.find((row) => row.id === place.id).description}` : 'end';
+  };
+  check('inserted after a row, dated like it: right after it',
+    where(id('Coffee'), '2026-09-01') === 'after Coffee' && where(id('Split', 1), '2026-09-05') === 'after Split', where(id('Coffee'), '2026-09-01'));
+  check('inserted after a row, dated like the next one: just before the next one, in the file too',
+    where(id('Coffee'), '2026-09-02') === 'before Salary', where(id('Coffee'), '2026-09-02'));
+  check('inserted after a row, dated a day nobody has: after the last row before that day',
+    where(id('Coffee'), '2026-09-04') === 'after Pending transfer', where(id('Coffee'), '2026-09-04'));
+  check('from the bar, with no row: at the end of its day, before every row, or at the end of the file',
+    where(null, '2026-09-02') === 'after Salary' && where(null, '2026-08-01') === 'before Coffee' && placement([], { date: '2026-01-01' }) === null
+    && where(id('Split'), '2026-09-02') === 'after Salary', `${where(null, '2026-09-02')} / ${where(null, '2026-08-01')} / ${where(id('Split'), '2026-09-02')}`);
+  const insert = (anchor, date, name) => ({ id: `new:${name}`, after: anchor, text: `${date} ${name}\n    Expenses:Food    1 IDR\n    Assets:Bank:Checking` });
+  const inserts = [insert(id('Coffee'), '2026-09-02', 'Between days'), insert(id('Salary'), '2026-09-02', 'Same day'), insert(null, '2026-09-01', 'From the bar')];
+  const listed = ordered(data, { inserts }).map((row) => row.description);
+  check('and the list shows each where the file will have it',
+    listed.slice(0, 5).join() === 'Coffee,From the bar,Between days,Salary,Same day', listed.join());
+  const written = plan({ data, texts: { 'fixture.journal': RECONCILE_JOURNAL }, ticked: new Set(), inserts }).files[0].after;
+  const order = written.split('\n').filter((line) => /^\d{4}-/.test(line)).map((line) => line.replace(/^\S+ (\* )?/, ''));
+  check('in the file, in the same order',
+    order.slice(1, 6).join() === 'Coffee,From the bar,Between days,Salary,Same day', order.join());
 }
 
 // ------------------------------------------------------------------ the verdict
