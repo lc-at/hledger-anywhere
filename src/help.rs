@@ -187,6 +187,22 @@ pub const ENTRIES: &[Entry] = &[
         ],
     },
     Entry {
+        word: "history",
+        usage: "history [words|clear]",
+        group: "This terminal",
+        summary: "list the commands you have run; Ctrl+R searches them",
+        detail: "Lists every command kept, oldest first and numbered, the last thousand of \
+                 them. With words, only the commands containing them all. history clear \
+                 forgets them. Ctrl+R opens a finder over the same list, as fzf does in a \
+                 shell: type to narrow it, letters in order match, the arrows or Ctrl+P and \
+                 Ctrl+N move, and Enter puts the command on the prompt to run or change.",
+        examples: &[
+            ("history", "list every command kept"),
+            ("history balance", "only those containing balance"),
+            ("history clear", "forget them"),
+        ],
+    },
+    Entry {
         word: "clear",
         usage: "clear",
         group: "This terminal",

@@ -173,6 +173,12 @@ impl Editor {
         &self.history
     }
 
+    /// Forget every command run, which is what `history clear` asks for.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
+        self.recalled = None;
+    }
+
     /// Insert typed text at the cursor, ignoring control characters.
     ///
     /// xterm delivers pastes and some keys as multi-character chunks, so this
@@ -988,27 +994,6 @@ pub fn expand_alias(
 /// end somewhere.
 const MAX_ALIAS_DEPTH: usize = 8;
 
-/// The most recent history entry before `from` that contains `query`.
-///
-/// This is Ctrl+R: incremental reverse search, so the caller narrows `query` a
-/// character at a time and asks again. Case-insensitive, like the scrollback
-/// search, and `from` is the index to search *before*, which is how repeated
-/// Ctrl+R walks backwards through the matches.
-pub fn reverse_search(history: &[String], query: &str, from: Option<usize>) -> Option<(usize, String)> {
-    if history.is_empty() {
-        return None;
-    }
-    let needle = query.to_lowercase();
-    let start = from.unwrap_or(history.len()).min(history.len());
-    // Walking backwards, so the first hit is the most recent one.
-    history[..start]
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, entry)| entry.to_lowercase().contains(&needle))
-        .map(|(index, entry)| (index, entry.clone()))
-}
-
 /// Where a search term was found in the scrollback.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
@@ -1093,16 +1078,6 @@ pub fn search_lines(
     })
 }
 
-/// The prompt shown while Ctrl+R is narrowing a search, as readline shows it.
-pub fn isearch_prompt(query: &str, failed: bool) -> String {
-    let label = if failed {
-        "(failed reverse-i-search)"
-    } else {
-        "(reverse-i-search)"
-    };
-    format!("{} {}: ", dim(label), bold(query))
-}
-
 /// Read an on/off argument, accepting the spellings people actually type.
 pub fn parse_switch(text: &str) -> Result<bool, String> {
     match text.trim().to_lowercase().as_str() {
@@ -1142,10 +1117,12 @@ pub fn font_size(text: &str) -> Result<u32, String> {
 // The pieces live next door, re-exported so `terminal::bold` and the rest are still one
 // namespace to the rest of the app.
 mod commands;
+mod history;
 mod messages;
 mod text;
 
 pub use commands::*;
+pub use history::*;
 pub use messages::*;
 pub use text::*;
 
@@ -1885,8 +1862,9 @@ mod tests {
             crate::help::overview(&[], 100),
             prompt_for(None),
             prompt_for(Some("2024.journal")),
-            isearch_prompt("bal", false),
-            isearch_prompt("bal", true),
+            history_listing(&[], None),
+            history_listing(&["balance".to_string()], Some("zzz")),
+            picker_lines(&Picker { query: "", matches: &[], selected: 0, offset: 0, total: 0, width: 80, height: 5 }).0.join("\n"),
             resumed(2, "hledger.journal"),
             demo_loaded(2, "hledger.journal"),
             files_arrived(
@@ -2271,34 +2249,6 @@ mod tests {
     }
 
     #[test]
-    fn reverse_search_finds_the_most_recent_match_and_walks_backwards() {
-        let history: Vec<String> = ["balance assets", "print", "balance expenses", "stats"]
-            .iter()
-            .map(|entry| (*entry).to_string())
-            .collect();
-
-        // Ctrl+R with nothing typed yet takes the newest entry at all.
-        let (index, entry) = reverse_search(&history, "", None).expect("a match");
-        assert_eq!((index, entry.as_str()), (3, "stats"));
-
-        // Typing narrows it, newest match first.
-        let (index, entry) = reverse_search(&history, "balance", None).expect("a match");
-        assert_eq!((index, entry.as_str()), (2, "balance expenses"));
-
-        // Pressing Ctrl+R again goes further back.
-        let (index, entry) = reverse_search(&history, "balance", Some(index)).expect("another");
-        assert_eq!((index, entry.as_str()), (0, "balance assets"));
-
-        // Past the oldest there is nothing, and the search says so.
-        assert_eq!(reverse_search(&history, "balance", Some(index)), None);
-        assert_eq!(reverse_search(&history, "nothing here", None), None);
-        assert_eq!(reverse_search(&[], "balance", None), None);
-
-        // Case-insensitive, like the other search.
-        assert!(reverse_search(&history, "BALANCE", None).is_some());
-    }
-
-    #[test]
     fn an_alias_replaces_the_command_word_and_keeps_the_arguments() {
         let aliases = vec![
             ("bal".to_string(), "balance --tree".to_string()),
@@ -2389,21 +2339,6 @@ mod tests {
         assert_eq!(step_font(MIN_FONT + 1, -1), MIN_FONT);
         assert_eq!(step_font(0, -1), MIN_FONT);
         const { assert!(MIN_FONT < DEFAULT_FONT && DEFAULT_FONT < MAX_FONT) };
-    }
-
-    #[test]
-    fn the_isearch_prompt_looks_like_the_one_people_know() {
-        // Readline's prompt in the terminal's own clothes: the state is dim, the
-        // query is bold, and a search that found nothing says so.
-        let found = isearch_prompt("bal", false);
-        assert_eq!(plain(&found), "(reverse-i-search) bal: ");
-        assert!(found.contains(BOLD), "{found:?}");
-
-        assert_eq!(plain(&isearch_prompt("", false)), "(reverse-i-search) : ");
-        assert_eq!(
-            plain(&isearch_prompt("bal", true)),
-            "(failed reverse-i-search) bal: "
-        );
     }
 
     #[test]

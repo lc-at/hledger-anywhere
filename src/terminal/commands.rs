@@ -48,6 +48,9 @@ pub enum Command<'a> {
     Settings(Option<&'a str>),
     /// `theme [name]` lists the themes on offer, or selects one.
     Theme(Option<&'a str>),
+    /// `history` lists the commands run, `history <words>` those containing them, and
+    /// `history clear` forgets them.
+    History(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
@@ -92,6 +95,7 @@ pub fn classify(line: &str) -> Command<'_> {
         "plugins" => Command::Plugins((!rest.is_empty()).then_some(rest)),
         "settings" => Command::Settings((!rest.is_empty()).then_some(rest)),
         "theme" => Command::Theme((!rest.is_empty()).then_some(rest)),
+        "history" => Command::History((!rest.is_empty()).then_some(rest)),
         "unalias" => Command::Unalias((!rest.is_empty()).then_some(rest)),
         // Vim's vocabulary, because it is the one people already know for
         // scrolling back through output. `n` and `N` are not hledger commands, so
@@ -163,6 +167,7 @@ pub const COMMANDS: &[&str] = &[
     "settings",
     "theme",
     "find",
+    "history",
 ];
 
 /// The words a line can start with: the app's own commands, then hledger's reports.

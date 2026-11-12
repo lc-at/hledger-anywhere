@@ -59,17 +59,21 @@ const SCREEN_READER_KEY: &str = "hledger-anywhere.terminal.screenreader.v1";
 /// the call registering it has to be stored somewhere.
 type Listener<T> = RefCell<Option<wasm_bindgen::closure::Closure<T>>>;
 
-/// A Ctrl+R search in progress.
+/// A Ctrl+R search in progress: fzf's finder over the history.
 ///
-/// Held apart from the editor because it is a mode: while it is on, keys narrow
-/// the query instead of editing the line, which is the whole point of an
-/// incremental search, you keep typing until the line you want appears.
-struct ISearch {
+/// Held apart from the editor because it is a mode: while it is open, keys type the query
+/// and move through the list instead of editing the line, and nothing runs until a command
+/// has been chosen and put on the prompt.
+struct Finder {
     query: String,
-    /// Index in the history of the match being shown, for the next Ctrl+R.
-    index: Option<usize>,
-    /// The most recent query that found nothing, so the prompt can say so.
-    failed: bool,
+    /// Which match is selected, counted from the best.
+    selected: usize,
+    /// The first match drawn, so a long list scrolls to keep the selection in view.
+    offset: usize,
+    /// The matches for the query, best first.
+    matches: Vec<terminal::Match>,
+    /// How many distinct commands there are to search.
+    total: usize,
     /// The line as it was before Ctrl+R, restored when the search is cancelled.
     saved: String,
 }
@@ -81,7 +85,7 @@ const TERMINAL_ID: &str = "terminal";
 const HISTORY_KEY: &str = "hledger-anywhere.terminal.history.v1";
 
 /// How many history entries are kept.
-const MAX_HISTORY: usize = 100;
+const MAX_HISTORY: usize = 1000;
 
 /// Start the app. Called once, from `main`.
 pub fn start() {
@@ -247,8 +251,8 @@ struct App {
     /// messages. The search skips them, so `/foo` finds what a command printed
     /// rather than the `/foo` you just typed or the count line that followed it.
     chatter: RefCell<Vec<String>>,
-    /// The Ctrl+R search in progress, if any.
-    isearch: RefCell<Option<ISearch>>,    /// The terminal font size, in pixels, kept between visits.
+    /// The Ctrl+R finder, while it is open.
+    finder: RefCell<Option<Finder>>,    /// The terminal font size, in pixels, kept between visits.
     font: Cell<u32>,
     /// Whether the terminal's accessibility tree is on, kept between visits.
     screen_reader: Cell<bool>,
@@ -286,7 +290,7 @@ impl App {
             accounts_loading: Cell::new(false),
             accounts_error: RefCell::new(None),
             chatter: RefCell::new(Vec::new()),
-            isearch: RefCell::new(None),
+            finder: RefCell::new(None),
             font: Cell::new(load_font()),
             screen_reader: Cell::new(load_screen_reader()),
             aliases: RefCell::new(load_aliases()),
@@ -300,16 +304,18 @@ impl App {
 
     /// Redraw the prompt line, with the cursor where it belongs.
     ///
-    /// While Ctrl+R is running the prompt is readline's, and the line is the
-    /// match it found, so the two are drawn exactly as the editor's are.
+    /// While the Ctrl+R finder is open it is drawn instead, from the prompt line down.
     fn prompt(&self) {
+        if self.finder.borrow().is_some() {
+            self.draw_finder();
+            return;
+        }
         let editor = self.editor.borrow();
-        let prompt = match self.isearch.borrow().as_ref() {
-            Some(search) => terminal::isearch_prompt(&search.query, search.failed),
-            None => self.prompt_text(),
-        };
-        self.screen
-            .write(&terminal::prompt_redraw(&prompt, &editor.line(), editor.cursor()));
+        self.screen.write(&terminal::prompt_redraw(
+            &self.prompt_text(),
+            &editor.line(),
+            editor.cursor(),
+        ));
     }
 
     /// Print text above the prompt line, then put the prompt back.
@@ -580,6 +586,13 @@ impl App {
     }
 
     fn handle(self: &Rc<App>, data: &str) {
+        // While the Ctrl+R finder is open, keys belong to it, a paste included: a pasted
+        // line is something to search for, never something to run.
+        if self.finder.borrow().is_some() {
+            self.finder_input(data);
+            return;
+        }
+
         // A paste is several lines in one event, and a line editor holds one. Each
         // complete line is typed and entered in turn, exactly as if the user had
         // typed them, so a pasted journal entry works and a pasted command runs.
@@ -602,13 +615,6 @@ impl App {
                 && !data.starts_with('\u{1b}'));
         if typing {
             self.warm_engine();
-        }
-
-        // While a reverse search is running, keys belong to it. This is what
-        // makes it incremental rather than a dialog.
-        if self.isearch.borrow().is_some() {
-            self.isearch_input(data);
-            return;
         }
 
         // A completion menu lasts until something else happens: Tab and Shift+Tab
@@ -713,7 +719,7 @@ impl App {
                 self.editor.borrow_mut().history_next();
                 self.prompt();
             }
-            "\u{12}" => self.start_isearch(),
+            "\u{12}" => self.open_finder(),
             // Alt+B and Alt+F move by words, which is how Emacs users reach the
             // middle of an account path.
             "\u{1b}b" => {
@@ -727,7 +733,6 @@ impl App {
             // Ctrl+C clears the line, as in a shell. It cannot stop the engine.
             "\u{3}" => {
                 self.screen.write("^C\r\n");
-                *self.isearch.borrow_mut() = None;
                 self.editor.borrow_mut().clear_line();
                 self.prompt();
             }
@@ -907,6 +912,15 @@ impl App {
                 self.announce(&listing);
             }
             Command::Alias(Some(text)) => self.set_alias(text),
+            Command::History(Some("clear" | "-c")) => {
+                self.editor.borrow_mut().clear_history();
+                save_history(self.editor.borrow().history());
+                self.announce("The history is cleared: nothing is left for ↑ or Ctrl+R to recall.");
+            }
+            Command::History(filter) => {
+                let listing = terminal::history_listing(self.editor.borrow().history(), filter);
+                self.announce(&listing);
+            }
             Command::Unalias(Some(name)) => {
                 if let Some(name) = self.single(name) {
                     self.remove_alias(&name);
@@ -2278,107 +2292,179 @@ impl App {
         self.announce(&text);
     }
 
-    /// Ctrl+R: start an incremental reverse search through the history.
-    fn start_isearch(self: &Rc<App>) {
+    /// Ctrl+R: open the finder over the history, as fzf's Ctrl+R does in a shell.
+    ///
+    /// What is already on the line is the query to start from, so typing a few letters and
+    /// then Ctrl+R finds the commands that have them.
+    fn open_finder(self: &Rc<App>) {
         let saved = self.editor.borrow().line();
-        *self.isearch.borrow_mut() = Some(ISearch {
-            query: String::new(),
-            index: None,
-            failed: false,
+        let total = {
+            let editor = self.editor.borrow();
+            editor
+                .history()
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+        };
+        *self.finder.borrow_mut() = Some(Finder {
+            query: saved.trim().to_string(),
+            selected: 0,
+            offset: 0,
+            matches: Vec::new(),
+            total,
             saved,
         });
-        self.refresh_isearch();
+        self.search_finder();
     }
 
-    /// One keypress while a reverse search is running.
-    fn isearch_input(self: &Rc<App>, data: &str) {
-        match data {
-            // Enter takes the match and runs it, as readline does: the search is
-            // a way of getting to a command you have run before.
-            "\r" => {
-                *self.isearch.borrow_mut() = None;
-                self.submit();
-            }
-            // Ctrl+G or Escape abandons the search and restores the line.
-            "\u{7}" | "\u{1b}" => {
-                let saved = self
-                    .isearch
-                    .borrow_mut()
-                    .take()
-                    .map(|search| search.saved)
-                    .unwrap_or_default();
-                self.editor.borrow_mut().set_line(&saved);
-                self.prompt();
-            }
-            // Another Ctrl+R goes further back through the matches.
-            "\u{12}" => {
-                let from = self.isearch.borrow().as_ref().and_then(|search| search.index);
-                if let Some(search) = self.isearch.borrow_mut().as_mut() {
-                    search.index = from;
-                }
-                self.refresh_isearch_from(from);
-            }
-            // Backspace shortens the query, which is how an incremental search is
-            // corrected.
-            "\u{7f}" | "\u{8}" => {
-                if let Some(search) = self.isearch.borrow_mut().as_mut() {
-                    search.query.pop();
-                }
-                self.refresh_isearch();
-            }
-            // Anything else narrows the query.
-            typed if !typed.chars().any(char::is_control) => {
-                if let Some(search) = self.isearch.borrow_mut().as_mut() {
-                    search.query.push_str(typed);
-                }
-                self.refresh_isearch();
-            }
-            // A key that means something else: accept the match and let the key
-            // do its job.
-            other => {
-                *self.isearch.borrow_mut() = None;
-                self.handle(other);
-            }
-        }
-    }
-
-    /// Search again from scratch with the current query.
-    fn refresh_isearch(self: &Rc<App>) {
-        self.refresh_isearch_from(None);
-    }
-
-    /// Search again, optionally looking only before `from`.
-    fn refresh_isearch_from(self: &Rc<App>, from: Option<usize>) {
-        let query = self
-            .isearch
-            .borrow()
-            .as_ref()
-            .map(|search| search.query.clone())
-            .unwrap_or_default();
+    /// Match the query again, back at the best match.
+    fn search_finder(self: &Rc<App>) {
         let history = self.editor.borrow().history().to_vec();
+        if let Some(finder) = self.finder.borrow_mut().as_mut() {
+            finder.matches = terminal::history_matches(&history, &finder.query);
+            finder.selected = 0;
+            finder.offset = 0;
+        }
+        self.prompt();
+    }
 
-        match terminal::reverse_search(&history, &query, from) {
-            Some((index, entry)) => {
-                {
-                    let mut isearch = self.isearch.borrow_mut();
-                    if let Some(search) = isearch.as_mut() {
-                        search.index = Some(index);
-                        search.failed = false;
-                    }
-                }
-                // The match goes into the editor, so it is the line being edited
-                // and Enter will run exactly what is on screen.
-                self.editor.borrow_mut().set_line(&entry);
-                self.prompt();
+    /// How many matches the finder shows at once: ten, or fewer on a short screen, so the
+    /// query, the list and a line of what came before all fit.
+    fn finder_height(&self) -> usize {
+        let rows = self.screen.size().1 as usize;
+        rows.saturating_sub(3).clamp(1, 10)
+    }
+
+    /// Draw the finder from the prompt line down, and put the cursor back after the query.
+    ///
+    /// The prompt line becomes the query, and the matches go on the lines under it, which
+    /// scrolls the screen up when the prompt is at the bottom, the way fzf makes room. Every
+    /// redraw starts by clearing from the query line down, so the list can only ever be the
+    /// one drawn last.
+    fn draw_finder(&self) {
+        let height = self.finder_height();
+        let width = self.columns();
+        let (lines, column) = {
+            let mut finder = self.finder.borrow_mut();
+            let Some(finder) = finder.as_mut() else {
+                return;
+            };
+            finder.offset = terminal::scroll_to(finder.selected, finder.offset, height);
+            terminal::picker_lines(&terminal::Picker {
+                query: &finder.query,
+                matches: &finder.matches,
+                selected: finder.selected,
+                offset: finder.offset,
+                total: finder.total,
+                width,
+                height,
+            })
+        };
+        let mut out = String::from("\r\u{1b}[J");
+        out.push_str(&lines.join("\r\n"));
+        if lines.len() > 1 {
+            out.push_str(&format!("\u{1b}[{}A", lines.len() - 1));
+        }
+        out.push('\r');
+        if column > 0 {
+            out.push_str(&format!("\u{1b}[{column}C"));
+        }
+        self.screen.write(&out);
+    }
+
+    /// Close the finder, putting `line` on the prompt, with the list cleared away.
+    fn close_finder(self: &Rc<App>, line: &str) {
+        *self.finder.borrow_mut() = None;
+        self.screen.write("\r\u{1b}[J");
+        self.editor.borrow_mut().set_line(line);
+        self.prompt();
+    }
+
+    /// Move the selection by `step`, stopping at either end.
+    fn move_finder(self: &Rc<App>, step: isize) {
+        if let Some(finder) = self.finder.borrow_mut().as_mut() {
+            let last = finder.matches.len().saturating_sub(1);
+            finder.selected = finder.selected.saturating_add_signed(step).min(last);
+        }
+        self.prompt();
+    }
+
+    /// One key while the finder is open.
+    fn finder_input(self: &Rc<App>, data: &str) {
+        let page = self.finder_height() as isize;
+        match data {
+            // Enter or Tab puts the chosen command on the prompt, to run or change: the
+            // finder finds, and running stays a separate, deliberate Enter, as with fzf.
+            "\r" | "\t" => {
+                let chosen = {
+                    let finder = self.finder.borrow();
+                    finder.as_ref().and_then(|finder| {
+                        finder
+                            .matches
+                            .get(finder.selected)
+                            .map(|found| found.entry.clone())
+                            .or_else(|| Some(finder.saved.clone()))
+                    })
+                };
+                self.close_finder(&chosen.unwrap_or_default());
             }
-            None => {
-                // Keep whatever was found last: readline leaves the best match on
-                // screen and says the search has failed.
-                if let Some(search) = self.isearch.borrow_mut().as_mut() {
-                    search.failed = true;
-                }
-                self.prompt();
+            // Escape, Ctrl+G and Ctrl+C put the line back as it was.
+            "\u{1b}" | "\u{7}" | "\u{3}" => {
+                let saved = self
+                    .finder
+                    .borrow()
+                    .as_ref()
+                    .map(|finder| finder.saved.clone())
+                    .unwrap_or_default();
+                self.close_finder(&saved);
             }
+            // Up the list: towards the better matches.
+            "\u{1b}[A" | "\u{1b}OA" | "\u{10}" | "\u{b}" => self.move_finder(-1),
+            // Down the list: Ctrl+R again keeps going, as it does in readline.
+            "\u{1b}[B" | "\u{1b}OB" | "\u{e}" | "\n" | "\u{12}" => self.move_finder(1),
+            "\u{1b}[5~" => self.move_finder(-page),
+            "\u{1b}[6~" => self.move_finder(page),
+            "\u{1b}[H" | "\u{1b}[1~" => self.move_finder(isize::MIN / 2),
+            "\u{1b}[F" | "\u{1b}[4~" => self.move_finder(isize::MAX / 2),
+            "\u{7f}" | "\u{8}" => {
+                if let Some(finder) = self.finder.borrow_mut().as_mut() {
+                    finder.query.pop();
+                }
+                self.search_finder();
+            }
+            // Ctrl+U empties the query; Ctrl+W takes off its last word.
+            "\u{15}" => {
+                if let Some(finder) = self.finder.borrow_mut().as_mut() {
+                    finder.query.clear();
+                }
+                self.search_finder();
+            }
+            "\u{17}" => {
+                if let Some(finder) = self.finder.borrow_mut().as_mut() {
+                    let kept = finder.query.trim_end().len();
+                    let cut = finder.query[..kept].rfind(' ').map_or(0, |at| at + 1);
+                    finder.query.truncate(cut);
+                }
+                self.search_finder();
+            }
+            // Typing, or a paste, narrows the query. A pasted line break is a space: it is
+            // a query, and nothing typed here ever runs.
+            typed if !typed.starts_with('\u{1b}') => {
+                let text: String = typed
+                    .chars()
+                    .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                    .filter(|c| !c.is_control())
+                    .collect();
+                if text.is_empty() {
+                    return;
+                }
+                if let Some(finder) = self.finder.borrow_mut().as_mut() {
+                    finder.query.push_str(&text);
+                }
+                self.search_finder();
+            }
+            // Any other key is ignored rather than guessed at.
+            _ => {}
         }
     }
 

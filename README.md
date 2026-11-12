@@ -70,6 +70,7 @@ any command, the app's own and hledger's (`balance?`).
 | `font [size]` | Show or set the font size, 8 to 32 px. |
 | `screenreader` | Turn xterm's accessibility tree on or off. |
 | `clear` | Clear the screen. |
+| `history [words\|clear]` | List the commands you have run, or those containing words; `clear` forgets them. |
 | `theme [name]` | List colour themes, or select one. |
 | `plugins [add\|remove\|reload]` | List installed plugins, or manage repositories. |
 | `settings [export\|import]` | Show what is remembered, or move it between instances. |
@@ -84,7 +85,15 @@ history. **Ctrl+C** stops a running command.
 
 The readline keys work too: `Ctrl+A`/`Ctrl+E` line ends, `Ctrl+B`/`Ctrl+F` characters,
 `Alt+B`/`Alt+F` words, `Ctrl+K`/`Ctrl+U`/`Ctrl+W` kill, `Ctrl+Y` yank, `Ctrl+T` transpose,
-`Ctrl+R` incremental history search, `Ctrl+L` clear, `Ctrl+=`/`Ctrl+-`/`Ctrl+0` font size.
+`Ctrl+L` clear, `Ctrl+=`/`Ctrl+-`/`Ctrl+0` font size.
+
+**Ctrl+R** opens a finder over the history, as fzf's does in a shell: the query where the
+prompt was, and under it every command that matches, best first, the matching letters lit.
+Letters in order match (`blx` finds `balance expenses`), every word must match, `'word` must
+appear as typed, `^word` starts the command and `word$` ends it, and a capital makes it
+case-sensitive. **↑/↓**, Ctrl+P/Ctrl+N, Ctrl+K/Ctrl+J or Ctrl+R again move; PageUp and
+PageDown move a screen. **Enter** or Tab puts the command on the prompt, to run or change;
+Escape, Ctrl+G or Ctrl+C put back what was there. The last thousand commands are kept.
 
 ## Loading a journal
 
