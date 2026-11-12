@@ -379,15 +379,15 @@
             ],
             [
               "e",
-              "edit the transaction as journal text, beside the whole file; empty deletes it"
+              "open the whole file at the transaction, editable as in hledger-ui, with search (Ctrl+F); Ctrl+S writes it, checked by hledger"
             ],
             [
               "n",
-              "add a transaction, placed at the end of its day"
+              "add a transaction, opened in the file at the end of its day"
             ],
             [
               "i",
-              "add a transaction after the line with the cursor"
+              "add a transaction after the line with the cursor, opened in the file there"
             ],
             [
               "click the date, or d",

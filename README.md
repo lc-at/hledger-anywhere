@@ -243,8 +243,12 @@ A line the statement has and the journal does not may be booked to the wrong acc
 **Find a transaction** (`f`) looks under other accounts by amount (either sign), near a date,
 or by words from the payee, starting from the difference. Each match shows the whole file
 beside it, lit where it is, and **Move it to this account** on each posting changes that
-posting's account in place: nothing is copied. The editor (`e`, `i`, `n`) shows the file
-beside it too, with the transaction lit or a mark where a new one will go. A new one goes
+posting's account in place: nothing is copied. Editing (`e`, `i`, `n`) opens the whole file,
+editable, the way hledger-ui hands the journal to an editor: at the transaction, lit, or with
+a new one where it will go, and with a search (Ctrl+F, Enter for the next match). Anything in
+the file can be changed; Ctrl+S writes it through the same check, and is refused rather than
+written over if another program changed the file meanwhile (Reload from disk takes theirs).
+A read-only journal edits the transaction's own text in the window instead. A new one goes
 where it was put: after the line it was inserted at on that day, first of its day when dated
 a later day, and from **Add a transaction** at the end of its day. A day's order is file
 order, so Shift+Up and Shift+Down (or the small arrows by the date) move a transaction within
