@@ -125,7 +125,7 @@ export function mount(root = document) {
 /** Ace themes are modules; each window defines one from the app's own palette. */
 let themes = 0;
 
-function defineTheme(ace, colors) {
+export function defineTheme(ace, colors) {
   const name = `ace/theme/hledger-anywhere-${(themes += 1)}`;
   const className = `ace-hledger-anywhere-${themes}`;
   const selection = mix(colors.background, colors.foreground, 25);

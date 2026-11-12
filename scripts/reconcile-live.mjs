@@ -268,38 +268,109 @@ export async function liveChecks(tab, check) {
     check('live: and u undoes the last write', (disk(entry).match(/^ {2}\* assets:bank$/gm) || []).length < 4, await text('status'));
   }
 
+  // The editor is Ace on the whole file; the checks drive it through its own API, as typing does.
+  const ED = "document.getElementById('fe-ace').env.editor";
+  const editorOpen = () => tab.until(`!document.getElementById('file-editor').hidden && document.getElementById('fe-ace').env && ${ED}.getValue().length > 0`, 15000);
+  const cursorLine = () => tab.eval(`${ED}.getCursorPosition().row + 1`);
+  const lineAt = (row) => tab.eval(`${ED}.session.getLine(${row - 1})`);
+  const typeAt = (row, column, text) => tab.eval(`(() => { const e = ${ED}; e.navigateTo(${row - 1}, ${column}); e.insert(${JSON.stringify(text)}); e.focus(); })()`);
+  const replaceLine = (row, text) => tab.eval(`(() => { const e = ${ED}; const Range = window.ace.require('ace/range').Range; e.session.replace(new Range(${row - 1}, 0, ${row - 1}, Number.MAX_VALUE), ${JSON.stringify(text)}); e.navigateTo(${row - 1}, 0); e.focus(); })()`);
+  const writeKey = () => tab.key('s', { code: 'KeyS', keyCode: 83, modifiers: 2 });
+
+  // ------------------------------------------------ editing: the file itself, at the transaction
+  {
+    const entry = space('file');
+    await open(entry);
+    await focusRow('Hardware store');
+    await tab.key('e', { text: 'e' });
+    await editorOpen();
+    const opened = await tab.eval(`({ line: ${ED}.getCursorPosition().row + 1, path: document.getElementById('fe-path').textContent, lit: !!document.querySelector('#fe-ace .fe-target'), reading: document.getElementById('fe-reading').textContent, lines: ${ED}.session.getLength() })`);
+    await shot('03-edit-opens-the-whole-file');
+    check('live: e opens the whole file, editable, at the transaction, lit, and says what it means for the account',
+      opened.line === 11 && opened.path === 'live.journal' && opened.lit && opened.lines >= 34 && /2026-01-05: -20\.00 IDR to assets:bank, against expenses:home/.test(opened.reading), JSON.stringify(opened));
+    // Ctrl+F in the editor goes to the search; typing finds, Enter steps on, and the count follows.
+    await tab.key('f', { code: 'KeyF', keyCode: 70, modifiers: 2 });
+    const searching = await tab.eval("document.activeElement === document.getElementById('fe-search')");
+    await tab.send('Input.insertText', { text: 'assets:bank' });
+    await tab.until("/of/.test(document.getElementById('fe-count').textContent)", 5000);
+    const first = await tab.eval(`({ count: document.getElementById('fe-count').textContent, line: ${ED}.getCursorPosition().row + 1, selected: ${ED}.getSelectedText() })`);
+    await tab.key('Enter', { code: 'Enter', keyCode: 13, text: '\r' });
+    const second = await tab.eval(`({ count: document.getElementById('fe-count').textContent, line: ${ED}.getCursorPosition().row + 1 })`);
+    await shot('04-edit-search-in-the-file');
+    check('live: Ctrl+F searches the file: the next match from the transaction, how many there are, and Enter steps to the next',
+      searching && first.selected === 'assets:bank' && first.line === 13 && /^3 of 7$/.test(first.count) && second.line === 17 && /^4 of 7$/.test(second.count), JSON.stringify({ searching, first, second }));
+    await tab.eval("document.getElementById('fe-prev').click()");
+    check('live: and the up control steps back', (await cursorLine()) === 13, String(await cursorLine()));
+    await tab.eval("document.getElementById('fe-back').click()");
+    check('live: Back to it returns to the transaction', (await cursorLine()) === 11, String(await cursorLine()));
+    // Anything in the file can be edited: the transaction, and a note far from it.
+    await replaceLine(12, '    expenses:home  25.00 IDR');
+    await typeAt(1, 0, '; a note typed at the top of the file\n');
+    await tab.eval(`${ED}.gotoLine(13, 0)`);
+    check('live: the line under the editor follows the cursor', /-25\.00 IDR to assets:bank/.test(await text('fe-reading')), await text('fe-reading'));
+    await writeKey();
+    await settled(entry, 1);
+    await tab.until("document.getElementById('file-editor').hidden", 10000);
+    await shot('05-edit-written');
+    check('live: Ctrl+S writes the file, every edit in it, and closes the editor',
+      disk(entry).startsWith('; a note typed at the top of the file\ncommodity') && disk(entry).includes('expenses:home  25.00 IDR') && /^Wrote live\.journal/.test(await text('status')), await text('status'));
+    check('live: the list shows the file as written, the edited row in focus',
+      (await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].find((tr) => tr.innerText.includes('Hardware store')).innerText")).includes('-25.00')
+      && /Hardware store/.test(await tab.eval('document.activeElement.innerText')), '');
+    // Another program changes the file while something is typed here: nothing is written over.
+    await focusRow('Bakery');
+    await tab.key('e', { text: 'e' });
+    await editorOpen();
+    await replaceLine(9, '    expenses:food  11.00 IDR');
+    const typed = await tab.eval(`${ED}.getValue()`);
+    await sleep(30);
+    writeFileSync(entry.path, disk(entry).replace('expenses:books  30.00 IDR', 'expenses:books  31.00 IDR'));
+    await tab.until("!document.getElementById('fe-reload').hidden", 8000);
+    await shot('06-edit-outside-change-while-typing');
+    check('live: an outside change while something is typed is said, and nothing typed is lost',
+      /changed outside this window since this editor opened/.test(await text('fe-said')) && (await tab.eval(`${ED}.getValue()`)) === typed, await text('fe-said'));
+    const outside = disk(entry);
+    await writeKey();
+    await tab.until("/not written/.test(document.getElementById('fe-said').textContent)", 10000);
+    check('live: writing then is refused, the file is the other program\'s, and the editor stays open',
+      disk(entry) === outside && !(await tab.eval("document.getElementById('file-editor').hidden")), await text('fe-said'));
+    await tab.eval("document.getElementById('fe-reload').click()");
+    check('live: Reload from disk takes the file as it is now', (await tab.eval(`${ED}.getValue()`)) === outside, '');
+    await replaceLine(9, '    expenses:food  12.00 IDR');
+    await tab.eval("document.getElementById('fe-cancel').click()");
+    const armed = await tab.eval("({ hidden: document.getElementById('file-editor').hidden, said: document.getElementById('fe-cancel').textContent })");
+    await tab.eval("document.getElementById('fe-cancel').click()");
+    check('live: Cancel with changes asks once more, then drops them', !armed.hidden && armed.said === 'Drop the changes?' && (await tab.eval("document.getElementById('file-editor').hidden")) && disk(entry) === outside, JSON.stringify(armed));
+  }
+
   // ------------------------------------------------ a new transaction, its amount left out
   {
     const entry = space('add');
     await open(entry);
     await tab.eval("document.getElementById('add').click()");
-    await tab.eval(`(() => {
-      const field = document.querySelector('tr.editor textarea');
-      field.value = '2026-01-05 Corner shop\\n    expenses:food    7\\n    assets:bank';
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-    })()`);
-    await tab.until("document.querySelector('tr.editor .file-view .lines div')", 5000);
-    const view = await tab.eval(`(() => ({
-      reading: document.getElementById('reading').textContent,
-      where: document.querySelector('tr.editor .file-view .where').textContent,
-      here: document.querySelector('tr.editor .file-view .here') ? document.querySelector('tr.editor .file-view .here').textContent : '',
-    }))()`);
-    await shot('03-add-split-view-where-it-goes');
+    await editorOpen();
+    const at = await cursorLine();
+    const placed = await tab.eval(`({ line: ${ED}.session.getLine(${ED}.getCursorPosition().row), above: ${ED}.session.getLine(${ED}.getCursorPosition().row - 2), dirty: true })`);
+    check('live: Add opens the file with a new transaction where it will go: after the last of its day, the cursor on its description',
+      at === 35 && placed.line === '2026-01-31 ' && placed.above === '  * assets:bank', JSON.stringify({ at, placed }));
+    await typeAt(at, 11, 'Corner shop');
+    await typeAt(at + 1, (await lineAt(at + 1)).length, '\n    expenses:food    7');
+    await tab.eval(`${ED}.gotoLine(${at}, 0)`);
+    const reading = await text('fe-reading');
+    await shot('07-add-in-the-file-where-it-goes');
     check('live: a new transaction is read as hledger will read it: a bare number in the account\'s commodity, the bank\'s amount worked out',
-      /2026-01-05: -7\.00 IDR to assets:bank, against expenses:food/.test(view.reading), view.reading);
-    check('live: and the file beside it shows where it will go: after the last of its day',
-      /it goes after line 17, after 2026-01-05 Bookshop/.test(view.where) && /^18/.test(view.here), JSON.stringify(view));
-    await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+      /2026-01-31: -7\.00 IDR to assets:bank, against expenses:food/.test(reading), reading);
+    await tab.key('Enter', { code: 'Enter', keyCode: 13, modifiers: 2 });
     await settled(entry, 1);
-    await tab.until("/Added/.test(document.getElementById('status').textContent)", 8000);
-    const row = await tab.eval(`(() => { const tr = [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => tr.innerText.includes('Corner shop')); return tr ? { text: tr.innerText, label: tr.getAttribute('aria-label'), on: tr.classList.contains('on') } : null; })()`);
-    await shot('04-add-written-counted');
-    check('live: once written it shows its amount, counted, never "?" or "not counted", and ticked',
-      row && /-7\.00/.test(row.text) && !/\?|not counted/.test(row.label) && row.on, JSON.stringify(row));
+    await tab.until("document.getElementById('file-editor').hidden", 10000);
+    const row = await tab.eval(`(() => { const tr = [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => tr.innerText.includes('Corner shop')); return tr ? { text: tr.innerText, label: tr.getAttribute('aria-label') } : null; })()`);
+    await shot('08-add-written-counted');
+    check('live: once written (Ctrl+Enter) it shows its amount, counted, never "?" or "not counted"',
+      row && /-7\.00/.test(row.text) && !/\?|not counted/.test(row.label), JSON.stringify(row));
     check('live: and the file has it after the day\'s last, with its commodity written',
-      /Bookshop\n {4}expenses:books {2}30\.00 IDR\n {4}assets:bank\n\n2026-01-05 Corner shop\n {4}expenses:food {2,}7 IDR\n {2}\* assets:bank\n\n2026-01-07/.test(disk(entry)), disk(entry).slice(200, 420));
+      /Cinema\n {4}expenses:fun {2}12\.00 IDR\n {2}\* assets:bank\n\n2026-01-31 Corner shop\n {4}assets:bank\n {4}expenses:food {2,}7 IDR\n/.test(disk(entry)), disk(entry).slice(-160));
     const said = await rowsSaid();
-    check('live: the list has it in the same place as the file', said.indexOf('Corner shop') === said.indexOf('Bookshop') + 1, JSON.stringify(said));
+    check('live: the list has it in the same place as the file', said[said.length - 1] === 'Corner shop', JSON.stringify(said));
   }
 
   // ------------------------------------------------ inserted between two rows
@@ -308,26 +379,27 @@ export async function liveChecks(tab, check) {
     await open(entry);
     await focusRow('Bakery');
     await tab.key('i', { text: 'i' });
-    await tab.eval(`(() => {
-      const field = document.querySelector('tr.editor textarea');
-      field.value = '2026-01-05 Between the first two\\n    expenses:food  1.00 IDR\\n    assets:bank';
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-    })()`);
-    await tab.eval("document.querySelector('tr.editor textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))");
+    await editorOpen();
+    let at = await cursorLine();
+    check('live: i opens the file with the new transaction right after the line, on its day', at === 11 && (await lineAt(at)) === '2026-01-05 ', String(at));
+    await replaceLine(at, '2026-01-05 Between the first two');
+    await typeAt(at + 1, (await lineAt(at + 1)).length, '\n    expenses:food  1.00 IDR');
+    await writeKey();
     await settled(entry, 1);
+    await tab.until("document.getElementById('file-editor').hidden", 10000);
     await focusRow('Bookshop');
     await tab.key('i', { text: 'i' });
-    await tab.eval(`(() => {
-      const field = document.querySelector('tr.editor textarea');
-      field.value = '2026-01-07 First of the seventh\\n    expenses:food  2.00 IDR\\n    assets:bank';
-      field.dispatchEvent(new Event('input', { bubbles: true }));
-    })()`);
-    await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+    await editorOpen();
+    at = await cursorLine();
+    // Dated the next day in the editor, it still sits right after the line it was inserted at.
+    await replaceLine(at, '2026-01-07 First of the seventh');
+    await typeAt(at + 1, (await lineAt(at + 1)).length, '\n    expenses:food  2.00 IDR');
+    await writeKey();
     await settled(entry, 2);
-    await tab.until("document.querySelectorAll('tr.editor').length === 0", 8000);
+    await tab.until("document.getElementById('file-editor').hidden", 10000);
     const said = await rowsSaid();
     const inFile = disk(entry).split('\n').filter((line) => /^\d{4}-/.test(line)).map((line) => line.replace(/^\S+ (\* )?/, '').replace(/\s+;.*$/, ''));
-    await shot('05-insert-between-rows');
+    await shot('09-insert-between-rows');
     check('live: inserted after a row on its day, it is right after it, in the list and the file',
       said.indexOf('Between the first two') === said.indexOf('Bakery') + 1 && inFile.indexOf('Between the first two') === inFile.indexOf('Bakery') + 1, `${JSON.stringify(said)} / ${JSON.stringify(inFile)}`);
     check('live: inserted after a row but dated the next day, it is after it, in the list and the file',
@@ -345,7 +417,7 @@ export async function liveChecks(tab, check) {
     await tab.key('ArrowUp', { code: 'ArrowUp', keyCode: 38, modifiers: 8 });
     await settled(entry, 1);
     await tab.until("/Moved Bookshop up/.test(document.getElementById('status').textContent)", 8000);
-    await shot('06-reorder-shift-up');
+    await shot('10-reorder-shift-up');
     let said = await rowsSaid();
     let inFile = disk(entry).split('\n').filter((line) => line.startsWith('2026-01-05')).map((line) => line.slice(11));
     check('live: Shift+Up moves it above its neighbour, in the list and in the file',
@@ -376,7 +448,7 @@ export async function liveChecks(tab, check) {
       buttons: document.querySelectorAll('#found li:first-child button[data-move]').length,
       lit: [...document.querySelectorAll('#find-file .hl')].map((line) => line.textContent),
     }))()`);
-    await shot('07-find-wrong-account-with-file');
+    await shot('11-find-wrong-account-with-file');
     check('live: it finds the transaction under another account by its amount and date, and offers to move each posting',
       /Groceries, booked to the wrong account/.test(result.first) && /same amount, 1 day from the date/.test(result.first) && result.buttons === 2, JSON.stringify(result));
     check('live: and shows it in the whole file, lit', result.lit.length === 3 && /19\s*2026-01-07 Groceries/.test(result.lit[0]), JSON.stringify(result.lit));
@@ -387,7 +459,7 @@ export async function liveChecks(tab, check) {
     await tab.click(x, y);
     await settled(entry, 1);
     await tab.until("/Moved:/.test(document.getElementById('find-said').textContent)", 8000);
-    await shot('08-find-moved-to-this-account');
+    await shot('12-find-moved-to-this-account');
     const after = disk(entry);
     check('live: moving it changes that posting\'s account in place, and adds nothing',
       after.includes('2026-01-07 Groceries, booked to the wrong account\n    expenses:food  15.00 IDR\n    assets:bank') && (after.match(/Groceries/g) || []).length === 1
@@ -407,7 +479,7 @@ export async function liveChecks(tab, check) {
     writeFileSync(entry.path, disk(entry).replace('commodity 1,000.00 IDR', '; notes typed in vim\n; another line\n\ncommodity 1,000.00 IDR').concat('\n2026-01-20 Typed in vim\n    expenses:food  3.00 IDR\n    assets:bank\n'));
     await tab.until("[...document.querySelectorAll('#rows tr[data-id]')].some((tr) => tr.innerText.includes('Typed in vim'))", 8000);
     const place = await tab.eval(`({ focus: document.activeElement.innerText, search: document.getElementById('search').value, balance: document.getElementById('balance').value, date: document.getElementById('date').value, status: document.getElementById('status').textContent })`);
-    await shot('09-outside-edit-read-again');
+    await shot('13-outside-edit-read-again');
     check('live: an edit made in another program is noticed and read again, while the window is in view',
       /changed outside this window, so it was read again/.test(place.status), place.status);
     check('live: keeping the focus, the search and the statement fields', /Pharmacy/.test(place.focus) && place.search === '2026-01' && place.balance === '1,358.00' && place.date === '2026-01-31', JSON.stringify(place));
@@ -426,7 +498,7 @@ export async function liveChecks(tab, check) {
     writeFileSync(entry.path, edited);
     await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
     await tab.until("/changed outside this window, so this change was not made|Ticked/.test(document.getElementById('status').textContent)", 8000);
-    await shot('10-outside-edit-same-transaction-refused');
+    await shot('14-outside-edit-same-transaction-refused');
     check('live: a change to a transaction another program changed is refused, said by name, and the file left alone',
       /2026-01-05 Hardware store changed outside this window, so this change was not made/.test(await text('status')) && disk(entry) === edited, await text('status'));
     check('live: and the window now shows the file as it is', (await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].find((tr) => tr.innerText.includes('Hardware store')).innerText")).includes('-21.00'), '');
@@ -440,7 +512,7 @@ export async function liveChecks(tab, check) {
     const before = disk(entry);
     await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${await rowIndex('Bakery')}].click()`);
     await tab.until("document.getElementById('status').classList.contains('error')", 15000);
-    await shot('11-rollback-hledger-refused');
+    await shot('15-rollback-hledger-refused');
     check('live: when hledger refuses a write, the error says what was put back and why',
       /^hledger refused it, so live\.journal was put back as it was\. hledger said: Balance assertion failed/.test(await text('status')), await text('status'));
     check('live: and the file and the window are as they were', disk(entry) === before && (await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${await rowIndex('Bakery')}].classList.contains('on')`)) === false, '');
@@ -465,10 +537,10 @@ export async function liveChecks(tab, check) {
     await tab.eval("(() => { document.getElementById('apply').click(); document.getElementById('apply').click() })()");
     const pressed = await tab.eval("({ disabled: document.getElementById('apply').disabled, said: document.getElementById('apply').textContent, cancel: document.getElementById('cancel').disabled })");
     await tab.until("document.getElementById('apply') && /Checking with hledger/.test(document.getElementById('apply').textContent)", 8000);
-    await shot('12-finish-write-and-check-in-progress');
+    await shot('16-finish-write-and-check-in-progress');
     entry.delay = 0;
     await tab.until("document.getElementById('preview').hidden", 15000);
-    await shot('13-finish-written');
+    await shot('17-finish-written');
     check('live: Write and check is disabled the moment it is pressed, and says it is writing, then checking',
       pressed.disabled && pressed.cancel && /Writing/.test(pressed.said), JSON.stringify(pressed));
     check('live: a second press writes nothing more: one write, and the assertion once',
@@ -499,7 +571,7 @@ export async function liveChecks(tab, check) {
     await tab.eval(`(() => { document.getElementById('balance').value = ${JSON.stringify(balance ? balance[1] : '0')}; document.getElementById('balance').dispatchEvent(new Event('input')) })()`);
     await tab.eval("document.getElementById('finish').click()");
     await tab.until("document.getElementById('apply') || /Nothing|not ticked/.test(document.getElementById('preview').textContent)", 10000);
-    await shot('14-finish-preview-mark-conflicts');
+    await shot('18-finish-preview-mark-conflicts');
     check('live: Finish lists the transactions whose marks disagree', /transactions? with marks that disagree/.test(await text('preview')) && /Cinema/.test(await text('preview')), await text('preview'));
     await tab.eval("document.getElementById('cancel').click()");
   }
@@ -510,7 +582,7 @@ export async function liveChecks(tab, check) {
     await open(entry, '&writable=no');
     await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${await rowIndex('Bakery')}].click()`);
     await sleep(200);
-    await shot('15-read-only-banner');
+    await shot('19-read-only-banner');
     check('live: a read-only journal keeps its banner, ticks in the window and writes nothing',
       /Read-only: live\.journal did not come from an opened folder/.test(await text('readonly')) && (await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${await rowIndex('Bakery')}].classList.contains('on')`)) && entry.saves === 0 && disk(entry) === LIVE_JOURNAL,
       await text('readonly'));

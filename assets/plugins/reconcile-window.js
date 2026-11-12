@@ -23,13 +23,14 @@
  * Ctrl+Enter keeps an edit, Escape clears the search or closes an editor.
  */
 
-import { carry, checkpoints, hints, markConflicts, moveRefusal, neighbour, ordered, parseInput, placement, readTransaction, readable, snapshot, summarize, template, visibleRows } from './reconcile-data.js';
+import { carry, checkpoints, hints, journalAmount, markConflicts, moveRefusal, neighbour, ordered, parseInput, placement, readTransaction, readable, snapshot, summarize, template, visibleRows } from './reconcile-data.js';
 import { escape, isLight, mix } from './window-kit.js';
+import { defineTheme as aceTheme } from './edit-window.js';
 
 
 /** The whole document, with the data in a JSON block and the page to be mounted. */
-export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module, style = 'posting', lines = false }) {
-  const payload = JSON.stringify({ data, colors, token, files, accounts, statementDate, statementBalance, fingerprint, style, lines }).replace(/</g, '\\u003c');
+export function page({ data, colors, token, files, accounts = [], statementDate, statementBalance, fingerprint, module, style = 'posting', lines = false, ace = null }) {
+  const payload = JSON.stringify({ data, colors, token, files, accounts, statementDate, statementBalance, fingerprint, style, lines, ace }).replace(/</g, '\\u003c');
   const writable = files.some((file) => file.writable);
   const locked = files.filter((file) => !file.writable).map((file) => file.path).join(', ');
   const soft = mix(colors.background, colors.dim, 14);
@@ -199,7 +200,7 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   @media (max-width:760px) { .split { grid-template-columns:minmax(0, 1fr); } }
   .file-view { border:1px solid ${colors.dim}55; border-radius:4px; background:${colors.background}; }
   .file-view .where { font-size:11px; color:${colors.dim}; padding:3px 8px; border-bottom:1px solid ${colors.dim}33; }
-  .file-view .scroll { height:300px; overflow:auto; position:relative; font:12px/18px ui-monospace,Menlo,Consolas,monospace; }
+  .file-view .scroll { height:300px; overflow:auto; overflow-anchor:none; position:relative; font:12px/18px ui-monospace,Menlo,Consolas,monospace; }
   .file-view .lines { position:absolute; left:0; right:0; white-space:pre; }
   .file-view .ln { display:inline-block; min-width:5ch; padding-right:10px; text-align:right; color:${colors.dim}; user-select:none; }
   .file-view .hl { background:${mix(colors.background, colors.accent, 22)}; }
@@ -214,6 +215,21 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   .find .found .posting { font-size:12px; margin:2px 0 0 12px; display:flex; gap:8px; align-items:baseline; }
   .find .found .posting button { padding:1px 8px; font-size:11px; }
   .find .found .posting .amount { color:${colors.dim}; font-variant-numeric:tabular-nums; }
+  /* The file itself, editable, as hledger-ui opens an editor on it: the whole journal, at the
+     transaction, with a search. It lives outside the table so redrawing the list never touches it. */
+  .file-editor { margin:0 0 12px; border:1px solid ${colors.dim}66; border-radius:6px; overflow:hidden; }
+  .file-editor .top { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:6px 8px; border-bottom:1px solid ${colors.dim}44; }
+  .file-editor .top .path { font-weight:600; font-size:13px; margin-right:auto; }
+  .file-editor .top input[type=search] { width:220px; padding:3px 8px; }
+  .file-editor .top .count { font-size:12px; color:${colors.dim}; min-width:5em; }
+  .file-editor .top button { padding:3px 10px; font-size:12px; }
+  .file-editor .ace { height:min(62vh, 640px); font-size:13px; }
+  .file-editor .bottom { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; padding:6px 8px; border-top:1px solid ${colors.dim}44; font-size:12px; }
+  .file-editor .bottom #fe-reading { color:${colors.foreground}; flex:1 1 300px; }
+  .file-editor .bottom #fe-said { color:${colors.accent}; flex:1 1 100%; }
+  .file-editor .bottom #fe-said:empty { display:none; }
+  .fe-target { position:absolute; background:${mix(colors.background, colors.accent, 20)}; }
+  .ace_marker-layer .ace_selected-word { border:1px solid ${colors.accent}88; }
   .preview .conflicts p { border-left:2px solid ${colors.accent}; padding-left:8px; margin:2px 0; font-size:13px; }
 </style></head>
 <body><main>
@@ -253,6 +269,21 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
       <span class="actions" style="width:auto"><button id="find-go" class="primary">Search</button><button id="find-close">Close</button></span>
     </div>
     <div class="split"><div><p class="muted" id="find-said">Transactions under other accounts with this amount (either sign), near this date, or with these words. Moving a posting changes its account in place: nothing is copied.</p><ul class="found" id="found"></ul></div><div class="file-view" id="find-file" hidden></div></div>
+  </section>
+  <section class="file-editor" id="file-editor" hidden aria-label="the journal file, editable">
+    <div class="top"><span class="path" id="fe-path"></span>
+      <input type="search" id="fe-search" placeholder="search the file (Ctrl+F)" aria-label="search the file" autocomplete="off">
+      <span class="count" id="fe-count"></span>
+      <button id="fe-prev" title="previous match (Shift+Enter)">↑</button><button id="fe-next" title="next match (Enter)">↓</button>
+      <button id="fe-back" title="back to the transaction this was opened on">Back to it</button>
+    </div>
+    <div class="ace" id="fe-ace"></div>
+    <div class="bottom"><span id="fe-reading"></span>
+      <button class="primary" id="fe-write" title="write the file, and hledger checks it (Ctrl+S or Ctrl+Enter)">Write it</button>
+      <button id="fe-reload" hidden title="take the file as it is on disk now; what is typed here is lost">Reload from disk</button>
+      <button id="fe-cancel">Cancel</button>
+      <span class="muted">Ctrl+S writes the whole file, and hledger checks it; anything can be edited, here as in any editor.</span>
+      <span id="fe-said" role="status"></span></div>
   </section>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
@@ -839,6 +870,8 @@ ${row.inserted && inserts.some((entry) => entry.id === row.id) ? `<button data-d
       say((answer && answer.error) || 'Nothing was written.', true, { undo: true });
     }
     if (entry.then) entry.then(answer || {});
+    // A change made in the list while the file is open changes the file under the editor.
+    if (answer && answer.ok && change.kind !== 'file') fileChangedOutside(true);
     run();
   }
 
@@ -1084,6 +1117,10 @@ ${row.inserted && inserts.some((entry) => entry.id === row.id) ? `<button data-d
   }
 
   function startAdding(amount = null, date = null, row = null) {
+    if (usesFileEditor()) {
+      openFile({ insert: { amount, date: date || statement().date || state.statementDate, anchor: row, from: row && expected[row] != null ? row : null } });
+      return;
+    }
     made += 1;
     editing = `new:${made}`;
     from = row ? { id: editing, row } : null;
@@ -1122,6 +1159,308 @@ ${row.inserted && inserts.some((entry) => entry.id === row.id) ? `<button data-d
     if (readOnly()) { say('The journal is read-only, so nothing can be written: run open in the terminal to edit it.', true); return; }
     const row = shown.find((entry) => entry.id === after) || rows().find((entry) => entry.id === after);
     startAdding(null, row ? row.date : null, row ? row.id : null);
+  }
+
+  // ---------------------------------------------------------------- the file itself, editable
+
+  /**
+   * Editing a transaction opens the file it is in, all of it, at that transaction, the way
+   * hledger-ui hands the journal to an editor: anything in the file can be changed, and Write
+   * puts the whole file back through the same check as every other change. A new transaction
+   * opens the file with a template where it will go. Read-only, or without the editor, the
+   * transaction's own text is edited instead, as before.
+   */
+  let fileEditor = null;
+  let aceFailed = false;
+  let aceLoading = null;
+  const usesFileEditor = () => writable && Boolean(state.ace) && !aceFailed;
+
+  function loadAce() {
+    if (window.ace && typeof window.ace.edit === 'function') return Promise.resolve(window.ace);
+    if (!aceLoading) {
+      aceLoading = new Promise((resolve, reject) => {
+        const script = root.createElement('script');
+        script.src = state.ace;
+        script.onload = () => (window.ace ? resolve(window.ace) : reject(new Error('the editor did not load')));
+        script.onerror = () => reject(new Error('the editor did not load'));
+        root.head.append(script);
+      });
+    }
+    return aceLoading;
+  }
+
+  /** A file's text as the app has it now, read fresh. */
+  function fileText(path) {
+    const link = bridge();
+    try {
+      const text = link && typeof link.source === 'function' ? link.source(path) : null;
+      return text == null ? null : String(text);
+    } catch {
+      return null;
+    }
+  }
+
+  /** The editor once: Ace, in the window's colours, with the keys a person expects. */
+  function aceEditor() {
+    if (fileEditor && fileEditor.ace) return fileEditor.ace;
+    const editor = window.ace.edit($('fe-ace'), { showPrintMargin: false, useWorker: false, highlightActiveLine: true, fontSize: '13px' });
+    editor.session.setUseWorker(false);
+    editor.session.setMode('ace/mode/text');
+    editor.setTheme(aceTheme(window.ace, state.colors));
+    editor.commands.addCommand({ name: 'find', bindKey: { win: 'Ctrl-F', mac: 'Command-F' }, exec: () => { $('fe-search').focus(); $('fe-search').select(); } });
+    editor.commands.addCommand({ name: 'writeFile', bindKey: { win: 'Ctrl-S|Ctrl-Enter', mac: 'Command-S|Command-Enter' }, exec: () => writeFile() });
+    editor.commands.addCommand({ name: 'findnext', bindKey: { win: 'Ctrl-G|F3', mac: 'Command-G|F3' }, exec: () => findStep(1) });
+    editor.commands.addCommand({ name: 'findprevious', bindKey: { win: 'Ctrl-Shift-G|Shift-F3', mac: 'Command-Shift-G|Shift-F3' }, exec: () => findStep(-1) });
+    editor.commands.addCommand({ name: 'closeFile', bindKey: { win: 'Esc', mac: 'Esc' }, exec: () => { if (!fileEditor.dirty) closeFile(); else feSay('Not closed: there are changes here. Write it, or Cancel twice to drop them.'); } });
+    editor.session.on('change', () => {
+      if (!fileEditor || fileEditor.loading) return;
+      fileEditor.dirty = true;
+      fileEditor.text = null;
+      $('fe-cancel').textContent = 'Cancel';
+      fileEditor.cancelArmed = false;
+    });
+    editor.selection.on('changeCursor', () => drawFileReading());
+    return editor;
+  }
+
+  function feSay(message) { $('fe-said').textContent = message || ''; }
+
+  /**
+   * Open the file at `row`'s transaction, or with a new one where `insert` says it goes.
+   * Resolves once the editor is showing.
+   */
+  async function openFile({ row = null, insert = null } = {}) {
+    let path;
+    let first;
+    let last;
+    let column = 0;
+    let text;
+    let before;
+    if (row) {
+      path = row.where.file;
+      first = row.where.first;
+      last = Math.max(row.where.last, row.where.first + 1);
+    } else {
+      // Where the new one goes, by the rule the plugin itself places things with.
+      const place = placement(rows().filter((entry) => !entry.inserted), { anchor: insert.anchor, date: insert.date });
+      const beside = place && state.data.rows.find((entry) => entry.id === place.id);
+      path = beside ? beside.where.file : ((state.files.find((file) => file.writable) || state.files[0] || {}).path);
+      insert.place = place && beside ? { side: place.side, beside } : null;
+    }
+    before = fileText(path);
+    if (before == null) { say(`${path} cannot be read here, so it cannot be edited.`, true); return; }
+    text = before;
+    if (insert) {
+      const lines = before.split('\n');
+      const template = [`${insert.date} `, `    ${state.data.account}${insert.amount == null ? '' : `    ${journalAmount(insert.amount, style())}`}`];
+      let at;
+      let block;
+      if (insert.place && insert.place.side === 'after') { at = insert.place.beside.where.last - 1; block = ['', ...template]; first = at + 2; }
+      else if (insert.place) { at = insert.place.beside.where.first - 1; block = [...template, '']; first = at + 1; }
+      else {
+        while (lines.length && lines[lines.length - 1] === '') lines.pop();
+        at = lines.length; block = ['', ...template, '']; first = at + 2;
+      }
+      lines.splice(at, 0, ...block);
+      text = lines.join('\n');
+      last = first + template.length;
+      column = template[0].length;
+    }
+    $('file-editor').hidden = false;
+    $('fe-path').textContent = path;
+    feSay('');
+    $('fe-reload').hidden = true;
+    try {
+      await loadAce();
+    } catch (error) {
+      aceFailed = true;
+      $('file-editor').hidden = true;
+      say(`${error.message}, so the transaction is edited on its own instead.`, true);
+      if (row) { editing = row.id; drawRows(); } else startAdding(insert.amount, insert.date, insert.anchor);
+      return;
+    }
+    const editor = aceEditor();
+    fileEditor = { ...(fileEditor || {}), ace: editor, path, before, first, last, rowId: row ? row.id : null, insert, dirty: Boolean(insert), loading: true, text: null, cancelArmed: false, typed: insert ? insert.from || null : null };
+    editor.setValue(text, -1);
+    editor.session.getUndoManager().reset();
+    fileEditor.loading = false;
+    markTarget();
+    editor.gotoLine(first, column, false);
+    editor.scrollToLine(Math.max(0, first - 1), true, false, () => {});
+    $('fe-write').disabled = false;
+    $('fe-write').textContent = 'Write it';
+    $('fe-cancel').textContent = 'Cancel';
+    if ($('fe-search').value) runSearch(0, false);
+    drawFileReading();
+    $('file-editor').scrollIntoView({ block: 'nearest' });
+    editor.focus();
+  }
+
+  /** Light the transaction the editor was opened on. */
+  function markTarget() {
+    const editor = fileEditor.ace;
+    if (fileEditor.marker != null) editor.session.removeMarker(fileEditor.marker);
+    const { Range } = window.ace.require('ace/range');
+    fileEditor.marker = editor.session.addMarker(new Range(fileEditor.first - 1, 0, Math.max(fileEditor.first - 1, fileEditor.last - 2), 1), 'fe-target', 'fullLine', false);
+  }
+
+  /** What the transaction under the cursor means for this account, said under the editor. */
+  function drawFileReading() {
+    if (!fileEditor || !fileEditor.ace) return;
+    const session = fileEditor.ace.session;
+    const row = fileEditor.ace.getCursorPosition().row;
+    let top = row;
+    while (top >= 0 && session.getLine(top).trim() !== '' && !parseHeaderLine(session.getLine(top))) top -= 1;
+    if (top < 0 || !parseHeaderLine(session.getLine(top))) { $('fe-reading').textContent = ''; return; }
+    let end = top + 1;
+    const count = session.getLength();
+    while (end < count && /^[ \t]/.test(session.getLine(end)) && session.getLine(end).trim() !== '') end += 1;
+    const block = session.getLines(top, end - 1).join('\n');
+    const read = readTransaction(block, state.data.account, style(), state.data.inclusive);
+    $('fe-reading').textContent = read.touches ? reading(block) : `Line ${top + 1}: a transaction that does not post to ${state.data.account}.`;
+  }
+
+  const parseHeaderLine = (line) => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(line);
+
+  function closeFile() {
+    if (!fileEditor) return;
+    $('file-editor').hidden = true;
+    fileEditor.dirty = false;
+    fileEditor.rowId = null;
+    const row = state.data.rows.find((entry) => entry.where.file === fileEditor.path && entry.where.first === fileEditor.first);
+    const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
+    const tr = row ? trs.find((element) => element.dataset.id === row.id) : null;
+    if (tr) { focus = trs.indexOf(tr); tr.focus({ preventScroll: false }); }
+  }
+
+  /** Write the whole file, as edited, through the queue like every other change. */
+  function writeFile() {
+    if (!fileEditor || $('fe-write').disabled) return;
+    const after = fileEditor.ace.getValue();
+    if (after === fileEditor.before) { closeFile(); say('Nothing in the file was changed.'); return; }
+    const opened = fileEditor;
+    $('fe-write').disabled = true;
+    $('fe-write').textContent = stageWords.writing;
+    feSay('');
+    const typed = opened.typed;
+    queue.push({
+      change: { kind: 'file', path: opened.path, before: opened.before, after, cursor: opened.ace.getCursorPosition().row + 1 },
+      ids: [],
+      progress: (stage) => { $('fe-write').textContent = stageWords[stage] || stageWords.writing; },
+      then: (answer) => {
+        $('fe-write').disabled = false;
+        $('fe-write').textContent = 'Write it';
+        if (!answer.ok) {
+          // Nothing typed is lost: the editor stays open with it, and says why.
+          feSay(answer.error || 'Nothing was written.');
+          $('fe-reload').hidden = !answer.conflict;
+          return;
+        }
+        // A typed running balance the new line was added to explain is now that line's.
+        if (typed && answer.focus && expected[typed] != null) { expected[answer.focus] = expected[typed]; delete expected[typed]; drawRows(); }
+        opened.dirty = false;
+        closeFile();
+      },
+    });
+    run();
+  }
+
+  /** Take the file as it is on disk now, losing what was typed, and stay where the cursor was. */
+  function reloadFile() {
+    if (!fileEditor) return;
+    const text = fileText(fileEditor.path);
+    if (text == null) return;
+    const cursor = fileEditor.ace.getCursorPosition();
+    fileEditor.loading = true;
+    fileEditor.ace.setValue(text, -1);
+    fileEditor.loading = false;
+    fileEditor.before = text;
+    fileEditor.dirty = false;
+    fileEditor.ace.gotoLine(cursor.row + 1, cursor.column, false);
+    $('fe-reload').hidden = true;
+    feSay('Read again from disk.');
+  }
+
+  /**
+   * The file changed outside the window while the editor is open. With nothing typed, it is
+   * simply read again; with something typed, nothing is overwritten either way, and the person
+   * chooses.
+   */
+  function fileChangedOutside(own = false) {
+    if (!fileEditor || $('file-editor').hidden) return;
+    const text = fileText(fileEditor.path);
+    if (text == null || text === fileEditor.before) return;
+    const where = own ? 'by a change made in the list' : 'outside this window';
+    if (!fileEditor.dirty) { reloadFile(); feSay(`The file was changed ${where}, so it was read again.`); return; }
+    feSay(`The file was changed ${where} since this editor opened. Writing would be refused: Reload from disk takes the file as it is now, and drops what is typed here.`);
+    $('fe-reload').hidden = false;
+  }
+
+  // Search: every match lit, the one at the cursor selected, and where it is among them.
+  let searchTerm = '';
+  function runSearch(step = 0, move = true) {
+    if (!fileEditor || !fileEditor.ace) return;
+    const editor = fileEditor.ace;
+    const term = $('fe-search').value;
+    searchTerm = term;
+    if (!term) {
+      editor.session.highlight(null);
+      editor.renderer.updateBackMarkers();
+      $('fe-count').textContent = '';
+      return;
+    }
+    const pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    editor.session.highlight(pattern);
+    editor.renderer.updateBackMarkers();
+    if (move) {
+      const options = { needle: term, wrap: true, caseSensitive: false, regExp: false, wholeWord: false, backwards: step < 0, skipCurrent: step !== 0 };
+      if (step === 0) options.start = editor.getSelectionRange().start;
+      editor.find(term, options, true);
+    }
+    // Which match this is, of how many: counted over the text, once per change of it.
+    if (fileEditor.text == null) fileEditor.text = editor.getValue();
+    const text = fileEditor.text;
+    const at = editor.session.doc.positionToIndex(editor.getSelectionRange().start);
+    let count = 0;
+    let index = 0;
+    pattern.lastIndex = 0;
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      count += 1;
+      if (match.index <= at) index = count;
+      if (!match[0].length) pattern.lastIndex += 1;
+    }
+    $('fe-count').textContent = count ? `${index || 1} of ${count}` : 'no match';
+  }
+  const findStep = (step) => { if (!$('fe-search').value) { $('fe-search').focus(); return; } runSearch(step); fileEditor.ace.focus(); };
+
+  $('fe-search').addEventListener('input', () => runSearch(0));
+  $('fe-search').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); runSearch(event.shiftKey ? -1 : 1); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); fileEditor.ace.focus(); }
+  });
+  $('fe-next').addEventListener('click', () => findStep(1));
+  $('fe-prev').addEventListener('click', () => findStep(-1));
+  $('fe-back').addEventListener('click', () => {
+    if (!fileEditor) return;
+    fileEditor.ace.gotoLine(fileEditor.first, 0, false);
+    fileEditor.ace.scrollToLine(Math.max(0, fileEditor.first - 1), true, false, () => {});
+    fileEditor.ace.focus();
+  });
+  $('fe-write').addEventListener('click', writeFile);
+  $('fe-reload').addEventListener('click', reloadFile);
+  $('fe-cancel').addEventListener('click', () => {
+    if (!fileEditor) return;
+    // Two presses to drop typed changes, so one stray click does not lose them.
+    if (fileEditor.dirty && !fileEditor.cancelArmed) { fileEditor.cancelArmed = true; $('fe-cancel').textContent = 'Drop the changes?'; return; }
+    closeFile();
+  });
+
+  /** Edit a row: the file at its transaction when the file can be written, else its text. */
+  function edit(id) {
+    const row = state.data.rows.find((entry) => entry.id === id);
+    if (usesFileEditor() && row && row.where && row.where.first && !row.generated) { openFile({ row }); return; }
+    editing = id;
+    drawRows();
   }
 
   // ---------------------------------------------------------------- finding a transaction
@@ -1218,6 +1557,7 @@ ${candidate.postings.map((posting) => `<div class="posting"><span>${escape(posti
     if (answer && answer.changed && answer.data) {
       adopt(answer.data);
       say('The file changed outside this window, so it was read again.');
+      fileChangedOutside();
     } else if (answer && answer.error) {
       say(answer.error, true);
     }
@@ -1238,7 +1578,7 @@ ${candidate.postings.map((posting) => `<div class="posting"><span>${escape(posti
       else if (button.dataset.insert) startInserting(button.dataset.insert);
       else if (button.dataset.up) reorder(button.dataset.up, 'up');
       else if (button.dataset.down) reorder(button.dataset.down, 'down');
-      else if (button.dataset.edit) { editing = button.dataset.edit; drawRows(); }
+      else if (button.dataset.edit) edit(button.dataset.edit);
       else if (button.dataset.keep) keep(button.dataset.keep);
       else if (button.dataset.restore) { delete edits[button.dataset.restore]; drawRows(); }
       else if (button.dataset.drop) { inserts = inserts.filter((insert) => insert.id !== button.dataset.drop); ticked.delete(button.dataset.drop); delete expected[button.dataset.drop]; editing = null; drawRows(); }
@@ -1412,7 +1752,7 @@ ${candidate.postings.map((posting) => `<div class="posting"><span>${escape(posti
     if (event.key === 'ArrowDown' || event.key === 'j') { event.preventDefault(); moveFocus(focus + 1); }
     else if (event.key === 'ArrowUp' || event.key === 'k') { event.preventDefault(); moveFocus(focus - 1); }
     else if (event.key === ' ' && trs[focus] && event.target.tagName !== 'BUTTON') { event.preventDefault(); toggle(trs[focus].dataset.id); }
-    else if (event.key === 'e' && trs[focus]) { event.preventDefault(); editing = trs[focus].dataset.id; drawRows(); }
+    else if (event.key === 'e' && trs[focus]) { event.preventDefault(); edit(trs[focus].dataset.id); }
     else if (event.key === 'd' && trs[focus]) { event.preventDefault(); startDateEdit(trs[focus].dataset.id); }
     else if ((event.key === 'i' || (event.key === 'N' && event.shiftKey)) && trs[focus]) { event.preventDefault(); startInserting(trs[focus].dataset.id); }
     else if (event.key === 'n') { event.preventDefault(); startAdding(); }
