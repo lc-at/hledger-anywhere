@@ -221,12 +221,35 @@ Tick the lines the statement shows (click or Space; `a` ticks all up to the stat
 cause: a line exactly the difference, one of half the difference with the wrong sign, or a
 difference divisible by nine, which two swapped digits leave.
 
-Two buttons write, and both show every line first. **Save changes** writes the ticks, edits
-and date changes, and its label counts them. **Finish: assert balance** writes those too,
-then appends an assertion and runs hledger to check it, putting every file back if it fails.
-Finish waits until every line up to the statement date is ticked, because an assertion
-counts all of them. Only files from an `open` folder can be written; anything else is
-read-only, said once at the top, and Finish becomes "Show the assertion" to copy by hand.
+On a journal from an `open` folder, every change is written to the file as you make it:
+a tick, an edit, a new transaction, a date, the order of a day, a posting moved to this
+account. The file is read from disk first, so an edit made in vim beside the window is never
+written over; the change is found by its text, and refused, by name, if that transaction was
+changed outside the window. hledger then reads the file back, which checks it and is what the
+window shows; if hledger refuses, the file is put back and the window says which file and
+why. While it works the window says *Writing to the file…* and then *Checking with hledger…*;
+ticks made meanwhile are written together next. **Undo** (or `u`) takes the last change back
+out, unless the file has moved on since. The window also notices when another program changes
+the file and reads it again, keeping your place, your search and the statement's figures.
+
+**Finish: assert balance** shows the assertion first, then appends it and checks it the same
+way, putting the file back if hledger refuses. Finish waits until every line up to the
+statement date is ticked, because an assertion counts all of them, and lists any
+transactions whose marks disagree. Anything not from an `open` folder is read-only, said once
+at the top: ticks and edits stay in the window, and Finish becomes "Show the assertion" to
+copy by hand.
+
+A line the statement has and the journal does not may be booked to the wrong account.
+**Find a transaction** (`f`) looks under other accounts by amount (either sign), near a date,
+or by words from the payee, starting from the difference. Each match shows the whole file
+beside it, lit where it is, and **Move it to this account** on each posting changes that
+posting's account in place: nothing is copied. The editor (`e`, `i`, `n`) shows the file
+beside it too, with the transaction lit or a mark where a new one will go. A new one goes
+where it was put: after the line it was inserted at on that day, first of its day when dated
+a later day, and from **Add a transaction** at the end of its day. A day's order is file
+order, so Shift+Up and Shift+Down (or the small arrows by the date) move a transaction within
+its day in the file. A bare number in a new transaction is this account's commodity, and is
+written with it.
 
 ```
 2026-09-05 * Coffee
@@ -241,11 +264,13 @@ Two quiet options sit above the bar, and both are remembered:
 
 - **Mark as cleared**: on *this account's line* (`*` on the posting, leaving the other side
   of a transfer alone) or on *the whole transaction* (`*` on its first line, as above). It
-  starts on whichever the journal already uses. In whole-transaction mode, the lines of one
-  transaction tick together, and a stray mark on our posting is removed so the file has one
-  answer; the preview shows that line too.
+  starts on whichever the journal already uses. hledger reads a posting as its own mark,
+  else its transaction's, and a tick changes exactly the postings it means: unticking a
+  posting cleared by its transaction moves that mark onto the other postings rather than
+  writing pending. In whole-transaction mode, the lines of one transaction tick together and
+  unticking takes the mark off the line.
 - **Check line by line**: adds a column for the statement's balance after each line, so the
-  first line where they part is found. Lines that match are asserted when you save. Off,
+  first line where they part is found. Lines that match are asserted when you finish. Off,
   nothing typed there is written.
 
 There is no column for whether a line is cleared: a ticked line is tinted, and its state

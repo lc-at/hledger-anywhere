@@ -343,7 +343,7 @@
       ],
       "module": "./reconcile.js",
       "usage": "reconcile <account> [--statement DATE] [--balance N]",
-      "help": "Opens a window on an account's postings since its last balance assertion. Already cleared lines are hidden, so it opens on what is left. Lines in another currency are shown but marked as not counted, and the window says which currency it counts and how to count another. The statement date defaults to today. Type the closing balance and tick the lines the statement shows until the difference is zero. Save changes writes the ticks, edits and date changes; Finish writes them and a balance assertion, then runs hledger to check it, putting the files back if it fails. Every write is shown first. Only files from an open folder can be written.",
+      "help": "Opens a window on an account's postings since its last balance assertion. Already cleared lines are hidden, so it opens on what is left. Lines in another currency are shown but marked as not counted, and the window says which currency it counts and how to count another. The statement date defaults to today. Type the closing balance and tick the lines the statement shows until the difference is zero. On a journal from an open folder every change is written to the file as you make it: the file is read from disk first, so it works beside vim, and hledger checks each write, putting the file back if it fails. The window reads the file again when another program changes it. Finish shows a balance assertion, then writes and checks it. A file not from an open folder keeps its changes in the window.",
       "sections": [
         {
           "title": "Options",
@@ -379,11 +379,11 @@
             ],
             [
               "e",
-              "edit the transaction as journal text; empty deletes it"
+              "edit the transaction as journal text, beside the whole file; empty deletes it"
             ],
             [
               "n",
-              "add a transaction at the end"
+              "add a transaction, placed at the end of its day"
             ],
             [
               "i",
@@ -396,6 +396,18 @@
             [
               "Alt+up, Alt+down",
               "move a transaction to the next day that has postings; this changes its date, never to before the asserted balance"
+            ],
+            [
+              "Shift+up, Shift+down",
+              "move a transaction within its day, which is its place in the file"
+            ],
+            [
+              "f",
+              "find a transaction booked to another account, and move its posting to this one"
+            ],
+            [
+              "u, Ctrl+Z",
+              "undo the last change written from this window"
             ],
             [
               "/",
@@ -412,7 +424,7 @@
             ],
             [
               "Check line by line",
-              "type the statement's balance after each line to find where they part; lines that match are asserted when you save; remembered"
+              "type the statement's balance after each line to find where they part; lines that match are asserted when you finish; remembered"
             ]
           ]
         }
