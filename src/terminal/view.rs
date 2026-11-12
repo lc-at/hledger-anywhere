@@ -276,13 +276,9 @@ fn options(font: u32, screen_reader: bool) -> JsValue {
     set(&options, "cursorStyle", JsValue::from_str("block"));
     set(&options, "fontSize", JsValue::from_f64(f64::from(font)));
     set(&options, "screenReaderMode", JsValue::from_bool(screen_reader));
-    set(
-        &options,
-        "fontFamily",
-        JsValue::from_str(
-            "ui-monospace, SFMono-Regular, Menlo, Consolas, \"DejaVu Sans Mono\", monospace",
-        ),
-    );
+    // The browser's own monospace font, whichever the visitor has chosen in its
+    // settings, rather than a list of ours that overrode that choice.
+    set(&options, "fontFamily", JsValue::from_str("monospace"));
     // Generous, because this is where a long report goes to be read: a terminal
     // that keeps only the last few screens cannot be searched for what scrolled
     // past. The output cap in `terminal::MAX_OUTPUT_BYTES` is what bounds it.
