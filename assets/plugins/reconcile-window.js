@@ -2,20 +2,28 @@
  * The reconcile window: the statement, the account's postings, and the difference.
  *
  * Shared by both sides of the plugin. The plugin imports `page` to write the window; the window
- * imports `mount` to draw it. It reads and writes nothing itself: a preview and an apply go
- * back through the bridge to the plugin, which is the side that can reach the files.
+ * imports `mount` to draw it. It reads and writes nothing itself: every change goes back through
+ * the bridge to the plugin, which is the side that can reach the files.
  *
  * Each posting shows the account's balance after it, the way a statement prints one beside each
  * line, and takes the statement's figure for it: the difference shows there, and the first line
  * where it is not zero is where the statement and the journal part. A transaction is edited as
- * its journal text, anything in it, and a missing one is added the same way; nothing is written
- * until Save or Finish, which preview it first.
+ * its journal text, anything in it, beside a view of the whole file, and a missing one is added
+ * the same way, or found under another account and moved to this one.
  *
- * Keys: ↑ ↓ or j k move, Space ticks, e edits, n adds a posting, a ticks every posting shown,
- * / searches, Ctrl+Enter keeps an edit, Escape clears the search or closes an editor.
+ * On a journal from an opened folder every change is written to the file as it is made, checked
+ * by hledger and put back if hledger refuses it, and the window then shows the file as hledger
+ * reads it. The window also reads the file again when another program changes it. Finish
+ * previews the assertion before writing it. A journal that cannot be written keeps its changes
+ * in the window.
+ *
+ * Keys: ↑ ↓ or j k move, Space ticks, e edits, n adds, i inserts after the line, d changes the
+ * date, Shift+↑ ↓ moves a line within its day, Alt+↑ ↓ moves it to the next day, f finds a
+ * transaction under another account, u undoes, a ticks every posting shown, / searches,
+ * Ctrl+Enter keeps an edit, Escape clears the search or closes an editor.
  */
 
-import { checkpoints, hints, moveRefusal, ordered, parseInput, readTransaction, readable, summarize, template, visibleRows } from './reconcile-data.js';
+import { carry, checkpoints, hints, markConflicts, moveRefusal, neighbour, ordered, parseInput, placement, readTransaction, readable, snapshot, summarize, template, visibleRows } from './reconcile-data.js';
 import { escape, isLight, mix } from './window-kit.js';
 
 
@@ -174,6 +182,39 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
   .hidden-note:empty { display:none; }
   .hidden-note button { background:none; border:none; padding:0; margin-left:6px; color:${colors.foreground};
     font:inherit; text-decoration:underline; cursor:pointer; }
+  /* While a change is being written, its row says so, quietly. */
+  tr.writing td { opacity:.6; }
+  tr.writing td.date::after { content:' writing'; font-size:10px; color:${colors.accent}; }
+  #status button { margin-left:8px; padding:1px 8px; font-size:12px; }
+  #status.busy::before { content:''; display:inline-block; width:8px; height:8px; margin-right:6px; border-radius:50%;
+    background:${colors.accent}; animation:pulse 1s ease-in-out infinite; vertical-align:1px; }
+  @keyframes pulse { 50% { opacity:.25; } }
+  /* Up and down within a day: two small arrows beside the date, there when the row is. */
+  .order { background:none; border:none; padding:0 1px; color:${colors.dim}; font:inherit; font-size:11px; cursor:pointer; opacity:0; }
+  tr:hover .order, tr:focus-within .order, .order:focus-visible { opacity:1; }
+  .order:hover { color:${colors.accent}; }
+  @media (hover: none) { .order { opacity:1; } }
+  /* The editor beside the whole file it is in, so the lines around it are in view. */
+  .split { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1.2fr); gap:12px; align-items:start; }
+  @media (max-width:760px) { .split { grid-template-columns:minmax(0, 1fr); } }
+  .file-view { border:1px solid ${colors.dim}55; border-radius:4px; background:${colors.background}; }
+  .file-view .where { font-size:11px; color:${colors.dim}; padding:3px 8px; border-bottom:1px solid ${colors.dim}33; }
+  .file-view .scroll { height:300px; overflow:auto; position:relative; font:12px/18px ui-monospace,Menlo,Consolas,monospace; }
+  .file-view .lines { position:absolute; left:0; right:0; white-space:pre; }
+  .file-view .ln { display:inline-block; min-width:5ch; padding-right:10px; text-align:right; color:${colors.dim}; user-select:none; }
+  .file-view .hl { background:${mix(colors.background, colors.accent, 22)}; }
+  .file-view .here { box-shadow:inset 0 2px 0 ${colors.accent}; }
+  /* Finding a transaction booked to another account. */
+  .find { margin:0 0 12px; padding:10px 12px; border:1px solid ${colors.dim}66; border-radius:6px; }
+  .find .fields { margin-bottom:8px; }
+  .find .found { list-style:none; margin:0; padding:0; max-height:420px; overflow:auto; }
+  .find .found li { padding:6px 4px; border-bottom:1px solid ${colors.dim}22; cursor:pointer; }
+  .find .found li.chosen { background:${softer}; }
+  .find .found .why { color:${colors.dim}; font-size:11px; margin-left:6px; }
+  .find .found .posting { font-size:12px; margin:2px 0 0 12px; display:flex; gap:8px; align-items:baseline; }
+  .find .found .posting button { padding:1px 8px; font-size:11px; }
+  .find .found .posting .amount { color:${colors.dim}; font-variant-numeric:tabular-nums; }
+  .preview .conflicts p { border-left:2px solid ${colors.accent}; padding-left:8px; margin:2px 0; font-size:13px; }
 </style></head>
 <body><main>
   <h1>reconcile ${escape(data.account)}</h1>
@@ -184,9 +225,9 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
       <option value="posting"${style === 'posting' ? ' selected' : ''}>this account's line</option>
       <option value="transaction"${style === 'transaction' ? ' selected' : ''}>the whole transaction</option>
     </select></label>
-    <label title="type the statement's balance after each line to find where they part; matching lines are asserted when you save"><input type="checkbox" id="lines"${lines ? ' checked' : ''}>Check line by line</label>
+    <label title="type the statement's balance after each line to find where they part; matching lines are asserted when you finish"><input type="checkbox" id="lines"${lines ? ' checked' : ''}>Check line by line</label>
   </div>
-  <div class="bar">
+  <div class="bar" id="bar">
     <p id="next"></p>
     <div class="fields">
       <label>Statement date<input type="date" id="date" value="${escape(statementDate || '')}"></label>
@@ -195,20 +236,29 @@ export function page({ data, colors, token, files, accounts = [], statementDate,
       <span class="figures" id="figures"></span>
       <span class="actions">
         <input type="search" id="search" placeholder="search (/)" aria-label="search descriptions, accounts and amounts">
-        <button id="add" title="add a transaction this account is in: after the line with the cursor, or at the end (n or i)">Add a transaction</button>
+        <button id="add" title="add a transaction this account is in, placed by its date (n); i inserts after the line with the cursor">Add a transaction</button>
         <button id="all" title="tick every line shown, up to the statement date (a)">Tick all</button>
-        <button id="progress"${writable ? '' : ' disabled hidden'} title="write the ticks, edits and date changes, without asserting a balance">Save changes<span class="count" id="pending"></span></button>
+        <button id="find-open" title="look for a transaction booked to another account, by amount, date or payee (f)">Find a transaction</button>
         <button id="finish" class="primary" disabled>${writable ? 'Finish: assert balance' : 'Show the assertion'}</button>
       </span>
     </div>
   </div>
   <div class="issues"><div id="notes"></div><div class="hints" id="hints"></div></div>
-  <div id="status" role="status"></div>
+  <div id="status" role="status" aria-live="polite"></div>
+  <section class="find" id="find" hidden aria-label="find a transaction booked to another account">
+    <div class="fields">
+      <label>Amount<input type="text" id="find-amount" inputmode="decimal" autocomplete="off" placeholder="as the statement says it"></label>
+      <label>Near the date<input type="date" id="find-date"></label>
+      <label>Payee or description<input type="text" id="find-words" autocomplete="off" placeholder="words from it"></label>
+      <span class="actions" style="width:auto"><button id="find-go" class="primary">Search</button><button id="find-close">Close</button></span>
+    </div>
+    <div class="split"><div><p class="muted" id="find-said">Transactions under other accounts with this amount (either sign), near this date, or with these words. Moving a posting changes its account in place: nothing is copied.</p><ul class="found" id="found"></ul></div><div class="file-view" id="find-file" hidden></div></div>
+  </section>
   <div id="preview" class="preview" hidden></div>
   <datalist id="accounts">${accounts.map((name) => `<option value="${escape(name)}">`).join('')}</datalist>
   <p class="hidden-note" id="hidden"></p>
   <div class="table"><table id="table" class="${lines ? 'lines' : ''}"><thead><tr><th class="date">Date</th><th>Description</th><th class="n">Amount${data.commodity ? ` (${escape(data.commodity)})` : ''}</th><th class="n">Running balance${data.commodity ? ` (${escape(data.commodity)})` : ''}</th><th class="n line" title="the balance your statement shows after this line">Statement balance</th><th class="n line">Difference</th></tr></thead><tbody id="rows"></tbody></table></div>
-  <p class="keys">Space tick · e edit · n new · i insert · d change date · a tick all · Alt+↑↓ next day · / search</p>
+  <p class="keys">Space tick · e edit · n new · i insert · d change date · Shift+↑↓ order in the day · Alt+↑↓ next day · f find · ${writable ? 'u undo · ' : ''}a tick all · / search</p>
 </main>
 <script type="application/json" id="reconcile-data">${payload}</script>
 <script type="module">import { mount } from ${JSON.stringify(module)}; mount();</script>
@@ -241,23 +291,46 @@ export function partHint(rows, points, style) {
   const row = rows[at];
   const say = (minor) => readable(minor, style);
   if (extra) return { id: extra.id, text: `The statement and the journal part at ${row.date} ${row.description}, by ${say(first.difference)}: ${extra.date} ${extra.description} (${say(extra.amount)}) is exactly that. Is it on the statement?` };
-  return { id: null, from: first.id, amount: first.difference, date: row.date, text: `The statement and the journal part at ${row.date} ${row.description}, by ${say(first.difference)}, since the last line that matched. If the statement has a line the journal does not, add it.` };
+  return { id: null, from: first.id, amount: first.difference, date: row.date, text: `The statement and the journal part at ${row.date} ${row.description}, by ${say(first.difference)}, since the last line that matched. If the statement has a line the journal does not, add it, or find it under another account.` };
+}
+
+/**
+ * Which lines of a file to draw in a view `height` pixels tall scrolled to `top`, with a few
+ * either side so a quick scroll does not show blank space. A journal can be forty thousand lines,
+ * and a node per line of it would take seconds to draw each time the view opens.
+ */
+export function visibleLines(count, top, height, lineHeight = 18, spare = 20) {
+  const from = Math.max(0, Math.floor(top / lineHeight) - spare);
+  const to = Math.min(count, Math.ceil((top + height) / lineHeight) + spare);
+  return { from, to };
+}
+
+/**
+ * Ticks waiting to be written, as one change: each row once, its last state winning. Clicking
+ * down a list while a write is under way sends the clicks together when it is done.
+ */
+export function mergeTicks(changes) {
+  const last = new Map();
+  for (const change of changes) for (const entry of change.changes || []) last.set(entry.id, entry.on);
+  return { kind: 'tick', changes: [...last].map(([id, on]) => ({ id, on })) };
 }
 
 /** Draw the window and wire it to the plugin. */
 export function mount(root = document) {
   const state = JSON.parse(root.getElementById('reconcile-data').textContent);
   const $ = (id) => root.getElementById(id);
-  const ticked = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+  /** Whether the files behind this window can be written at all. */
+  const readOnly = () => !state.files.some((file) => file.writable);
+  const writable = !readOnly();
+  // What is ticked. Writing at once, this is the file's word, as hledger read it back, plus the
+  // ticks on their way to the file; read-only, it is the window's own.
+  let ticked = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+  // Read-only, changes stay in the window: edits, new postings and dates. Writing at once, they
+  // are empty, because every change is the file's by the time it is drawn.
   let edits = {};
   let inserts = [];
-  let expected = {};
-  // Rows whose transaction was moved, and the date it was moved to. Nothing is written until
-  // Save or Finish, like every other change the window makes.
   let moved = {};
-  // Rows already cleared when the window opened are hidden by default, so the window opens on the
-  // work still to do. What was cleared is captured once: a row the person ticks or edits from
-  // here stays in view, so nothing vanishes from under the hand that just changed it.
+  let expected = {};
   // Where the cleared marks are written. The journal's own habit, or the last choice, comes in
   // from the plugin; changing it here is remembered there so it survives the window.
   let markStyle = state.style === 'transaction' ? 'transaction' : 'posting';
@@ -266,9 +339,14 @@ export function mount(root = document) {
   // nothing the person did not see.
   let lineByLine = Boolean(state.lines);
   let hideCleared = true;
-  const clearedAtOpen = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
-  const touched = new Set();
+  // Rows already cleared when the window opened are hidden by default, so the window opens on the
+  // work still to do. A row the person ticks or edits from here stays in view, so nothing vanishes
+  // from under the hand that just changed it.
+  let clearedAtOpen = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+  let touched = new Set();
   let editing = null;
+  // What has been typed into an open editor, so a redraw (the file changed outside) keeps it.
+  const drafts = {};
   // Whose date is being edited in place, if anyone's: the date is a button that becomes an
   // input, because changing a date is a deliberate act rather than something a click can
   // drift into.
@@ -282,6 +360,11 @@ export function mount(root = document) {
   let focus = 0;
   let shown = [];
   let pending = null;
+  // Changes waiting their turn, the one being written, and ticks not yet in the file.
+  const queue = [];
+  let busy = false;
+  let writingIds = new Set();
+  let undoable = 0;
   const style = () => state.data.style;
   const money = (minor) => readable(minor, style());
   /**
@@ -307,9 +390,16 @@ export function mount(root = document) {
   const rows = () => ordered(state.data, { edits, inserts, moved });
   const sums = () => summarize({ data: state.data, ticked, statementDate: statement().date, statementBalance: statement().balance, edits, inserts, moved });
 
-  function say(message, error = false) {
+  function say(message, error = false, { busy: working = false, undo = false } = {}) {
     $('status').textContent = message || '';
-    $('status').className = error ? 'error' : '';
+    $('status').className = `${error ? 'error' : ''}${working ? ' busy' : ''}`.trim();
+    if (undo && undoable && writable) {
+      const button = root.createElement('button');
+      button.id = 'undo';
+      button.textContent = 'Undo';
+      button.title = 'take this change back out of the file (u)';
+      $('status').append(button);
+    }
   }
 
   function drawSums() {
@@ -338,7 +428,7 @@ export function mount(root = document) {
       notes.push(`${n} line${n === 1 ? '' : 's'} up to the statement date ${n === 1 ? 'is' : 'are'} not ticked; an assertion counts every one, so tick ${n === 1 ? 'it' : 'them'} or move ${n === 1 ? 'it' : 'them'} to the bank's date.`);
     }
     if (now.later) notes.push(`${now.later} line${now.later === 1 ? '' : 's'} after the statement date ${now.later === 1 ? 'is' : 'are'} greyed out and not counted.`);
-    if (now.unknown) notes.push(`${now.unknown} edited transaction${now.unknown === 1 ? '' : 's'} cannot be read here, so the balances after ${now.unknown === 1 ? 'it' : 'them'} show ? until saved.`);
+    if (now.unknown) notes.push(`${now.unknown} transaction${now.unknown === 1 ? '' : 's'} cannot be read here, so the balances after ${now.unknown === 1 ? 'it' : 'them'} show ?.`);
     // Which commodity this window counts, and how to count another one: a statement with lines
     // in more than one currency is otherwise quietly unreadable.
     if (state.data.others.length) {
@@ -364,7 +454,7 @@ export function mount(root = document) {
       return `<p${hint.id ? ` data-id="${escape(hint.id)}"` : ''}>${row ? `${escape(row.date)} ${escape(row.description)} ${escape(money(row.amount))}: ` : ''}${escape(hint.reason)}</p>`;
     });
     if (part) {
-      lines.unshift(`<p${part.id ? ` data-id="${escape(part.id)}"` : ''}>${escape(part.text)}${part.id ? '' : `<button data-add="${part.amount}" data-date="${escape(part.date)}" data-from="${escape(part.from)}">Add ${escape(money(part.amount))}</button>`}</p>`);
+      lines.unshift(`<p${part.id ? ` data-id="${escape(part.id)}"` : ''}>${escape(part.text)}${part.id ? '' : `<button data-add="${part.amount}" data-date="${escape(part.date)}" data-from="${escape(part.from)}">Add ${escape(money(part.amount))}</button><button data-find="${part.amount}" data-date="${escape(part.date)}">Find it</button>`}</p>`);
     }
     $('hints').innerHTML = lines.join('');
     const lit = new Set([...found.map((hint) => hint.id), part && part.id].filter(Boolean));
@@ -373,15 +463,11 @@ export function mount(root = document) {
       tr.classList.toggle('first', Boolean(points.first && points.first.id === tr.dataset.id));
     }
 
-    const changes = describe();
-    const writable = !readOnly();
-    $('pending').textContent = changes ? ` (${changes})` : '';
-    $('progress').disabled = !writable || !changes;
-    $('finish').disabled = !now.canFinish;
+    $('finish').disabled = !now.canFinish || (busy && writable);
     $('finish').title = !now.canFinish
       ? 'needs a difference of zero, with every line up to the statement date ticked'
       : writable
-        ? `writes ${changes ? `${changes} and ` : ''}a balance assertion for ${date}; the preview shows every line first`
+        ? `previews a balance assertion for ${date}, then writes it`
         : 'shows the assertion to copy into the journal yourself';
     $('next').innerHTML = nextStep(now, balance, date, writable);
   }
@@ -390,7 +476,7 @@ export function mount(root = document) {
    * The one line that says what to do now, written from the state the window is in. It never
    * repeats the read-only banner: that is said once, at the top.
    */
-  function nextStep(now, balance, date, writable) {
+  function nextStep(now, balance, date, canWrite) {
     if (now.tooEarly) return 'Set the statement date after the balance already asserted.';
     // Nothing up to the statement date is left to tick, which is common when the journal is kept
     // marked as it goes: then the only thing to do is compare totals, and saying "tick the lines"
@@ -404,44 +490,20 @@ export function mount(root = document) {
     if (now.difference == null) return 'Tick the lines the statement shows.';
     if (now.difference !== 0) {
       return nothingLeft
-        ? `Everything up to ${escape(date || 'the statement date')} is ticked, but <b>${escape(money(now.difference))}</b> is unaccounted for: a line the journal is missing, or one with the wrong amount or date.`
+        ? `Everything up to ${escape(date || 'the statement date')} is ticked, but <b>${escape(money(now.difference))}</b> is unaccounted for: a line the journal is missing (perhaps booked to another account: <b>Find a transaction</b>), or one with the wrong amount or date.`
         : `Tick the lines the statement shows. <b>${escape(money(now.difference))}</b> still to account for.`;
     }
     if (now.outstanding.length) return 'The totals match, but some lines up to the statement date are not ticked.';
-    return writable
-      ? 'The totals match. <b>Finish</b> writes your changes and the balance assertion, after showing them.'
+    return canWrite
+      ? 'The totals match. <b>Finish</b> shows the balance assertion, then writes it.'
       : 'The totals match. <b>Show the assertion</b> gives the line to copy into the journal yourself.';
-  }
-
-  /** How many transactions a move would re-date. A transaction may have several rows here. */
-  function movedCount() {
-    return new Set(Object.keys(moved).map((id) => id.split(':')[0])).size;
-  }
-
-  /** What Save would write, in a few words: nothing to say when there is nothing to write. */
-  function describe() {
-    const marks = state.data.rows.filter((row) => (ticked.has(row.id) ? row.status !== 'Cleared' : row.status === 'Cleared')).length;
-    // Per-line assertions are written only while checking line by line, and only then counted.
-    const matched = lineByLine ? checkpoints(rows(), expected).points.filter((point) => point.difference === 0).length : 0;
-    const deleted = Object.values(edits).filter((edit) => !edit.text.trim()).length;
-    const changed = Object.keys(edits).length - deleted;
-    const dates = movedCount();
-    const parts = [
-      marks && `${marks} to clear`,
-      dates && `${dates} date${dates === 1 ? '' : 's'}`,
-      changed && `${changed} edit${changed === 1 ? '' : 's'}`,
-      deleted && `${deleted} deleted`,
-      inserts.length && `${inserts.length} new`,
-      matched && `${matched} line balance${matched === 1 ? '' : 's'}`,
-    ].filter(Boolean);
-    return parts.join(', ');
   }
 
   /** The line under the title: short, and about the account, not the files behind it. */
   function drawSub() {
     const data = state.data;
     const since = data.start ? `since the balance asserted on ${data.start.date}` : 'from the first posting, no balance asserted yet';
-    $('sub').textContent = `${data.rows.length} postings in ${data.commodity || 'its commodity'}, ${since}`;
+    $('sub').textContent = `${data.rows.length} postings in ${data.commodity || 'its commodity'}, ${since}${writable ? '. Changes are written to the file as you make them.' : ''}`;
   }
 
   /** What is hidden, where it is from, and the control that shows it. */
@@ -455,31 +517,24 @@ export function mount(root = document) {
     }
     if (!view.hidden.length) { $('hidden').innerHTML = ''; return; }
     const count = view.hidden.length;
-    const from = view.hiddenFrom;
-    const to = view.hiddenTo;
-    const when = from === to ? from : `${from} to ${to}`;
+    const when = view.hiddenFrom === view.hiddenTo ? view.hiddenFrom : `${view.hiddenFrom} to ${view.hiddenTo}`;
     $('hidden').innerHTML = `${count} cleared posting${count === 1 ? '' : 's'} hidden, ${escape(when)}<button data-toggle-hidden="1">show them</button>`;
   }
 
-  function rowHtml(row, later, newDay = false) {
+  function rowHtml(row, later, newDay = false, all = []) {
     const point = expected[row.id] != null && row.balance != null ? expected[row.id] - row.balance : null;
     const delta = point == null ? '' : point === 0 ? '✓' : money(point);
     const on = ticked.has(row.id);
     const badge = row.inserted ? '<span class="badge">new</span>' : row.edited ? '<span class="badge">edited</span>' : '';
-    // The state of the line, in a word on the line itself rather than in a column of its own.
-    // Quiet on purpose: a list of mostly-cleared lines should not shout the same word three
-    // hundred times. An uncleared line has no word at all, so the two differ even in greyscale.
     // What is said out loud, which is more than what is drawn: a cleared line has no word on
-    // it any more, so the label is where it is still stated rather than left to the tint.
+    // it, so the label is where it is still stated rather than left to the tint.
     const spoken = on ? 'cleared' : row.status === 'Pending' ? 'pending' : 'not cleared';
-    const state = row.status === 'Pending' ? 'pending' : '';
+    const word = row.status === 'Pending' && !on ? 'pending' : '';
     // A line in another commodity is shown but adds nothing to this balance, and that has to be
     // said on the row: a number in the right column with a running total that never moves looks
     // like a mistake otherwise.
     const foreign = !row.counted;
     const value = expected[row.id] != null ? money(expected[row.id]).replace(` ${style().commodity}`, '').replace(style().commodity, '') : '';
-    // The date is a button that opens an editor in place. A new transaction's date lives in
-    // its text, so it is shown as it is rather than edited here.
     let date;
     // A new transaction's date is written in its text, so this is not a control: it says so
     // rather than looking like a button that does not answer.
@@ -487,12 +542,18 @@ export function mount(root = document) {
     else if (dateBeingEdited === row.id) {
       date = `<input type="date" class="date-input" data-date-input="${escape(row.id)}" value="${escape(row.date)}" title="${escape(row.date)}" aria-label="date of this transaction">`;
     } else {
+      // Up and down within the day, only where there is a neighbour to pass.
+      const up = !neighbour(all, row.id, 'up').refused;
+      const down = !neighbour(all, row.id, 'down').refused;
       date = `<button class="date-btn" data-date="${escape(row.id)}" title="change the date (d)">${escape(row.date)}</button>`
-        + `<button class="insert" data-insert="${escape(row.id)}" title="insert a transaction here (i)">+</button>`;
+        + `<button class="insert" data-insert="${escape(row.id)}" title="insert a transaction here (i)">+</button>`
+        + (up ? `<button class="order" data-up="${escape(row.id)}" title="earlier in the day (Shift+↑)" aria-label="move up within ${escape(row.date)}">▲</button>` : '')
+        + (down ? `<button class="order" data-down="${escape(row.id)}" title="later in the day (Shift+↓)" aria-label="move down within ${escape(row.date)}">▼</button>` : '');
     }
-    return `<tr data-id="${escape(row.id)}" tabindex="-1" role="checkbox" aria-checked="${on}" aria-label="${escape(`${row.date} ${row.description}, ${amountOf(row)}, ${spoken}${foreign ? ', not counted' : ''}`)}" class="${on ? 'on' : ''}${later ? ' later' : ''}${newDay ? ' day' : ''}">
+    const classes = [on ? 'on' : '', later ? 'later' : '', newDay ? 'day' : '', writingIds.has(row.id) ? 'writing' : ''].filter(Boolean).join(' ');
+    return `<tr data-id="${escape(row.id)}" tabindex="-1" role="checkbox" aria-checked="${on}"${writingIds.has(row.id) ? ' aria-busy="true"' : ''} aria-label="${escape(`${row.date} ${row.description}, ${amountOf(row)}, ${spoken}${foreign ? ', not counted' : ''}`)}" class="${classes}">
 <td class="date">${date}</td>
-<td>${state ? `<span class="state ${state}">${state}</span>` : ''}${foreign ? '<span class="state foreign">not counted</span>' : ''}${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
+<td>${word ? `<span class="state ${word}">${word}</span>` : ''}${foreign ? '<span class="state foreign">not counted</span>' : ''}${escape(row.description)}${badge}&nbsp;<button class="edit" data-edit="${escape(row.id)}" title="edit (e)" aria-label="edit">edit</button><br><span class="against">${escape(row.against || '')}</span></td>
 <td class="n${foreign ? ' foreign' : ''}">${escape(amountOf(row))}</td><td class="n">${row.balance == null ? '?' : escape(bare(row.balance))}</td>
 <td class="n expect line"><input data-expect="${escape(row.id)}" inputmode="decimal" aria-label="statement balance after this line" value="${escape(value)}"></td>
 <td class="n delta line ${point == null ? '' : point === 0 ? 'ok' : 'off'}">${escape(delta)}</td></tr>`;
@@ -506,32 +567,103 @@ export function mount(root = document) {
     if (!read.touches) return `It does not post to ${state.data.account}, so it will leave this list.`;
     if (read.postings < 2) return 'It needs another posting: the account the money came from or went to.';
     if (read.off) return `It does not balance: its amounts add up to ${money(read.off)}. Leave one amount out and hledger works it out.`;
-    if (read.amount == null) return `The amount for ${state.data.account} cannot be worked out here (a cost, another commodity, or more than one amount left out); hledger reads it on Save.`;
+    if (read.amount == null) return `The amount for ${state.data.account} cannot be worked out here (a cost, another commodity, or more than one amount left out); hledger works it out when it is written.`;
     return `${read.date}: ${money(read.amount)} to ${state.data.account}${read.against ? `, against ${read.against}` : ''}.`;
   }
 
-  /** The text an editor starts from: the edit so far, the transaction as written, or a template. */
+  /** The text an editor starts from: what was typed, the edit so far, the transaction, or a template. */
   function textOf(row) {
+    if (drafts[row.id] != null) return drafts[row.id];
     if (edits[row.id]) return edits[row.id].text;
     const insert = inserts.find((entry) => entry.id === row.id);
     if (insert) return insert.text;
-    if (row.inserted) return row.text;
     return row.text;
   }
 
-  /** An editor in place of a row: the transaction's journal text, all of it. */
+  /** An editor in place of a row: the transaction's journal text, all of it, beside its file. */
   function editorHtml(row) {
     const text = textOf(row);
     const readable = text != null;
     const height = Math.min(16, Math.max(4, (text || '').split('\n').length + 1));
-    return `<tr class="editor" data-editor="${escape(row.id)}"><td></td><td colspan="6"><div class="editing">
-<textarea name="text" rows="${height}" spellcheck="false" aria-label="the transaction, as journal text"${readable ? '' : ' disabled'}>${escape(text || '')}</textarea>
+    const keepsWhat = writable
+      ? `Ctrl+Enter writes it to the file, and hledger checks it. ${row.inserted ? '' : 'Empty it to delete the transaction.'}`
+      : `Ctrl+Enter keeps it in this window. The file cannot be written from here. ${row.inserted ? '' : 'Empty it to delete the transaction.'}`;
+    return `<tr class="editor" data-editor="${escape(row.id)}"><td></td><td colspan="6"><div class="editing split">
+<div><textarea name="text" rows="${height}" spellcheck="false" aria-label="the transaction, as journal text"${readable ? '' : ' disabled'}>${escape(text || '')}</textarea>
 <p class="reading" id="reading">${escape(readable ? reading(text) : 'Its file cannot be read here, so it cannot be edited; use edit in the terminal.')}</p>
-<div class="buttons"><button class="primary" data-keep="${escape(row.id)}"${readable ? '' : ' disabled'}>Keep</button>
-${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edits[row.id] ? `<button data-undo="${escape(row.id)}">Undo the edit</button>` : '')}
+<div class="buttons"><button class="primary" data-keep="${escape(row.id)}"${readable ? '' : ' disabled'}>${writable ? 'Write it' : 'Keep'}</button>
+${row.inserted && inserts.some((entry) => entry.id === row.id) ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edits[row.id] ? `<button data-undo="${escape(row.id)}">Undo the edit</button>` : '')}
 <button data-close="1">Cancel</button>
-<span class="muted">Ctrl+Enter keeps it. ${row.inserted ? '' : 'Empty it to delete the transaction. '}Nothing is written until Save or Finish, which show it first.</span></div>
+<span class="muted">${escape(keepsWhat.trim())}</span></div></div>
+<div class="file-view" data-view="${escape(row.id)}"></div>
 </div></td></tr>`;
+  }
+
+  // ---------------------------------------------------------------- the whole file, beside
+
+  const sources = new Map();
+  /** A file's text, as the app has it now. Read through the bridge, once per version of the data. */
+  function sourceOf(path) {
+    if (!sources.has(path)) {
+      const link = bridge();
+      let text = null;
+      try { text = link && typeof link.source === 'function' ? link.source(path) : null; } catch { text = null; }
+      sources.set(path, text == null ? null : String(text).split('\n'));
+    }
+    return sources.get(path);
+  }
+
+  /**
+   * Draw a file into `box`, scrolled to and lighting lines `first` to `last` (from one, the end
+   * not included), or a mark before line `at` where something new will go. Only the lines in
+   * view are drawn.
+   */
+  function showFile(box, { path, first = 0, last = 0, at = 0, caption = '' }) {
+    const lines = path ? sourceOf(path) : null;
+    box.hidden = false;
+    if (!lines) {
+      box.innerHTML = `<p class="where">${escape(path || 'the journal')} cannot be shown here.</p>`;
+      return;
+    }
+    const height = 18;
+    box.innerHTML = `<p class="where">${escape(caption || `${path}, line${last - first > 1 ? 's' : ''} ${first}${last - first > 1 ? ` to ${last - 1}` : ''}`)}</p><div class="scroll" tabindex="0" aria-label="${escape(path)}, the whole file"><div style="height:${lines.length * height}px"></div><div class="lines"></div></div>`;
+    const scroll = box.querySelector('.scroll');
+    const holder = box.querySelector('.lines');
+    const draw = () => {
+      const { from: start, to } = visibleLines(lines.length, scroll.scrollTop, scroll.clientHeight || 300, height);
+      holder.style.top = `${start * height}px`;
+      holder.innerHTML = lines.slice(start, to).map((text, index) => {
+        const number = start + index + 1;
+        const lit = number >= first && number < last;
+        return `<div class="${lit ? 'hl' : ''}${number === at ? ' here' : ''}"><span class="ln">${number}</span>${escape(text) || ' '}</div>`;
+      }).join('');
+    };
+    scroll.addEventListener('scroll', draw);
+    const target = first || at || 1;
+    scroll.scrollTop = Math.max(0, (target - 1) * height - 120);
+    draw();
+  }
+
+  /** The editor's view of its file: the transaction lit, or where a new one will go. */
+  function drawEditorView() {
+    const box = $('rows').querySelector('.file-view[data-view]');
+    if (!box) return;
+    const id = box.dataset.view;
+    const row = state.data.rows.find((entry) => entry.id === id);
+    if (row && row.where && row.where.first) {
+      showFile(box, { path: row.where.file, first: row.where.first, last: Math.max(row.where.last, row.where.first + 1) });
+      return;
+    }
+    // A new one: where it will land, by the rule the plugin writes it with.
+    const text = $('rows').querySelector('tr.editor textarea');
+    const read = readTransaction(text ? text.value : '', state.data.account, style(), state.data.inclusive);
+    const anchorId = from && from.id === id ? from.row : null;
+    const place = read.date ? placement(rows().filter((entry) => !entry.inserted), { anchor: anchorId, date: read.date }) : null;
+    const beside = place && state.data.rows.find((entry) => entry.id === place.id);
+    const main = (state.files.find((file) => file.writable) || state.files[0] || {}).path;
+    if (!beside) { showFile(box, { path: main, at: (sourceOf(main) || []).length, caption: `${main || 'the journal'}: it goes at the end` }); return; }
+    const at = place.side === 'after' ? beside.where.last : beside.where.first;
+    showFile(box, { path: beside.where.file, at, caption: `${beside.where.file}: it goes ${place.side === 'after' ? `after line ${at - 1}` : `before line ${at}`}, ${place.side} ${beside.date} ${beside.description}` });
   }
 
   function drawRows() {
@@ -554,47 +686,163 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       html.push(editorHtml({ id: editing, inserted: true, text: drafting || template(statement().date || state.statementDate, state.data.account, null, style()) }));
     }
     // A day boundary gets a heavier rule than the hairline between postings, so the eye can
-    // find where one day's postings end. It is decided here, where the order is known, rather
-    // than guessed at in CSS.
+    // find where one day's postings end.
     let previous = null;
     for (const row of shown) {
-      html.push(rowHtml(row, date && row.date > date, previous !== null && row.date !== previous));
+      html.push(rowHtml(row, date && row.date > date, previous !== null && row.date !== previous, all));
       previous = row.date;
       if (editing === row.id) html.push(editorHtml(row));
     }
-    // The rows are replaced wholesale, which takes the focus with them: a line ticked with
-    // Space left the ring on nothing, and the next arrow key then started from wherever the
-    // index happened to be rather than from the line the person was looking at. Focus goes
-    // back to the line that had it, and to nothing else, so typing in the bar or in a field
-    // is never disturbed.
-    const hadRowFocus = Boolean(
-      document.activeElement && document.activeElement.closest
-      && document.activeElement.closest('#rows tr[data-id]'),
-    );
-    // Off the row, not off the element: while the date editor is open the focused thing is an
-    // input inside the row, and it has no id of its own to come back to.
-    const focusedId = hadRowFocus
-      ? document.activeElement.closest('tr[data-id]').getAttribute('data-id')
-      : null;
+    // The rows are replaced wholesale, which takes the focus with them, so focus goes back to
+    // the line that had it, and to nothing else, so typing in the bar or in a field is never
+    // disturbed.
+    const active = root.activeElement;
+    const hadRowFocus = Boolean(active && active.closest && active.closest('#rows tr[data-id]'));
+    const focusedId = hadRowFocus ? active.closest('tr[data-id]').getAttribute('data-id') : null;
     $('rows').innerHTML = html.join('');
     focus = Math.min(focus, Math.max(0, shown.length - 1));
     if (hadRowFocus) {
       const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
       const at = trs.findIndex((tr) => tr.dataset.id === focusedId);
-      // By identity, not by position: a line that re-sorted is still the line that had focus,
-      // and the index it used to be at now belongs to a different one.
       if (at >= 0) focus = at;
-      if (trs[Math.min(focus, trs.length - 1)]) trs[Math.min(focus, trs.length - 1)].focus();
+      if (trs[Math.min(focus, trs.length - 1)]) trs[Math.min(focus, trs.length - 1)].focus({ preventScroll: true });
     }
     drawSums();
     const field = $('rows').querySelector('tr.editor textarea:not([disabled])');
     if (field && editing) {
-      field.focus();
+      if (root.activeElement !== field) field.focus({ preventScroll: true });
       // A new posting's cursor goes where its description is to be written.
-      if (editing.startsWith('new:') && !inserts.some((insert) => insert.id === editing)) field.setSelectionRange(11, 11);
+      if (editing.startsWith('new:') && drafts[editing] == null && !inserts.some((insert) => insert.id === editing)) field.setSelectionRange(11, 11);
+      drawEditorView();
     }
   }
 
+  /**
+   * Redraw after the data changed under the window (a write came back, or another program
+   * changed the file), keeping the person's place: the row they were on stays where it was on
+   * the screen, and everything keyed by a row follows it to its new id.
+   */
+  function adopt(data, { focusId = null } = {}) {
+    const map = carry(state.data.rows, data.rows);
+    const follow = (id) => (map.has(id) ? map.get(id) : null);
+    const keyed = (object) => Object.fromEntries(Object.entries(object).map(([id, value]) => [follow(id), value]).filter(([id]) => id));
+    const anchor = placeOf();
+    touched = new Set([...touched].map(follow).filter(Boolean));
+    // Rows that are new to the window (another program added them, or they came from another
+    // account) are not hidden as "already cleared": they were not cleared when it opened.
+    clearedAtOpen = new Set([...clearedAtOpen].map(follow).filter(Boolean));
+    expected = keyed(expected);
+    for (const id of Object.keys(drafts)) {
+      if (id.startsWith('new:')) continue;
+      const next = follow(id);
+      if (next && next !== id) { drafts[next] = drafts[id]; delete drafts[id]; }
+      else if (!next) delete drafts[id];
+    }
+    if (editing && !editing.startsWith('new:')) editing = follow(editing);
+    if (dateBeingEdited) dateBeingEdited = follow(dateBeingEdited);
+    for (const entry of queue) entry.ids = entry.ids.map(follow).filter(Boolean);
+    for (const entry of queue) if (entry.change.kind === 'tick') entry.change.changes = entry.change.changes.map((change) => ({ ...change, id: follow(change.id) })).filter((change) => change.id);
+    state.data = data;
+    sources.clear();
+    ticked = new Set(data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
+    // Ticks still waiting their turn are shown as the person left them.
+    for (const entry of queue) if (entry.change.kind === 'tick') for (const change of entry.change.changes) { if (change.on) ticked.add(change.id); else ticked.delete(change.id); }
+    if (focusId) touched.add(focusId);
+    drawSub();
+    const was = anchor && { id: follow(anchor.id), top: anchor.top };
+    drawRows();
+    const target = focusId || (was && was.id);
+    const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
+    const tr = target ? trs.find((element) => element.dataset.id === target) : null;
+    if (tr && was && !focusId) window.scrollBy(0, tr.getBoundingClientRect().top - was.top);
+    if (tr && focusId) {
+      focus = trs.indexOf(tr);
+      if (!editing && !/^(INPUT|TEXTAREA)$/.test((root.activeElement || {}).tagName || '')) tr.focus({ preventScroll: true });
+      if (typeof tr.scrollIntoView === 'function') tr.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  /** The row the person is on, and where it is on the screen: the focused one, or the first in view. */
+  function placeOf() {
+    const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
+    const active = root.activeElement && root.activeElement.closest && root.activeElement.closest('tr[data-id]');
+    const top = $('bar').getBoundingClientRect().bottom;
+    const tr = active || trs.find((element) => element.getBoundingClientRect().bottom > top);
+    return tr ? { id: tr.dataset.id, top: tr.getBoundingClientRect().top } : null;
+  }
+
+  // ---------------------------------------------------------------- writing as changes are made
+
+  /** The window's own record of each row a change is about, for the plugin to find it by. */
+  function targetsOf(ids) {
+    const out = {};
+    for (const id of ids) {
+      const row = state.data.rows.find((entry) => entry.id === id);
+      if (row) out[id] = snapshot(row);
+    }
+    return out;
+  }
+
+  const stageWords = { writing: 'Writing to the file…', checking: 'Checking with hledger…' };
+
+  /**
+   * Send a change to be written. Changes go one at a time, in order; ticks made while one is
+   * being written go together in the next. `ids` are the rows it is about, drawn as being
+   * written until it is back.
+   */
+  function send(change, ids = [], then = null) {
+    queue.push({ change, ids, then });
+    run();
+  }
+
+  async function run() {
+    if (busy || !queue.length) return;
+    const link = bridge();
+    if (!link || typeof link.change !== 'function') {
+      queue.length = 0;
+      say('This window has lost touch with the app. Run reconcile again.', true);
+      return;
+    }
+    busy = true;
+    // Ticks queued one after another go as one write.
+    let entry = queue.shift();
+    if (entry.change.kind === 'tick') {
+      const ticks = [entry];
+      while (queue.length && queue[0].change.kind === 'tick') ticks.push(queue.shift());
+      entry = { change: mergeTicks(ticks.map((item) => item.change)), ids: ticks.flatMap((item) => item.ids), then: null };
+    }
+    writingIds = new Set(entry.ids);
+    for (const tr of $('rows').children) if (writingIds.has(tr.dataset.id)) { tr.classList.add('writing'); tr.setAttribute('aria-busy', 'true'); }
+    drawSums();
+    const change = entry.change;
+    const ids = [change.id, change.after, ...(change.changes || []).map((item) => item.id)].filter(Boolean);
+    const request = { ...change, style: markStyle, targets: { ...(change.targets || {}), ...targetsOf(ids) } };
+    const progress = (stage) => {
+      say(stageWords[stage] || stageWords.writing, false, { busy: true });
+      if (entry.progress) entry.progress(stage);
+    };
+    progress('writing');
+    let answer;
+    try {
+      answer = change.kind === 'undo' ? await link.undo(progress) : await link.change(request, progress);
+    } catch (error) {
+      answer = { error: `The app did not answer: ${error && error.message ? error.message : error}` };
+    }
+    busy = false;
+    writingIds = new Set();
+    if (answer && typeof answer.undo === 'number') undoable = answer.undo;
+    if (answer && answer.data) adopt(answer.data, { focusId: answer.focus || null });
+    else drawRows();
+    if (answer && answer.ok) {
+      say(`${answer.message}.${answer.outside ? ' The file had changed outside this window, and was read again first.' : ''}`, false, { undo: change.kind !== 'finish' });
+    } else {
+      say((answer && answer.error) || 'Nothing was written.', true, { undo: true });
+    }
+    if (entry.then) entry.then(answer || {});
+    run();
+  }
+
+  /** Tick or untick a row, and the rest of its transaction when marking whole transactions. */
   function toggle(id) {
     const row = rows().find((entry) => entry.id === id);
     const date = $('date').value;
@@ -603,23 +851,22 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     // together: ticking one posting of a two-posting transaction and not the other would be a
     // state hledger cannot write.
     const group = markStyle === 'transaction'
-      ? rows().filter((entry) => entry.id.split(':')[0] === id.split(':')[0])
+      ? rows().filter((entry) => entry.where && row.where && entry.where.file === row.where.file && entry.where.first === row.where.first && !entry.inserted)
       : [row];
     const turningOn = !ticked.has(id);
     for (const entry of group) {
       touched.add(entry.id);
       if (turningOn) ticked.add(entry.id); else ticked.delete(entry.id);
     }
-    // One row can be redrawn in place; a whole transaction needs the list redrawn, because the
-    // rows of the transaction that also changed may be anywhere in it.
+    if (writable && !row.inserted) send({ kind: 'tick', changes: [{ id, on: turningOn }] }, group.map((entry) => entry.id));
     if (group.length > 1) { hidePreview(); drawRows(); return; }
     const tr = [...$('rows').children].find((element) => element.dataset.id === id);
     if (tr) {
       // The row is redrawn in place rather than by rebuilding the list, and only its state
-      // changes: the tint, and what a screen reader is told. Nothing else about it moves,
-      // least of all the first cell, which carries the date.
+      // changes: the tint, and what a screen reader is told.
       tr.classList.toggle('on', ticked.has(id));
       tr.setAttribute('aria-checked', String(ticked.has(id)));
+      if (writable) { tr.classList.add('writing'); tr.setAttribute('aria-busy', 'true'); }
     }
     hidePreview();
     drawSums();
@@ -631,11 +878,41 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const text = form.querySelector('textarea').value.replace(/\s+$/, '');
     const read = readTransaction(text, state.data.account, style(), state.data.inclusive);
     const isNew = id.startsWith('new:');
-    if (text.trim() && !read.header) { say('The first line needs a date: 2026-09-05 Description.', true); return; }
-    if (isNew && !text.trim()) { say('There is nothing to add. Remove it instead.', true); return; }
-    if (isNew && !read.touches) { say(`It does not post to ${state.data.account}, so it does not belong here.`, true); return; }
-    if (text.trim() && read.postings < 2) { say('It needs another posting: the account the money came from or went to.', true); return; }
-    if (text.trim() && read.off) { say(`It does not balance: its amounts add up to ${money(read.off)}.`, true); return; }
+    const refuse = (message) => { say(message, true); $('reading').textContent = message; };
+    if (text.trim() && !read.header) { refuse('The first line needs a date: 2026-09-05 Description.'); return; }
+    if (isNew && !text.trim()) { refuse('There is nothing to add. Cancel it instead.'); return; }
+    if (isNew && !read.touches) { refuse(`It does not post to ${state.data.account}, so it does not belong here.`); return; }
+    if (text.trim() && read.postings < 2) { refuse('It needs another posting: the account the money came from or went to.'); return; }
+    if (text.trim() && read.off) { refuse(`It does not balance: its amounts add up to ${money(read.off)}.`); return; }
+    const floor = read.date ? moveRefusal(state.data, read.date) : null;
+    if (floor) { refuse(`Not ${isNew ? 'added' : 'written'}: ${read.date} is ${floor}.`); return; }
+    if (writable) {
+      const anchor = isNew && from && from.id === id ? from.row : null;
+      const typed = isNew && from && from.id === id && expected[from.row] != null ? from.row : null;
+      const button = form.querySelector('[data-keep]');
+      button.disabled = true;
+      button.textContent = 'Writing…';
+      const done = (answer) => {
+        if (!answer.ok) {
+          // The editor stays open with everything typed, and says what went wrong.
+          const field = $('rows').querySelector('tr.editor [data-keep]');
+          if (field) { field.disabled = false; field.textContent = 'Write it'; }
+          const reading = $('reading');
+          if (reading) reading.textContent = answer.error || 'Nothing was written.';
+          return;
+        }
+        delete drafts[id];
+        if (editing === id) editing = null;
+        drafting = null;
+        // A typed running balance the new line was added to explain is now that line's.
+        if (typed && answer.focus && expected[typed] != null) { expected[answer.focus] = expected[typed]; delete expected[typed]; }
+        if (from && from.id === id) from = null;
+        drawRows();
+      };
+      if (isNew) send({ kind: 'insert', text, after: anchor }, anchor ? [anchor] : [], done);
+      else send({ kind: 'edit', id, text }, [id], done);
+      return;
+    }
     if (isNew) {
       const fresh = { id, text };
       // Added to explain where the statement and journal part, it goes beside that posting.
@@ -653,6 +930,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       if (text === (row.text || '').replace(/\s+$/, '')) delete edits[id]; else edits[id] = { text };
       if (!text.trim()) { ticked.delete(id); delete expected[id]; }
     }
+    delete drafts[id];
     editing = null;
     drafting = null;
     say('');
@@ -667,15 +945,11 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     trs[focus].focus();
   }
 
-  /** Whether the files behind this window can be written at all. */
-  const readOnly = () => !state.files.some((file) => file.writable);
-
   /**
    * Move a transaction to `date`, which is what the date editor or Alt+arrow asks for.
    *
    * Moving changes the transaction's date, not its position in the file: the list is ordered by
-   * date, so the row appears in its new place, and nothing else about the journal changes. The
-   * change is pending like an edit, so it is shown in the preview before anything is written.
+   * date, so the row appears in its new place, and nothing else about the journal changes.
    */
   function moveTo(id, date) {
     const row = rows().find((entry) => entry.id === id);
@@ -684,17 +958,30 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const refused = moveRefusal(state.data, date);
     if (refused) { say(`Cannot move it to ${date}: it is ${refused}.`, true); return; }
     if (id.startsWith('new:')) { say('A new posting takes its date from its text. Edit it to change the date.', true); return; }
-    // Every row of the transaction moves with it, so one transaction cannot end up on two dates.
-    // Moved back to the day it was written on, it is not a change at all.
-    const transaction = id.split(':')[0];
-    for (const entry of state.data.rows) {
-      if (entry.id.split(':')[0] !== transaction) continue;
-      if (entry.date === date) delete moved[entry.id];
-      else moved[entry.id] = date;
-    }
-    say(`Moved ${row.description} to ${date}. Finish asserts from there; Save writes the date.`);
-    hidePreview();
-    drawRows();
+    touched.add(id);
+    send({ kind: 'date', id, date }, [id]);
+  }
+
+  /** Move a row up or down within its day, which moves its transaction in the file. */
+  function reorder(id, direction) {
+    if (readOnly()) { say('The journal is read-only, so the order cannot be changed: run open in the terminal to edit it.', true); return; }
+    const where = neighbour(rows(), id, direction);
+    const row = rows().find((entry) => entry.id === id);
+    if (where.refused) { say(`${row ? row.description : 'It'} stays where it is: ${where.refused}.`, true); return; }
+    touched.add(id);
+    send({ kind: 'reorder', id, direction }, [id], (answer) => {
+      if (!answer.ok) return;
+      // The row the person moved keeps the focus, wherever it went.
+      const moved = state.data.rows.find((entry) => entry.where.file === row.where.file && entry.text === row.text && entry.account === row.account && entry.where.occurrence === row.where.occurrence);
+      const index = moved ? shown.findIndex((entry) => entry.id === moved.id) : -1;
+      if (index >= 0) moveFocus(index);
+    });
+  }
+
+  function undo() {
+    if (!writable) return;
+    if (!undoable && !busy) { say('Nothing to undo: no change has been written from this window.', true); return; }
+    send({ kind: 'undo' });
   }
 
   function hidePreview() {
@@ -703,14 +990,19 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     $('preview').innerHTML = '';
   }
 
-  /** Ask the plugin what would be written, and show it, with a button to write it. */
-  async function preview(finish) {
+  /** Ask the plugin what Finish would write, and show it, with a button to write it. */
+  async function preview() {
     const link = bridge();
     if (!link) { say('This window has lost touch with the app. Run reconcile again.', true); return; }
     const { date, balance } = statement();
-    const request = { ticked: [...ticked], finish: finish ? { date, balance } : null, edits, inserts, expected: lineByLine ? expected : {}, moved, style: markStyle, fingerprint: state.fingerprint };
+    const request = writable
+      ? { kind: 'finish', finish: { date, balance }, expected: lineByLine ? expected : {}, style: markStyle, targets: targetsOf(Object.keys(expected)) }
+      : { ticked: [...ticked], finish: { date, balance }, edits, inserts, expected: lineByLine ? expected : {}, moved, style: markStyle, fingerprint: state.fingerprint };
+    if (writable) say('Reading the file again…', false, { busy: true });
     const result = await link.preview(request);
-    const writable = result.writable.some((file) => file.writable);
+    if (writable) say('');
+    if (result.data) adopt(result.data);
+    const canWriteFiles = (result.writable || []).some((file) => file.writable);
     const lines = [];
     for (const file of result.files) {
       const inserted = file.inserted || [];
@@ -721,7 +1013,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
         inserted.length && `${inserted.length} transaction${inserted.length === 1 ? '' : 's'} added`,
       ].filter(Boolean);
       lines.push(`<p><b>${escape(file.path)}</b>${said.length ? `: ${said.join(', ')}` : ''}${file.appended ? `${said.length ? ', and' : ':'} at the end:` : ''}</p>`);
-      for (const entry of inserted) lines.push(`<pre class="add">${escape(`after line ${entry.line}:\n${entry.text}`)}</pre>`);
+      for (const entry of inserted) lines.push(`<pre class="add">${escape(`${entry.side === 'before' ? `before line ${entry.line}` : `after line ${entry.line - 1}`}:\n${entry.text}`)}</pre>`);
       for (const entry of file.replaced || []) {
         lines.push(`<pre><span class="del">${escape(entry.before.split('\n').map((line, at) => `${String(entry.line + at).padStart(6)}  ${line}`).join('\n'))}</span>\n<span class="add">${escape(entry.after ? entry.after.split('\n').map((line) => `        ${line}`).join('\n') : '        (deleted)')}</span></pre>`);
       }
@@ -735,16 +1027,21 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     lines.unshift(`<p class="marks">${markStyle === 'transaction'
       ? "Marks transactions: the cleared mark goes on the transaction's own line."
       : "Marks postings: the cleared mark goes on each posting's own line."}</p>`);
+    // Marks that disagree with each other, said before anything is asserted over them.
+    const conflicts = result.conflicts || markConflicts(rows().filter((row) => !date || row.date <= date), markStyle);
+    if (conflicts.length) {
+      lines.push(`<div class="conflicts"><p><b>${conflicts.length} transaction${conflicts.length === 1 ? '' : 's'} with marks that disagree</b> (a posting is its own mark, else its transaction's):</p>${conflicts.slice(0, 8).map((entry) => `<p data-id="${escape(entry.id)}">${escape(`${entry.date} ${entry.description}: ${entry.why}`)}</p>`).join('')}${conflicts.length > 8 ? `<p>and ${conflicts.length - 8} more</p>` : ''}</div>`);
+    }
     if (!result.files.length && !result.missing.length) lines.push('<p>Nothing to write.</p>');
     // One line per reason: two hundred postings in a file that cannot be read are one problem.
     const reasons = [...new Set(result.missing.map((entry) => entry.why))];
-    if (reasons.length) lines.push(`<p>${escape(reasons.join('; '))}.</p>`);
-    if (finish && !result.files.some((file) => file.appended) && result.assertion) {
+    if (reasons.length) lines.push(`<p>${escape(reasons.join('; ').replace(/\.$/, ''))}.</p>`);
+    if (!result.files.some((file) => file.appended) && result.assertion) {
       lines.push(`<p>The assertion to add at the end of the journal:</p><pre class="add" id="assertion">${escape(result.assertion)}</pre>`);
     }
-    const canWrite = writable && result.files.length && !result.missing.length;
-    lines.push(`<div class="tools">${canWrite ? `<button class="primary" id="apply">Write ${finish ? 'and check' : 'it'}</button>` : ''}${!writable && finish ? '<button id="copy">Copy the assertion</button>' : ''}<button id="cancel">Cancel</button></div>`);
-    if (!writable) lines.push('<p class="note">This file did not come from an opened folder, so nothing can be written here. Run open in the terminal to edit it, or copy the assertion into the file yourself.</p>');
+    const canWrite = canWriteFiles && writable && result.files.length && !result.missing.length;
+    lines.push(`<div class="tools">${canWrite ? '<button class="primary" id="apply">Write and check</button>' : ''}${!canWriteFiles ? '<button id="copy">Copy the assertion</button>' : ''}<button id="cancel">Cancel</button><span id="apply-said" class="muted" role="status"></span></div>`);
+    if (!canWriteFiles) lines.push('<p class="note">This file did not come from an opened folder, so nothing can be written here. Run open in the terminal to edit it, or copy the assertion into the file yourself.</p>');
     pending = request;
     $('preview').innerHTML = lines.join('');
     $('preview').hidden = false;
@@ -759,29 +1056,31 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     $('cancel').addEventListener('click', hidePreview);
   }
 
-  async function write() {
+  /**
+   * Write what the preview showed. The button cannot be pressed twice: it is disabled at once and
+   * says what is happening, writing and then checking, until the answer is back.
+   */
+  function write() {
     const link = bridge();
-    if (!link || !pending) return;
-    say('Writing, then checking with hledger…');
-    const answer = await link.apply(pending);
-    if (answer.data) {
-      state.data = answer.data;
-      state.fingerprint = answer.fingerprint || state.fingerprint;
-      ticked.clear();
-      for (const row of state.data.rows) if (row.status === 'Cleared') ticked.add(row.id);
-      if (answer.ok) {
-        // Written: the edits and new postings are the journal now. Typed balances that were not
-        // written, because they did not match, are kept where their posting still is.
-        edits = {};
-        inserts = [];
-        moved = {};
-        expected = Object.fromEntries(Object.entries(expected).filter(([id]) => state.data.rows.some((row) => row.id === id)));
-      }
-    }
-    hidePreview();
-    drawSub();
-    drawRows();
-    say(answer.ok ? `${answer.message}.` : answer.error, !answer.ok);
+    const button = $('apply');
+    if (!link || !pending || !button || button.disabled) return;
+    button.disabled = true;
+    $('cancel').disabled = true;
+    button.textContent = stageWords.writing;
+    const request = pending;
+    const progress = (stage) => {
+      if ($('apply')) $('apply').textContent = stageWords[stage] || stageWords.writing;
+      if ($('apply-said')) $('apply-said').textContent = '';
+    };
+    // Finish goes through the same queue as every other change, after whatever is still being
+    // written, and is told the stages as they happen.
+    queue.push({ change: request, ids: [], then: (answer) => {
+      if (answer.ok) { hidePreview(); return; }
+      if ($('apply')) { $('apply').disabled = false; $('apply').textContent = 'Write and check'; }
+      if ($('cancel')) $('cancel').disabled = false;
+      if ($('apply-said')) $('apply-said').textContent = answer.error || 'Nothing was written.';
+    }, progress });
+    run();
   }
 
   function startAdding(amount = null, date = null, row = null) {
@@ -804,7 +1103,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const input = $('rows').querySelector(`tr[data-id="${CSS.escape(id)}"] .date-input`);
     if (!input) return;
     input.focus();
-    if (typeof input.showPicker === 'function') { try { input.showPicker(); } catch (error) { /* not in every browser, and not in every gesture */ } }
+    if (typeof input.showPicker === 'function') { try { input.showPicker(); } catch { /* not in every browser, and not in every gesture */ } }
   }
 
   /** Close the date editor, moving the transaction when a date was given. */
@@ -822,20 +1121,129 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   function startInserting(after) {
     if (readOnly()) { say('The journal is read-only, so nothing can be written: run open in the terminal to edit it.', true); return; }
     const row = shown.find((entry) => entry.id === after) || rows().find((entry) => entry.id === after);
-    startAdding(null, row ? row.date : null, row || null);
+    startAdding(null, row ? row.date : null, row ? row.id : null);
   }
+
+  // ---------------------------------------------------------------- finding a transaction
+
+  let found = [];
+  let chosen = -1;
+
+  function openFind(amount = null, date = null) {
+    $('find').hidden = false;
+    const now = sums();
+    const value = amount != null ? amount : now.difference;
+    if (value != null && value !== 0) $('find-amount').value = bare(value);
+    $('find-date').value = date || statement().date || '';
+    $('find-amount').focus();
+    $('find').scrollIntoView({ block: 'nearest' });
+  }
+
+  async function search() {
+    const link = bridge();
+    if (!link || typeof link.find !== 'function') { say('This window has lost touch with the app. Run reconcile again.', true); return; }
+    const amount = parseInput($('find-amount').value, style());
+    $('find-said').textContent = 'Looking…';
+    $('found').innerHTML = '';
+    $('find-file').hidden = true;
+    const answer = await link.find({ amount, date: $('find-date').value || null, words: $('find-words').value });
+    found = answer.candidates || [];
+    chosen = -1;
+    $('find-said').textContent = answer.error
+      ? answer.error
+      : found.length
+        ? `${found.length} transaction${found.length === 1 ? '' : 's'} under other accounts. Moving a posting changes its account to ${state.data.account} in place: nothing is copied.`
+        : 'Nothing under another account matches. It may be missing from the journal: add it instead.';
+    $('found').innerHTML = found.map((candidate, index) => `<li data-found="${index}" tabindex="0">
+<b>${escape(candidate.date)}</b> ${escape(candidate.description)}<span class="why">${escape(candidate.reasons.join(', '))}</span>
+${candidate.postings.map((posting) => `<div class="posting"><span>${escape(posting.account)}</span><span class="amount">${escape(posting.amount)}</span>${writable && !posting.generated && posting.at != null ? `<button data-move="${index}" data-at="${posting.at}" title="change this posting's account to ${escape(state.data.account)}, in place">Move it to this account</button>` : ''}</div>`).join('')}
+</li>`).join('');
+    if (found.length) choose(0);
+  }
+
+  function choose(index) {
+    chosen = index;
+    for (const li of $('found').children) li.classList.toggle('chosen', Number(li.dataset.found) === index);
+    const candidate = found[index];
+    if (candidate) showFile($('find-file'), { path: candidate.file, first: candidate.first, last: Math.max(candidate.last, candidate.first + 1) });
+  }
+
+  function moveHere(index, at) {
+    const candidate = found[index];
+    if (!candidate) return;
+    const posting = candidate.postings.find((entry) => entry.at === at);
+    send({ kind: 'account', candidate: { file: candidate.file, first: candidate.first, last: candidate.last, text: candidate.text, description: candidate.description }, at }, [], (answer) => {
+      if (!answer.ok) { $('find-said').textContent = answer.error; return; }
+      $('find-said').textContent = `Moved: ${candidate.date} ${candidate.description} is in ${state.data.account} now, and no longer in ${posting ? posting.account : 'the other account'}.`;
+      found.splice(index, 1);
+      $('found').innerHTML = '';
+      $('find-file').hidden = true;
+    });
+  }
+
+  $('find-open').addEventListener('click', () => openFind());
+  $('find-close').addEventListener('click', () => { $('find').hidden = true; });
+  $('find-go').addEventListener('click', search);
+  for (const id of ['find-amount', 'find-date', 'find-words']) {
+    $(id).addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); search(); } });
+  }
+  $('found').addEventListener('click', (event) => {
+    const move = event.target.closest('button[data-move]');
+    if (move) { moveHere(Number(move.dataset.move), Number(move.dataset.at)); return; }
+    const li = event.target.closest('li[data-found]');
+    if (li) choose(Number(li.dataset.found));
+  });
+  $('found').addEventListener('keydown', (event) => {
+    const li = event.target.closest('li[data-found]');
+    if (li && event.key === 'Enter' && event.target === li) choose(Number(li.dataset.found));
+  });
+
+  // ---------------------------------------------------------------- the file changing outside
+
+  /**
+   * Ask whether another program changed the file, and if so draw it as it is now. Only while
+   * the window is in view and nothing of its own is being written: a write reads the file
+   * again first anyway.
+   */
+  async function poll() {
+    // window.__reconcileHold stops the looking, so a check can make an outside edit and act
+    // before the window has seen it, which a person can do too.
+    if (!writable || busy || queue.length || window.__reconcileHold) return;
+    const link = bridge();
+    if (!link || typeof link.poll !== 'function') return;
+    busy = true;
+    let answer;
+    try { answer = await link.poll(); } catch { answer = null; }
+    busy = false;
+    if (answer && answer.changed && answer.data) {
+      adopt(answer.data);
+      say('The file changed outside this window, so it was read again.');
+    } else if (answer && answer.error) {
+      say(answer.error, true);
+    }
+    run();
+  }
+  if (writable) {
+    setInterval(() => { if (root.visibilityState !== 'hidden') poll(); }, 2000);
+    window.addEventListener('focus', () => poll());
+    root.addEventListener('visibilitychange', () => { if (root.visibilityState === 'visible') poll(); });
+  }
+
+  // ---------------------------------------------------------------- events
 
   $('rows').addEventListener('click', (event) => {
     const button = event.target.closest('button');
     if (button) {
       if (button.dataset.date) startDateEdit(button.dataset.date);
       else if (button.dataset.insert) startInserting(button.dataset.insert);
+      else if (button.dataset.up) reorder(button.dataset.up, 'up');
+      else if (button.dataset.down) reorder(button.dataset.down, 'down');
       else if (button.dataset.edit) { editing = button.dataset.edit; drawRows(); }
       else if (button.dataset.keep) keep(button.dataset.keep);
       else if (button.dataset.restore) { delete edits[button.dataset.restore]; drawRows(); }
       else if (button.dataset.drop) { inserts = inserts.filter((insert) => insert.id !== button.dataset.drop); ticked.delete(button.dataset.drop); delete expected[button.dataset.drop]; editing = null; drawRows(); }
       else if (button.dataset.undo) { delete edits[button.dataset.undo]; editing = null; drawRows(); }
-      else if (button.dataset.close) { editing = null; drafting = null; drawRows(); }
+      else if (button.dataset.close) { if (editing) delete drafts[editing]; editing = null; drafting = null; drawRows(); }
       return;
     }
     if (event.target.closest('input') || event.target.closest('tr.editor')) return;
@@ -844,7 +1252,9 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   });
   $('rows').addEventListener('input', (event) => {
     if (event.target.tagName === 'TEXTAREA') {
+      if (editing) drafts[editing] = event.target.value;
       $('reading').textContent = reading(event.target.value);
+      if (editing && editing.startsWith('new:')) drawEditorView();
       return;
     }
     const id = event.target.dataset.expect;
@@ -853,9 +1263,8 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     if (value == null) delete expected[id]; else expected[id] = value;
     const row = rows().find((entry) => entry.id === id);
     const cell = event.target.closest('tr').querySelector('td.delta');
-    // A row whose running balance is unknown (an edit in another commodity makes every balance
-    // after it unknown) has no difference to show: `value - null` would be the typed balance
-    // itself, presented as though the line were out by exactly that much.
+    // A row whose running balance is unknown has no difference to show: `value - null` would be
+    // the typed balance itself, presented as though the line were out by exactly that much.
     const point = value == null || !row || row.balance == null ? null : value - row.balance;
     cell.textContent = point == null ? '' : point === 0 ? '✓' : money(point);
     cell.className = `n delta ${point == null ? '' : point === 0 ? 'ok' : 'off'}`;
@@ -872,13 +1281,11 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   });
   // The date editor is closed by any click away from it, not only by focus leaving it. Some
   // engines move focus when the date picker opens or is dismissed, so a later click fires no
-  // focusout and the editor is left sitting over a row that then gets ticked, which is how a
-  // date came to look as though it had vanished when a line was checked.
+  // focusout and the editor is left sitting over a row that then gets ticked.
   //
-  // A click on the row itself only closes the editor: one click does one thing, and the
-  // alternative is ticking a line at the same moment the date disappears under the caret.
-  // Buttons and fields are left alone so each still does its own job on the same click.
-  document.addEventListener('click', (event) => {
+  // A click on the row itself only closes the editor: one click does one thing. Buttons and
+  // fields are left alone so each still does its own job on the same click.
+  root.addEventListener('click', (event) => {
     if (dateBeingEdited == null) return;
     const target = event.target;
     if (target.closest && target.closest('.date-input')) return;
@@ -903,9 +1310,14 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     const button = event.target.closest('button[data-restore]');
     if (button) { delete edits[button.dataset.restore]; hidePreview(); drawRows(); }
   });
+  $('status').addEventListener('click', (event) => {
+    if (event.target.closest('#undo')) undo();
+  });
   $('hints').addEventListener('click', (event) => {
     const add = event.target.closest('button[data-add]');
     if (add) { startAdding(Number(add.dataset.add), add.dataset.date, add.dataset.from); return; }
+    const look = event.target.closest('button[data-find]');
+    if (look) { openFind(Number(look.dataset.find), look.dataset.date); search(); return; }
     const p = event.target.closest('p[data-id]');
     if (!p) return;
     const index = shown.findIndex((row) => row.id === p.dataset.id);
@@ -918,9 +1330,9 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     hidePreview();
     drawSub();
     drawRows();
-    const pending = describe();
-    say(`Cleared marks now go on ${markStyle === 'transaction' ? 'the whole transaction' : "this account's line"}`
-      + (pending ? `, including what is not saved yet (${pending}).` : '.'));
+    const conflicts = markConflicts(state.data.rows, markStyle).length;
+    say(`Cleared marks now go on ${markStyle === 'transaction' ? 'the whole transaction' : "this account's line"}, from the next tick on.`
+      + (conflicts ? ` ${conflicts} transaction${conflicts === 1 ? ' has' : 's have'} marks that disagree with this; Finish lists ${conflicts === 1 ? 'it' : 'them'}.` : ''));
   });
   $('lines').addEventListener('change', () => {
     lineByLine = $('lines').checked;
@@ -931,7 +1343,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     drawSums();
     const typed = Object.keys(expected).length;
     say(lineByLine
-      ? 'Type the statement\'s balance after a line to see where they part; lines that match are asserted when you save.'
+      ? 'Type the statement\'s balance after a line to see where they part; lines that match are asserted when you finish.'
       : `Line by line is off${typed ? `: the ${typed} figure${typed === 1 ? '' : 's'} typed are kept, and not written` : ''}.`);
   });
   for (const id of ['date', 'balance']) $(id).addEventListener('input', () => { hidePreview(); id === 'date' ? drawRows() : drawSums(); });
@@ -939,17 +1351,22 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
   $('add').addEventListener('click', () => startAdding());
   $('all').addEventListener('click', () => {
     const date = $('date').value;
-    for (const row of shown) if (!date || row.date <= date) ticked.add(row.id);
+    const changes = [];
+    for (const row of shown) {
+      if (date && row.date > date) continue;
+      if (!ticked.has(row.id) && !row.inserted) changes.push({ id: row.id, on: true });
+      ticked.add(row.id);
+      touched.add(row.id);
+    }
+    if (writable && changes.length) send({ kind: 'tick', changes }, changes.map((change) => change.id));
     hidePreview();
     drawRows();
   });
-  $('progress').addEventListener('click', () => preview(false));
-  $('finish').addEventListener('click', () => preview(true));
+  $('finish').addEventListener('click', () => preview());
 
   root.addEventListener('keydown', (event) => {
     const typing = /^(INPUT|TEXTAREA)$/.test(event.target.tagName);
-    // The date editor: Enter keeps the date, Escape leaves it alone. It is checked before the
-    // keys below, which are for the list rather than for a field being typed in.
+    // The date editor: Enter keeps the date, Escape leaves it alone.
     const dateInput = event.target.closest && event.target.closest('[data-date-input]');
     if (dateInput) {
       if (event.key === 'Enter') { event.preventDefault(); finishDateEdit(dateInput.dataset.dateInput, dateInput.value); }
@@ -957,14 +1374,24 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       return;
     }
     if (event.key === 'Escape') {
-      if (editing) { editing = null; drafting = null; drawRows(); return; }
+      if (editing) { delete drafts[editing]; editing = null; drafting = null; drawRows(); return; }
       if (event.target === $('search')) { $('search').value = ''; drawRows(); return; }
+      if (!$('find').hidden && event.target.closest && event.target.closest('#find')) { $('find').hidden = true; return; }
     }
     if (typing) return;
     const trs = [...$('rows').children].filter((tr) => tr.dataset.id);
+    // The row with the focus is the one a key acts on, however it got the focus: a click, a
+    // hint, or the arrows.
+    const current = root.activeElement && root.activeElement.closest ? root.activeElement.closest('#rows tr[data-id]') : null;
+    if (current && trs.includes(current)) focus = trs.indexOf(current);
+    // Shift with an arrow moves the transaction within its day, which is its place in the file.
+    if (event.shiftKey && !event.altKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'J' || event.key === 'K') && trs[focus]) {
+      event.preventDefault();
+      reorder(trs[focus].dataset.id, event.key === 'ArrowDown' || event.key === 'J' ? 'down' : 'up');
+      return;
+    }
     // Alt with an arrow moves the transaction to the next day that has postings, the quick way
-    // to step it onto the day the statement shows. It changes the date like the date editor
-    // does, and comes before the plain arrows below, which take the same keys for focus.
+    // to step it onto the day the statement shows.
     if (event.altKey && (event.key === 'ArrowDown' || event.key === 'ArrowUp') && trs[focus]) {
       event.preventDefault();
       const at = shown.findIndex((row) => row.id === trs[focus].dataset.id);
@@ -981,6 +1408,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
       moveTo(trs[focus].dataset.id, target.date);
       return;
     }
+    if ((event.key === 'z' && (event.ctrlKey || event.metaKey)) || (event.key === 'u' && !event.ctrlKey && !event.metaKey)) { event.preventDefault(); undo(); return; }
     if (event.key === 'ArrowDown' || event.key === 'j') { event.preventDefault(); moveFocus(focus + 1); }
     else if (event.key === 'ArrowUp' || event.key === 'k') { event.preventDefault(); moveFocus(focus - 1); }
     else if (event.key === ' ' && trs[focus] && event.target.tagName !== 'BUTTON') { event.preventDefault(); toggle(trs[focus].dataset.id); }
@@ -988,6 +1416,7 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
     else if (event.key === 'd' && trs[focus]) { event.preventDefault(); startDateEdit(trs[focus].dataset.id); }
     else if ((event.key === 'i' || (event.key === 'N' && event.shiftKey)) && trs[focus]) { event.preventDefault(); startInserting(trs[focus].dataset.id); }
     else if (event.key === 'n') { event.preventDefault(); startAdding(); }
+    else if (event.key === 'f' && !event.ctrlKey && !event.metaKey) { event.preventDefault(); openFind(); }
     else if (event.key === 'a' && !event.ctrlKey && !event.metaKey) { event.preventDefault(); $('all').click(); }
     else if (event.key === '/') { event.preventDefault(); $('search').focus(); }
   });
@@ -1001,10 +1430,8 @@ ${row.inserted ? `<button data-drop="${escape(row.id)}">Remove</button>` : (edit
 
   drawSub();
   drawRows();
-  // Open where the work is. A journal last asserted months ago lists months of postings that
-  // are already cleared and ticked, and starting at the top of those makes the window look as
-  // though nothing has been done. The rows stay, because the running balances need them, but
-  // the view starts at the first one still to do.
+  // Open where the work is: the rows stay, because the running balances need them, but the view
+  // starts at the first one still to do.
   const firstLeft = shown.findIndex((row) => !ticked.has(row.id));
   const left = firstLeft > 0 ? firstLeft : 0;
   // Focus before scrolling: focusing the balance field scrolls back to the top, so doing it

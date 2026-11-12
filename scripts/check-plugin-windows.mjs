@@ -46,6 +46,7 @@ const { page: editPage } = await import('../assets/plugins/edit-window.js');
 const { page: reconcilePage } = await import('../assets/plugins/reconcile-window.js');
 const { readPrint: readReconcile } = await import('../assets/plugins/reconcile-data.js');
 const { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } = await import('./reconcile-fixtures.mjs');
+const { liveChecks, liveRoute } = await import('./reconcile-live.mjs');
 const RECONCILE_DATA = readReconcile(RECONCILE_PRINT, 'Assets:Bank:Checking');
 // Each row carries its transaction's text, as the plugin gives it, for the editor.
 for (const row of RECONCILE_DATA.rows) {
@@ -74,6 +75,7 @@ const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
 const MEASURED = ['reconcile.js', 'reconcile-data.js', 'reconcile-window.js', 'chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
 /** The least each measured file's code may be executed, as a share of its source. */
 const FLOOR = 0.9;
+const ONLY = process.env.ONLY || '';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -147,9 +149,272 @@ const ANSWER = {
   related: [],
 };
 
+/**
+ * The reconcile plugin's side of a window, stood in for. It runs in the page (it is written into
+ * OPENER as source), keeps the account as the plugin would have it after each change, and
+ * answers each change the way the plugin does: told 'writing' and then 'checking', a moment
+ * apart, and then the account as hledger would read it back. Every request is kept in
+ * window.__changed. Set window.__refuse to have a change refused, window.__throw to have the
+ * bridge throw, window.__outside to a data object to have the next poll find the file changed,
+ * window.__pollError to have it fail, window.__conflicts for a Finish preview's conflicts, and
+ * window.__delay for how long each stage takes.
+ */
+function reconcileBridge({ journals, candidate }) {
+  window.__changed = [];
+  window.__history = [];
+  window.__delay = 20;
+  window.__outside = null;
+  let made = 0;
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const current = () => {
+    if (!window.__data) window.__data = JSON.parse(document.getElementById('reconcile-data').textContent).data;
+    return window.__data;
+  };
+  window.__current = () => copy(current());
+  const kit = () => import('/plugins/reconcile-data.js');
+  const named = (row) => `${row.date} ${row.description}`.trim();
+  const together = (row, other) => other.where.file === row.where.file && other.where.first === row.where.first;
+  const shift = (data, from, by) => {
+    for (const row of data.rows) {
+      if (row.where.first >= from) { row.where.first += by; row.where.last += by; }
+    }
+  };
+  /** A row read from a transaction's text, as readPrint would make it. */
+  const rowFrom = (tools, data, text, where, status) => {
+    const read = tools.readTransaction(text, data.account, data.style, data.inclusive);
+    made += 1;
+    return {
+      id: `w${made}:${data.account}:0`, date: read.date, description: read.description || '', account: data.account,
+      against: read.against, amount: read.amount == null ? 0 : read.amount, counted: read.amount != null, stated: null,
+      virtual: false, status, transactionMark: 'Unmarked', ownMark: status !== 'Unmarked', generated: false, ownDate: false,
+      simple: true, other: read.against || null, where: { ...where, occurrence: 0 }, text,
+    };
+  };
+  const byDate = (data) => {
+    data.rows = data.rows.map((row, at) => ({ row, at })).sort((a, b) => (a.row.date < b.row.date ? -1 : a.row.date > b.row.date ? 1 : a.at - b.at)).map((entry) => entry.row);
+  };
+
+  /** One change, applied to `data` in place: the message to say, or `{ error }`. */
+  const apply = (tools, data, request) => {
+    const targets = request.targets || {};
+    const find = (id) => {
+      const row = data.rows.find((entry) => entry.id === id);
+      const target = targets[id];
+      // Found by what the window says it was, as the plugin does: a row whose text is not what
+      // the window saw changed outside it.
+      if (!row || !target || (target.text == null ? null : target.text) !== (row.text == null ? null : row.text)) return null;
+      return row;
+    };
+    const gone = (id) => ({ error: `${targets[id] ? `${targets[id].date} ${targets[id].description}` : 'that line'} changed outside this window, so this change was not made. The window shows the file as it is now.` });
+    switch (request.kind) {
+      case 'tick': {
+        const done = [];
+        for (const change of request.changes || []) {
+          const row = find(change.id);
+          if (!row) return gone(change.id);
+          const group = request.style === 'transaction' ? data.rows.filter((entry) => together(row, entry)) : [row];
+          for (const entry of group) entry.status = change.on ? 'Cleared' : 'Unmarked';
+          done.push({ row, on: change.on });
+        }
+        return { message: done.length === 1
+          ? `${done[0].on ? 'Ticked' : 'Unticked'} ${named(done[0].row)}`
+          : `${done.filter((entry) => entry.on).length} ticked, ${done.filter((entry) => !entry.on).length} unticked`.replace(/^0 ticked, |, 0 unticked$/g, '') };
+      }
+      case 'edit': {
+        const row = find(request.id);
+        if (!row) return gone(request.id);
+        const text = String(request.text || '').replace(/\s+$/, '');
+        const group = data.rows.filter((entry) => together(row, entry));
+        if (!text) {
+          data.rows = data.rows.filter((entry) => !together(row, entry));
+          return { message: `Deleted ${named(row)}` };
+        }
+        const read = tools.readTransaction(text, data.account, data.style, data.inclusive);
+        for (const entry of group) Object.assign(entry, { text, date: read.date || entry.date, description: read.description || '' });
+        if (group.length === 1) Object.assign(row, { amount: read.amount == null ? 0 : read.amount, counted: read.amount != null, against: read.against });
+        byDate(data);
+        return { message: `Rewrote ${named(group[0])}` };
+      }
+      case 'insert': {
+        const text = String(request.text || '').replace(/\s+$/, '');
+        const read = tools.readTransaction(text, data.account, data.style, data.inclusive);
+        const anchor = request.after ? find(request.after) : null;
+        const place = tools.placement(tools.ordered(data), { anchor: anchor ? anchor.id : null, date: read.date });
+        const beside = place && data.rows.find((entry) => entry.id === place.id);
+        const size = text.split('\n').length;
+        const file = (data.rows[0] && data.rows[0].where.file) || 'fixture.journal';
+        const line = beside ? (place.side === 'after' ? beside.where.last : beside.where.first) : 999;
+        shift(data, line, size + 1);
+        // The plugin ticks what it adds: the line was added because the statement has it.
+        const row = rowFrom(tools, data, text, { file, first: line, last: line + size }, 'Cleared');
+        let at = data.rows.length;
+        if (beside) {
+          const group = data.rows.map((entry, index) => (together(beside, entry) ? index : -1)).filter((index) => index >= 0);
+          at = place.side === 'after' ? group[group.length - 1] + 1 : group[0];
+        }
+        data.rows.splice(at, 0, row);
+        return { message: `Added ${read.date} ${read.description || ''}`.trim(), focus: row.id };
+      }
+      case 'date': {
+        const row = find(request.id);
+        if (!row) return gone(request.id);
+        const refused = tools.moveRefusal(data, request.date);
+        if (refused) return { error: `Cannot move it to ${request.date}: it is ${refused}.` };
+        for (const entry of data.rows.filter((other) => together(row, other))) {
+          entry.date = request.date;
+          entry.text = String(entry.text || '').replace(/^\d{4}-\d{2}-\d{2}/, request.date);
+        }
+        byDate(data);
+        return { message: `Moved ${row.description} to ${request.date}` };
+      }
+      case 'reorder': {
+        const row = find(request.id);
+        if (!row) return gone(request.id);
+        const where = tools.neighbour(tools.ordered(data), row.id, request.direction);
+        if (where.refused) return { error: `${row.description} stays where it is: ${where.refused}.` };
+        const next = data.rows.find((entry) => entry.id === where.to.id);
+        const mine = data.rows.filter((entry) => together(row, entry));
+        const theirs = data.rows.filter((entry) => together(next, entry));
+        const size = (group) => group[0].where.last - group[0].where.first;
+        const [aFirst, bFirst] = [mine[0].where.first, theirs[0].where.first];
+        const up = request.direction !== 'down';
+        const moveBy = (group, to) => { const by = to - group[0].where.first; for (const entry of group) { entry.where.first += by; entry.where.last += by; } };
+        if (up) { moveBy(mine, bFirst); moveBy(theirs, bFirst + size(mine)); } else { moveBy(theirs, aFirst); moveBy(mine, aFirst + size(theirs)); }
+        const rest = data.rows.filter((entry) => !mine.includes(entry));
+        const at = up ? rest.indexOf(theirs[0]) : rest.indexOf(theirs[theirs.length - 1]) + 1;
+        rest.splice(at, 0, ...mine);
+        data.rows = rest;
+        return { message: `Moved ${row.description} ${up ? 'up' : 'down'} within ${row.date}` };
+      }
+      case 'account': {
+        const found = request.candidate || {};
+        const after = tools.moveAccount(found.text, request.at, data.account);
+        if (!after) return { error: 'That posting is not in the transaction any more.' };
+        const parts = tools.parsePosting(String(found.text).split('\n')[request.at]);
+        const row = rowFrom(tools, data, after, { file: found.file, first: found.first, last: found.last }, 'Unmarked');
+        data.rows.push(row);
+        byDate(data);
+        return { message: `Moved ${found.description}'s ${parts.account} posting to ${data.account}`, focus: row.id };
+      }
+      case 'finish':
+        return { message: `${data.account} reconciled to ${(request.finish || {}).date}` };
+      default:
+        return { error: `${request.kind} is not a change this window makes.` };
+    }
+  };
+
+  const journalOf = (path) => (Object.prototype.hasOwnProperty.call(journals, path) ? journals[path] : null);
+  const assertion = (finish) => `${finish.date} * Reconciled with statement\n    Assets:Bank:Checking    0.00 IDR = ${(Number(finish.balance) / 100).toFixed(2)} IDR\n`;
+
+  return {
+    // What Finish would write. A request with a kind is a writable window's Finish, against the
+    // file as it is now; one without is a read-only window's own ticks, edits and new lines.
+    preview(request) {
+      window.__previewed.push(request);
+      window.__lastPreview = request;
+      const writable = [{ path: 'fixture.journal', writable: window.__writable }];
+      if (request.kind === 'finish') {
+        return {
+          files: [{ path: 'fixture.journal', changes: [], appended: assertion(request.finish), inserted: [], replaced: [] }],
+          missing: [], assertion: '', writable, conflicts: window.__conflicts || [],
+        };
+      }
+      return {
+        files: [{ path: 'fixture.journal', changes: [
+          ...Object.entries(request.moved || {}).slice(0, 1).map(([id, date]) => ({ line: 7, before: '2026-09-01 * Coffee', after: `${date} * Coffee`, id })),
+          ...request.ticked.map((id, index) => ({ line: 9 + index, before: '    Assets:Bank:Checking', after: '  * Assets:Bank:Checking', id })),
+        ],
+          appended: request.finish ? assertion(request.finish) : '',
+          replaced: Object.entries(request.edits || {}).map(([, edit], at) => ({ line: 7 + at * 4, before: 'old text\n    of it', after: edit.text })),
+          inserted: (request.inserts || []).map((insert) => ({ line: 24, text: insert.text })) }],
+        missing: [],
+        writable,
+      };
+    },
+    setStyle(style) {
+      window.__styleSet = style;
+      return style;
+    },
+    setLines(on) {
+      window.__linesSet = on;
+      return on;
+    },
+    async change(request, progress) {
+      window.__changed.push(copy(request));
+      if (window.__throw) throw new Error(window.__throw);
+      const tools = await kit();
+      progress('writing');
+      await wait(window.__delay);
+      progress('checking');
+      await wait(window.__delay);
+      if (window.__refuse) return { error: window.__refuse, data: copy(current()) };
+      const data = copy(current());
+      const done = apply(tools, data, copy(request));
+      if (done.error) return { error: done.error, data: copy(current()) };
+      window.__history.push({ data: current(), message: done.message });
+      window.__data = data;
+      return { ok: true, message: done.message, data: copy(data), undo: window.__history.length, focus: done.focus || null, outside: Boolean(window.__outsideOnChange) };
+    },
+    async undo(progress) {
+      window.__changed.push({ kind: 'undo' });
+      progress('writing');
+      await wait(window.__delay);
+      progress('checking');
+      await wait(window.__delay);
+      const last = window.__history.pop();
+      if (!last) return { error: 'Nothing to undo: no change has been written from this window.', data: copy(current()), undo: 0 };
+      window.__data = last.data;
+      return { ok: true, message: `Undid: ${last.message}`, data: copy(last.data), undo: window.__history.length };
+    },
+    poll() {
+      window.__polled = (window.__polled || 0) + 1;
+      if (window.__pollError) {
+        const error = window.__pollError;
+        window.__pollError = null;
+        return { changed: true, error };
+      }
+      if (!window.__outside) return { changed: false };
+      window.__data = copy(window.__outside);
+      window.__outside = null;
+      window.__history = [];
+      return { changed: true, data: copy(window.__data) };
+    },
+    source(path) {
+      window.__sourced = path;
+      return journalOf(path);
+    },
+    async find(request) {
+      window.__found = request;
+      await wait(window.__delay);
+      if (request.amount == null && !String(request.words || '').trim()) return { candidates: [], error: 'Give an amount, or some words from the description, to look for.' };
+      if (/nothing/.test(request.words || '')) return { candidates: [] };
+      return { candidates: [copy(candidate)] };
+    },
+  };
+}
+
+// A transaction under another account, for Find a transaction to turn up: at the end of the
+// fixture's file as the bridge shows it, shaped as rankCandidates gives it, with its text and
+// each posting's line in that text, as the plugin adds them.
+const FOUND_TEXT = '2026-09-04 Bank fee\n    Expenses:Fees    75000 IDR\n    Assets:Cash    -75000 IDR';
+const FOUND = {
+  file: 'fixture.journal', first: 29, last: 32, date: '2026-09-04', description: 'Bank fee', score: 6, apart: 1,
+  reasons: ['the amount', '1 day from the date'], text: FOUND_TEXT,
+  postings: [
+    { account: 'Expenses:Fees', amount: '75,000.00 IDR', matches: true, virtual: false, generated: false, at: 1 },
+    { account: 'Assets:Cash', amount: '-75,000.00 IDR', matches: true, virtual: false, generated: false, at: 2 },
+  ],
+};
+const BRIDGE_FIXTURES = {
+  journals: { 'fixture.journal': `${RECONCILE_JOURNAL}\n${FOUND_TEXT}\n`, 'generic.journal': GENERIC_JOURNAL },
+  candidate: FOUND,
+};
+
 // The page a window was opened by, stood in for: a chart bridge that records what it was asked
-// and answers with ANSWER, after a moment, as hledger would; and an editor bridge that records
-// what was saved, or refuses the way the app does when the file changed on disk.
+// and answers with ANSWER, after a moment, as hledger would; a reconcile bridge (above); and an
+// editor bridge that records what was saved, or refuses the way the app does when the file
+// changed on disk.
 const OPENER = `
   window.__asked = [];
   window.__previewed = [];
@@ -165,37 +430,7 @@ const OPENER = `
         return { ...${JSON.stringify(ANSWER)}, title: args, args };
       },
     } },
-    __reconcileBridges: { check: {
-      // The plugin's side, stood in for: a preview of the marks and the assertion, and an
-      // apply that answers with the account as it would be read back, ticks marked.
-      preview(request) {
-        window.__previewed.push(request);
-        window.__lastPreview = request;
-        return {
-          files: [{ path: 'fixture.journal', changes: [
-            ...Object.entries(request.moved || {}).slice(0, 1).map(([id, date]) => ({ line: 7, before: '2026-09-01 * Coffee', after: date + ' * Coffee', id })),
-            ...request.ticked.map((id, index) => ({ line: 9 + index, before: '    Assets:Bank:Checking', after: '  * Assets:Bank:Checking', id })),
-          ],
-            appended: request.finish ? '2026-09-30 * Reconciled with statement\\n    Assets:Bank:Checking    0.00 IDR = 5670000.00 IDR\\n' : '',
-            replaced: Object.entries(request.edits || {}).map(([id, edit], at) => ({ line: 7 + at * 4, before: 'old text\\n    of it', after: edit.text })),
-            inserted: (request.inserts || []).map((insert) => ({ line: 24, text: insert.text })) }],
-          missing: [],
-          writable: [{ path: 'fixture.journal', writable: window.__writable }],
-        };
-      },
-      setStyle(style) {
-        window.__styleSet = style;
-        return style;
-      },
-      async apply(request) {
-        window.__applied.push(request);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        if (window.__refuse) return { error: window.__refuse };
-        const data = JSON.parse(document.getElementById('reconcile-data').textContent).data;
-        for (const row of data.rows) row.status = request.ticked.includes(row.id) ? 'Cleared' : row.status;
-        return { ok: true, message: 'Assets:Bank:Checking reconciled to 2026-09-30', data, fingerprint: 'after' };
-      },
-    } },
+    __reconcileBridges: { check: (${reconcileBridge.toString()})(${JSON.stringify(BRIDGE_FIXTURES)}) },
     __editBridges: { check: {
       async save(text) {
         if (window.__refuse) throw new Error(window.__refuse);
@@ -261,6 +496,8 @@ function serve() {
   const types = { '.js': 'text/javascript', '.html': 'text/html; charset=utf-8', '.json': 'application/json' };
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://check');
+    // The reconcile plugin run for real, against files on disk and the shipped engine.
+    if (await liveRoute(url, request, response, { COLORS, DARK })) return;
     if (url.pathname === '/edit') {
       response.writeHead(200, { 'content-type': types['.html'] });
       response.end(editorFor(url.searchParams.get('writable') === 'yes', url.searchParams.get('theme'), {
@@ -474,12 +711,12 @@ class Tab {
     });
     loaded.catch(() => {});
     if (process.env.VERBOSE) console.error(`showing ${name} ${theme}${extra}`);
-    const path = name === 'edit' ? `/edit?theme=${theme}${extra}` : name === 'reconcile' ? `/reconcile?theme=${theme}${extra}` : `/window?case=${name}&theme=${theme}${extra}`;
+    const path = name === 'edit' ? `/edit?theme=${theme}${extra}` : name === 'reconcile' ? `/reconcile?theme=${theme}${extra}` : name === 'live' ? `/live?theme=${theme}${extra}` : `/window?case=${name}&theme=${theme}${extra}`;
     await this.send('Page.navigate', { url: `${this.base}${path}` });
     await loaded;
     await this.until(name === 'edit'
       ? "document.querySelector('.ace_content') || !document.getElementById('warn').hidden"
-      : name === 'reconcile' ? "document.querySelectorAll('#rows tr').length > 0"
+      : name === 'reconcile' || name === 'live' ? "document.getElementById('rows') && document.querySelectorAll('#rows tr').length > 0"
       : "document.querySelectorAll('#chart *').length > 0 || !document.getElementById('warn').hidden");
   }
 
@@ -1068,10 +1305,18 @@ async function whenThingsGoWrong(tab) {
   check('and a failed drill-down shows hledger\'s answer', /no such account/.test(await tab.warning()), await tab.warning());
 }
 
+/**
+ * Waits for the window to finish writing: nothing marked as being written, and the status no
+ * longer busy. A change goes out the moment it is made, so a check reads the window after it.
+ */
+const writesDone = (tab) => tab.until("!document.querySelector('#rows tr.writing') && !document.getElementById('status').classList.contains('busy')");
+
 async function reconciling(tab) {
   const text = (id) => tab.eval(`document.getElementById('${id}').innerText`);
   const difference = () => tab.eval("document.querySelector('#difference b').textContent");
   const type = (id, value) => tab.eval(`(() => { const el = document.getElementById('${id}'); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input')); })()`);
+  const done = () => writesDone(tab);
+  const changed = () => tab.eval('window.__changed');
   const tickRow = async (index) => {
     const ticked = await tab.eval(`(() => {
       const row = document.querySelectorAll('#rows tr[data-id]')[${index}];
@@ -1084,7 +1329,8 @@ async function reconciling(tab) {
   for (const theme of ['light', 'dark']) {
     await tab.show('reconcile', theme);
     check(`the reconcile window lists the account's postings since its last assertion (${theme})`,
-      (await tab.eval("document.querySelectorAll('#rows tr').length")) === 6 && /^6 postings in IDR, since the balance asserted on 2026-08-31$/.test(await text('sub')) && tab.errors.length === 0,
+      (await tab.eval("document.querySelectorAll('#rows tr').length")) === 6
+      && /^6 postings in IDR, since the balance asserted on 2026-08-31\. Changes are written to the file as you make them\.$/.test(await text('sub')) && tab.errors.length === 0,
       `${await text('sub')} ${tab.errors.join(' | ')}`);
   }
   check('it opens at the opening balance, with nothing typed for the statement yet',
@@ -1092,12 +1338,13 @@ async function reconciling(tab) {
     // Nothing has been typed for the statement yet, so the difference says nothing at all:
     // a dash where the number will be reads as a broken field rather than as a waiting one.
     && (await text('difference')).trim() === '', `${await text('figures')} | "${await text('difference')}"`);
+  check('a writable window offers no Save: each change is written as it is made',
+    !(await tab.eval("document.getElementById('progress') || document.getElementById('pending')")) && /u undo/.test(await tab.eval("document.querySelector('.keys').textContent")), '');
   // Where one day's postings end and the next begin, a heavier rule than the hairline between
   // postings, so the eye can find the day boundaries in a long list.
   const days = await tab.eval(`(() => {
     const trs = [...document.querySelectorAll('#rows tr[data-id]')];
     const marked = trs.map((tr, at) => ({ date: tr.querySelector('td.date').textContent, day: tr.classList.contains('day'), at }));
-    const first = trs[0].querySelector('td');
     const boundary = trs.find((tr) => tr.classList.contains('day'));
     return {
       dates: marked.map((entry) => entry.date),
@@ -1147,30 +1394,65 @@ async function reconciling(tab) {
   check('and the line follows the state, counting what is left to account for',
     /4,670,000\.00 IDR still to account for/.test(await text('next')), await text('next'));
   check('with the statement balance typed, the difference is there', (await difference()) === '4,670,000.00 IDR', await difference());
-  await tickRow(0);
-  await tickRow(1);
-  await tickRow(3);
-  await tickRow(4);
-  check('a click ticks a posting and the difference follows', (await difference()) === '-300,000.00 IDR' && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 4, await difference());
+
+  // Four quick clicks: the first is written at once, and the three made while it is being
+  // written go together in the next write, each row once.
+  await tab.eval('window.__delay = 150');
+  const clicked = await tab.eval(`(() => {
+    const rows = document.querySelectorAll('#rows tr[data-id]');
+    for (const index of [0, 1, 3, 4]) rows[index].click();
+    const first = rows[0];
+    return {
+      on: document.querySelectorAll('#rows tr.on').length,
+      writing: first.classList.contains('writing'), busy: first.getAttribute('aria-busy'),
+      status: document.getElementById('status').textContent, spinning: document.getElementById('status').classList.contains('busy'),
+    };
+  })()`);
+  check('a tick shows at once, and the row and the status say it is being written',
+    clicked.on === 4 && clicked.writing && clicked.busy === 'true' && clicked.status === 'Writing to the file…' && clicked.spinning, JSON.stringify(clicked));
+  const checking = await tab.until("document.getElementById('status').textContent === 'Checking with hledger…'");
+  check('then that it is being checked with hledger', checking, await text('status'));
+  await done();
+  await tab.eval('window.__delay = 20');
+  const sent = await changed();
+  const coffee = sent[0] && sent[0].targets && sent[0].targets['2:Assets:Bank:Checking:0'];
+  check('a tick sends one change, with the row as the window saw it, its text included',
+    sent.length === 2 && sent[0].kind === 'tick' && JSON.stringify(sent[0].changes) === JSON.stringify([{ id: '2:Assets:Bank:Checking:0', on: true }])
+    && sent[0].style === 'posting' && coffee && coffee.text === '2026-09-01 Coffee\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking'
+    && coffee.first === 7 && coffee.file === 'fixture.journal' && coffee.description === 'Coffee', JSON.stringify(sent[0]));
+  check('and the ticks made while it was written go together in one write after it',
+    sent[1] && sent[1].kind === 'tick' && sent[1].changes.map((change) => `${change.id}=${change.on}`).join() === '3:Assets:Bank:Checking:0=true,5:Assets:Bank:Checking:0=true,5:Assets:Bank:Checking:1=true'
+    && Object.keys(sent[1].targets).length === 3, JSON.stringify(sent[1]));
+  check('a click ticks a posting and the difference follows, as the file now says',
+    (await difference()) === '-300,000.00 IDR' && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 4
+    && /^3 ticked\.Undo$/.test(await text('status')), `${await difference()} ${await text('status')}`);
   check('a posting that is exactly the difference is pointed out, and lit',
     /Pending transfer -300,000\.00 IDR: not ticked, and exactly the difference/.test(await text('hints')) && (await tab.eval("document.querySelectorAll('#rows tr.hinted').length")) === 1, await text('hints'));
   check('Finish waits for a difference of zero', await tab.eval("document.getElementById('finish').disabled"));
   await tickRow(5);
-  check('a later posting cannot be ticked', (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 4, '');
+  check('a later posting cannot be ticked, and nothing is written for it',
+    (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 4 && (await changed()).length === 2, '');
   // The keyboard: down to the pending transfer, and Space.
   await tab.eval("document.activeElement && document.activeElement.blur()");
   for (let step = 0; step < 3; step += 1) await tab.key('j', { code: 'KeyJ', keyCode: 74, text: 'j' });
   await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  await done();
   check('j, k and Space tick from the keyboard, and at zero the difference is lit',
     (await difference()) === '0.00 IDR' && (await tab.eval("document.querySelector('#difference').classList.contains('zero')")) && !(await tab.eval("document.getElementById('finish').disabled")), await difference());
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  await done();
+  check('a second Space unticks it in the file too',
+    (await changed()).slice(-1)[0].changes[0].on === false && /^Unticked 2026-09-03 Pending transfer\./.test(await text('status')), await text('status'));
   await type('balance', '5,970,000');
   check('at zero with a posting left out, Finish says why it waits',
     (await difference()) === '0.00 IDR' && (await tab.eval("document.getElementById('finish').disabled")) && /^1 line up to the statement date is not ticked; an assertion counts every one/.test(await text('notes')), await text('notes'));
   await type('balance', '5,670,000');
   await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
-  check('a ticks every posting shown up to the date', (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await difference()) === '0.00 IDR', '');
+  await done();
+  check('a ticks every posting shown up to the date, in one write of the ones not yet ticked',
+    (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await difference()) === '0.00 IDR'
+    && JSON.stringify((await changed()).slice(-1)[0].changes) === JSON.stringify([{ id: '4:Assets:Bank:Checking:0', on: true }]), JSON.stringify((await changed()).slice(-1)[0]));
   check('and at zero the line says the totals match and Finish is the move',
     /totals match/.test(await text('next')) && /Finish/.test(await text('next')), await text('next'));
   await tab.key('/', { code: 'Slash', keyCode: 191, text: '/' });
@@ -1186,37 +1468,72 @@ async function reconciling(tab) {
   await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
   check('Finish shows what would be written before writing it',
-    /fixture\.journal: 5 lines would change, and at the end:/.test(await text('preview')) && /= 5670000\.00 IDR/.test(await text('preview')) && (await tab.eval('window.__applied.length')) === 0,
-    await text('preview'));
-  check('and asks the plugin with the ticks and the statement', await tab.eval("(() => { const r = window.__previewed.pop(); return r.ticked.length === 5 && r.finish.date === '2026-09-30' && r.finish.balance === 567000000 && r.fingerprint === 'before'; })()"), '');
-  await tab.eval("document.getElementById('apply').click()");
+    /fixture\.journal: at the end:/.test(await text('preview')) && /= 5670000\.00 IDR/.test(await text('preview'))
+    && !(await changed()).some((request) => request.kind === 'finish'), await text('preview'));
+  check('and asks the plugin for a finish against the file as it is, with the statement',
+    await tab.eval("(() => { const r = window.__previewed.pop(); return r.kind === 'finish' && r.finish.date === '2026-09-30' && r.finish.balance === 567000000 && r.style === 'posting' && !r.ticked; })()"),
+    await tab.eval('JSON.stringify(window.__lastPreview)'));
+  await tab.eval('window.__delay = 200');
+  const pressed = await tab.eval(`(() => {
+    const apply = document.getElementById('apply');
+    apply.click();
+    apply.click();
+    return { disabled: apply.disabled, said: apply.textContent, cancel: document.getElementById('cancel').disabled };
+  })()`);
+  check('Write and check is disabled the moment it is pressed, and says it is writing',
+    pressed.disabled && pressed.said === 'Writing to the file…' && pressed.cancel, JSON.stringify(pressed));
+  const checked = await tab.until("document.getElementById('apply') && document.getElementById('apply').textContent === 'Checking with hledger…'");
+  check('then that hledger is checking it', checked, '');
   await tab.until("/reconciled/.test(document.getElementById('status').textContent)");
-  check('writing goes through the plugin, and the window shows the account as it is now',
-    /Assets:Bank:Checking reconciled to 2026-09-30\./.test(await text('status')) && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await tab.eval('document.getElementById(\'preview\').hidden')), await text('status'));
-  check('with everything written, there is nothing left to save', (await tab.eval("document.getElementById('progress').disabled")) && (await text('pending')) === '', await text('pending'));
+  await tab.eval('window.__delay = 20');
+  const finishes = (await changed()).filter((request) => request.kind === 'finish');
+  check('the finish goes through the plugin once, and the window says so and puts the preview away',
+    /^Assets:Bank:Checking reconciled to 2026-09-30\.$/.test(await text('status')) && finishes.length === 1
+    && finishes[0].finish.balance === 567000000 && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5
+    && (await tab.eval("document.getElementById('preview').hidden")), `${await text('status')} ${JSON.stringify(finishes)}`);
+  check('and a finish is not offered to undo', !(await tab.eval("document.getElementById('undo')")), await text('status'));
   await tab.eval("window.__refuse = 'hledger refused the result, so the files were put back as they were: Balance assertion failed'");
   await tickRow(0);
-  check('and a change is counted on the Save button', /1 to clear/.test(await text('pending')), await text('pending'));
-  await tab.eval("document.getElementById('progress').click()");
+  await done();
+  check('a refused change is shown as it came, and the line goes back to what the file says',
+    /put back as they were/.test(await text('status')) && (await tab.eval("document.getElementById('status').classList.contains('error')"))
+    && (await tab.eval("document.querySelectorAll('#rows tr[data-id]')[0].classList.contains('on')")), await text('status'));
+  await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
   await tab.eval("document.getElementById('apply').click()");
-  await tab.until("document.getElementById('status').classList.contains('error')");
-  check('and a refusal is shown as it came', /put back as they were/.test(await text('status')), await text('status'));
-  await tab.eval("document.getElementById('progress').click()");
-  await tab.until("!document.getElementById('preview').hidden");
+  await tab.until("document.getElementById('apply-said').textContent.length > 0");
+  const refusedFinish = await tab.eval("({ said: document.getElementById('apply-said').textContent, label: document.getElementById('apply').textContent, disabled: document.getElementById('apply').disabled, cancel: document.getElementById('cancel').disabled })");
+  check('a refused finish says why beside its button, and the button can be pressed again',
+    /put back as they were/.test(refusedFinish.said) && refusedFinish.label === 'Write and check' && !refusedFinish.disabled && !refusedFinish.cancel, JSON.stringify(refusedFinish));
   await tab.eval("document.getElementById('cancel').click()");
   check('Cancel puts the preview away', await tab.eval("document.getElementById('preview').hidden"));
+  await tab.eval("window.__refuse = ''");
+  await tab.eval("document.getElementById('undo').click()");
+  await done();
+  check('Undo beside the message takes the last change back out of the file',
+    /^Undid: Assets:Bank:Checking reconciled to 2026-09-30\./.test(await text('status')) && (await changed()).slice(-1)[0].kind === 'undo', await text('status'));
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('u', { code: 'KeyU', keyCode: 85, text: 'u' });
+  await done();
+  check('and u undoes the one before it, the window following the file',
+    /^Undid: Ticked 2026-09-03 Pending transfer\./.test(await text('status'))
+    && (await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Pending transfer/.test(tr.textContent)).getAttribute('aria-checked')")) === 'false', await text('status'));
 
   await tab.show('reconcile', 'light', '&writable=no&balance=5670000');
-  check('in a read-only file, read-only is said once at the top, Save is not offered, and Finish shows the assertion',
-    (await tab.eval("document.getElementById('progress').hidden")) && (await tab.eval("document.getElementById('finish').textContent")) === 'Show the assertion'
+  check('in a read-only file, read-only is said once at the top, nothing offers to write, and Finish shows the assertion',
+    (await tab.eval("document.getElementById('finish').textContent")) === 'Show the assertion'
     && /^Read-only: fixture\.journal did not come from an opened folder.*Run open in the terminal/.test(await text('readonly'))
-    && !/read-only/i.test(await text('next')), await text('readonly'));
+    && !/read-only/i.test(await text('next')) && !/written to the file/.test(await text('sub'))
+    && !/undo/.test(await tab.eval("document.querySelector('.keys').textContent")), await text('readonly'));
   await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  await tab.key('u', { code: 'KeyU', keyCode: 85, text: 'u' });
+  check('and its ticks stay in the window: nothing is sent to be written',
+    (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5 && (await changed()).length === 0, JSON.stringify(await changed()));
   await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
   check('and its preview says why nothing can be written, with no write button',
-    /did not come from an opened folder/.test(await text('preview')) && !(await tab.eval("document.getElementById('apply')")) && (await tab.eval("!!document.getElementById('copy')")), await text('preview'));
+    /did not come from an opened folder/.test(await text('preview')) && !(await tab.eval("document.getElementById('apply')")) && (await tab.eval("!!document.getElementById('copy')"))
+    && (await tab.eval('window.__lastPreview.ticked.length')) === 5, await text('preview'));
   await tab.eval("document.getElementById('copy').click()");
   await tab.until("document.getElementById('status').textContent.length > 0");
   check('and copying says what happened', /Copied|Copying was not allowed/.test(await text('status')), await text('status'));
@@ -1226,6 +1543,9 @@ async function reconciling(tab) {
   // line and moving the focus are both things the checks above depend on not having happened.
   await tab.show('reconcile', 'dark');
   await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('u', { code: 'KeyU', keyCode: 85, text: 'u' });
+  check('u with nothing written yet says there is nothing to undo, and sends nothing',
+    /^Nothing to undo: no change has been written from this window\.$/.test(await text('status')) && (await changed()).length === 0, await text('status'));
   await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40 });
   const keyboard = await tab.eval(`(() => {
     const row = document.activeElement;
@@ -1234,13 +1554,52 @@ async function reconciling(tab) {
   check('the line under the keyboard is focused and drawn with a focus ring',
     keyboard.tag === 'TR' && parseFloat(keyboard.outline) >= 2, JSON.stringify(keyboard));
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
-  const tickedBySpace = await tab.eval("document.querySelectorAll('#rows tr[data-id]')[1].getAttribute('aria-checked')");
-  check('Space ticks the line that has focus', tickedBySpace === 'true', String(tickedBySpace));
+  await done();
+  const tickedBySpace = await tab.eval("({ checked: document.querySelectorAll('#rows tr[data-id]')[1].getAttribute('aria-checked'), focused: document.activeElement === document.querySelectorAll('#rows tr[data-id]')[1] })");
+  check('Space ticks the line that has focus, and it keeps the focus once written', tickedBySpace.checked === 'true' && tickedBySpace.focused, JSON.stringify(tickedBySpace));
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
+  await done();
   const untickedBySpace = await tab.eval("document.querySelectorAll('#rows tr[data-id]')[1].getAttribute('aria-checked')");
   check('and a second Space takes it off again', untickedBySpace === 'false', String(untickedBySpace));
-}
 
+  // Another program changes the file: the window reads it again, keeps its place and what was
+  // being typed in an open editor, and says so.
+  await tab.show('reconcile', 'dark', '&balance=5670000');
+  await tab.eval("document.querySelector('#rows button[data-edit]').click()");
+  await tab.eval("(() => { const area = document.querySelector('tr.editor textarea'); area.value = '2026-09-01 Coffee, typed'; area.dispatchEvent(new Event('input', { bubbles: true })); })()");
+  await tab.eval(`(() => {
+    const data = window.__current();
+    data.rows.find((row) => row.description === 'Salary').status = 'Cleared';
+    window.__outside = data;
+    window.dispatchEvent(new Event('focus'));
+  })()`);
+  await tab.until("/changed outside/.test(document.getElementById('status').textContent)");
+  const outside = await tab.eval(`({
+    salary: [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Salary/.test(tr.textContent)).getAttribute('aria-checked'),
+    draft: (document.querySelector('tr.editor textarea') || {}).value,
+    status: document.getElementById('status').textContent,
+  })`);
+  check('a change made outside the window is read in when it is looked at again, and what was being typed is kept',
+    outside.salary === 'true' && outside.draft === '2026-09-01 Coffee, typed' && outside.status === 'The file changed outside this window, so it was read again.', JSON.stringify(outside));
+  await tab.key('Escape', { code: 'Escape', keyCode: 27 });
+  await tab.eval("(() => { window.__pollError = 'The file changed outside this window, and hledger cannot read it as it is now: a parse error'; window.dispatchEvent(new Event('focus')); })()");
+  await tab.until("document.getElementById('status').classList.contains('error')");
+  check('and a file hledger cannot read is said', /hledger cannot read it as it is now/.test(await text('status')), await text('status'));
+  await tab.eval('window.__outsideOnChange = true');
+  await tickRow(0);
+  await done();
+  check('a change that found the file changed first says it was read again',
+    /^Ticked 2026-09-01 Coffee\. The file had changed outside this window, and was read again first\./.test(await text('status')), await text('status'));
+  await tab.eval("(() => { window.__outsideOnChange = false; window.__throw = 'the app went away'; })()");
+  await tickRow(2);
+  await done();
+  check('a bridge that does not answer is said',
+    /^The app did not answer: the app went away/.test(await text('status')), await text('status'));
+  await tab.eval("(() => { window.__throw = ''; delete window.opener.__reconcileBridges.check.change; })()");
+  await tickRow(2);
+  check('and a window whose app has gone says to run reconcile again',
+    /lost touch with the app\. Run reconcile again\./.test(await text('status')), await text('status'));
+}
 
 
 // The generic fixture: a journal carrying every kind of posting the window has to handle, so the
@@ -1376,8 +1735,9 @@ async function reconcileDateEditing(tab) {
 
   // A line whose running balance is unknown has no difference to show. Editing a transaction
   // into another commodity makes every balance after it unknown, and the box used to show the
-  // typed balance as though the line were out by exactly that much.
-  await tab.show('reconcile', 'dark');
+  // typed balance as though the line were out by exactly that much. Only a read-only window
+  // keeps an edit of its own; a writable one shows what hledger read back.
+  await tab.show('reconcile', 'dark', '&writable=no');
   await tab.eval(`(() => {
     const box = document.getElementById('lines');
     box.checked = true;
@@ -1420,6 +1780,7 @@ async function reconcileDateEditing(tab) {
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     return true;
   })()`);
+  await writesDone(tab);
   const afterMove = await tab.eval("document.activeElement.getAttribute('data-id')");
   const nowAt = await tab.eval(`[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => tr.getAttribute('data-id') === ${JSON.stringify(focusTarget)})`);
   check('after a line moves to another day and re-sorts, focus stays on that line',
@@ -1439,6 +1800,7 @@ async function reconcileDateEditing(tab) {
   })()`);
   await tab.eval("(() => { const row = document.querySelector('#rows tr.on'); if (row) row.click(); return true; })()");
   await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  await writesDone(tab);
   const countAfter = await tab.eval("document.querySelectorAll('#rows tr[data-id]').length");
   check('ticking every line leaves every line in view, none disappearing',
     countAfter >= revealed && revealed >= countBefore,
@@ -1468,23 +1830,22 @@ async function reconcileDateEditing(tab) {
   check('a space in the date editor stays in the editor, and ticks nothing',
     JSON.parse(editorState).editor && JSON.parse(editorState).on === beforeSpace, editorState);
 
-  // After a save there is no editor left standing: the row it was open on was re-read with the
+  // After a write there is no editor left standing: the row it was open on was re-read with the
   // rest of the list, and nothing keeps an input on a line that has already been written.
   await tab.show('reconcile', 'dark');
   await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
   const editing = await tab.eval("Boolean(document.querySelector('.date-input'))");
   await tab.key('Escape', { code: 'Escape', keyCode: 27 });
   await tab.eval("document.querySelector('#rows tr[data-id]').click()");
-  await tab.eval("document.getElementById('progress').click()");
-  await tab.until("!document.getElementById('preview').hidden");
-  await tab.eval("document.getElementById('apply').click()");
-  await tab.until("document.getElementById('status').textContent.indexOf('saved') >= 0 || document.getElementById('preview').hidden");
+  await writesDone(tab);
   const afterSave = await tab.eval(`JSON.stringify({
     editors: document.querySelectorAll('.date-input').length,
     rows: document.querySelectorAll('#rows tr[data-id]').length,
+    on: document.querySelector('#rows tr[data-id]').getAttribute('aria-checked'),
+    written: window.__changed.length,
   })`);
-  check('a save leaves the list re-read with no editor standing',
-    editing && JSON.parse(afterSave).editors === 0 && JSON.parse(afterSave).rows > 0, afterSave);
+  check('a written tick leaves the list re-read with no editor standing',
+    editing && JSON.parse(afterSave).editors === 0 && JSON.parse(afterSave).rows > 0 && JSON.parse(afterSave).on === 'true' && JSON.parse(afterSave).written === 1, afterSave);
 
   // Two thousand postings: what the redesign has to survive is the redraw, not the first paint,
   // so the tick-everything path is timed inside the page, where navigation is not counted.
@@ -1549,28 +1910,32 @@ async function reconcileDates(tab) {
     && /^Cannot move it to 2026-08-01: it is before 2026-08-31, where this account is already asserted\.$/.test(refused.status)
     && refused.dates[0] === '2026-09-01', JSON.stringify(refused));
 
-  // A date the statement allows is accepted, said, and counted as a change not yet written.
-  const moved = await tab.eval(`(() => {
+  // A date the statement allows is accepted, written at once, and said.
+  const writing = await tab.eval(`(() => {
     document.querySelector('#rows tr[data-id] button[data-date]').click();
     const input = document.querySelector('#rows tr[data-id] .date-input');
     input.value = '2026-09-03';
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    return {
-      status: document.getElementById('status').textContent,
-      pending: document.getElementById('pending').textContent,
-      dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
-    };
+    const row = document.querySelector('#rows tr[data-id]');
+    return { writing: row.classList.contains('writing'), busy: row.getAttribute('aria-busy') };
   })()`);
-  check('a date the statement allows is accepted, said, and counted as a change not yet saved',
-    /^Moved Coffee to 2026-09-03\./.test(moved.status) && /1 date/.test(moved.pending)
-    && moved.dates.filter((date) => date === '2026-09-03').length === 2, JSON.stringify(moved));
-
-  await tab.eval("document.getElementById('progress').click()");
-  await tab.until("!document.getElementById('preview').hidden");
-  const preview = await tab.eval("document.getElementById('preview').innerText");
-  check('and the preview shows the line it would rewrite before anything is written',
-    /2026-09-01 \* Coffee/.test(preview) && /2026-09-03 \* Coffee/.test(preview), preview.slice(0, 200));
-  await tab.eval("document.getElementById('cancel').click()");
+  await writesDone(tab);
+  const moved = await tab.eval(`(() => ({
+    status: document.getElementById('status').textContent,
+    dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
+    sent: window.__changed[window.__changed.length - 1],
+  }))()`);
+  check('a date the statement allows is written at once, the row marked while it is, and said',
+    writing.writing && writing.busy === 'true' && /^Moved Coffee to 2026-09-03\./.test(moved.status)
+    && moved.dates.filter((date) => date === '2026-09-03').length === 2, JSON.stringify({ writing, moved }));
+  check('and it is sent as a date change, with the row as the window saw it',
+    moved.sent.kind === 'date' && moved.sent.id === '2:Assets:Bank:Checking:0' && moved.sent.date === '2026-09-03'
+    && /^2026-09-01 Coffee\n/.test(moved.sent.targets['2:Assets:Bank:Checking:0'].text), JSON.stringify(moved.sent));
+  await tab.eval("document.getElementById('undo').click()");
+  await writesDone(tab);
+  const undone = await tab.eval("({ status: document.getElementById('status').textContent, first: document.querySelector('#rows button[data-date]').textContent, undo: !!document.getElementById('undo') })");
+  check('and Undo puts the date back, with nothing left to undo',
+    /^Undid: Moved Coffee to 2026-09-03\.$/.test(undone.status) && undone.first === '2026-09-01' && !undone.undo, JSON.stringify(undone));
 
   // The date and the insert control are reached from the keyboard, not only by a pointer: Tab
   // from the focused line lands on them in turn, each drawn with a focus ring, and the plus is
@@ -1590,17 +1955,19 @@ async function reconcileDates(tab) {
   // A date past the statement date is allowed: the statement date is a filter, not a wall, and
   // Finish waits for the date to move rather than refusing the line.
   await tab.show('reconcile', 'dark');
-  const later = await tab.eval(`(() => {
+  await tab.eval(`(() => {
     const row = [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Pending transfer/.test(tr.textContent));
     row.querySelector('button[data-date]').click();
     const input = document.querySelector('.date-input');
     input.value = '2026-10-02';
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    return {
-      said: document.getElementById('status').textContent,
-      dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
-    };
+    return true;
   })()`);
+  await writesDone(tab);
+  const later = await tab.eval(`({
+    said: document.getElementById('status').textContent,
+    dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
+  })`);
   check('a date past the statement date is allowed, since Finish simply waits',
     /^Moved Pending transfer to 2026-10-02\./.test(later.said)
     && later.dates.filter((date) => date === '2026-10-02').length === 2, JSON.stringify(later));
@@ -1609,27 +1976,95 @@ async function reconcileDates(tab) {
   // it where the statement shows it, without typing a date.
   await tab.show('reconcile', 'dark');
   await tab.eval("document.activeElement && document.activeElement.blur()");
-  const keys = await tab.eval(`(() => {
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true }));
-    return {
-      dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
-      status: document.getElementById('status').textContent,
-    };
-  })()`);
+  await tab.eval("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true }))");
+  await writesDone(tab);
+  const keys = await tab.eval(`({
+    dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
+    status: document.getElementById('status').textContent,
+  })`);
   check('Alt+Down moves the focused transaction to the next day with postings, and says where',
     keys.dates[0] === '2026-09-02' && /^Moved Coffee to 2026-09-02/.test(keys.status), JSON.stringify(keys));
 
+  // Two transactions on one day now: each has the arrow towards the other, and only that one,
+  // and moving one moves its transaction in the file, which is the day's order.
+  const order = () => tab.eval(`(() => [...document.querySelectorAll('#rows tr[data-id]')].slice(0, 2).map((tr) => ({
+    name: tr.children[1].textContent.trim().split(/\\s/)[0],
+    up: Boolean(tr.querySelector('button[data-up]')),
+    down: Boolean(tr.querySelector('button[data-down]')),
+  })))()`);
+  const before = await order();
+  check('two transactions on a day each get the arrow towards the other, and a lone day gets none',
+    JSON.stringify(before) === JSON.stringify([{ name: 'Coffee', up: false, down: true }, { name: 'Salary', up: true, down: false }])
+    && (await tab.eval("document.querySelectorAll('#rows button.order').length")) === 2, JSON.stringify(before));
+  await tab.eval("document.querySelector('#rows button[data-up]').click()");
+  await writesDone(tab);
+  const raised = await tab.eval(`({
+    names: [...document.querySelectorAll('#rows tr[data-id]')].slice(0, 2).map((tr) => tr.children[1].textContent.trim().split(/\\s/)[0]),
+    focus: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.id : null,
+    status: document.getElementById('status').textContent,
+    sent: window.__changed[window.__changed.length - 1],
+  })`);
+  check('the up arrow moves it above its neighbour, sent as a reorder, and the moved row keeps the focus',
+    raised.names.join() === 'Salary,Coffee' && raised.focus === '3:Assets:Bank:Checking:0'
+    && raised.sent.kind === 'reorder' && raised.sent.direction === 'up' && raised.sent.id === '3:Assets:Bank:Checking:0'
+    && /^Moved Salary up within 2026-09-02\./.test(raised.status), JSON.stringify(raised));
+  await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40, modifiers: 8 });
+  await writesDone(tab);
+  const lowered = await tab.eval(`({
+    names: [...document.querySelectorAll('#rows tr[data-id]')].slice(0, 2).map((tr) => tr.children[1].textContent.trim().split(/\\s/)[0]),
+    focus: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.id : null,
+    sent: window.__changed[window.__changed.length - 1],
+  })`);
+  check('Shift+Down moves it back down, and it keeps the focus',
+    lowered.names.join() === 'Coffee,Salary' && lowered.focus === '3:Assets:Bank:Checking:0' && lowered.sent.direction === 'down', JSON.stringify(lowered));
+  const sentBefore = await tab.eval('window.__changed.length');
+  await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40, modifiers: 8 });
+  check('and Shift+Down on the last of its day says it stays, and writes nothing',
+    /^Salary stays where it is: it is already the last of 2026-09-02\.$/.test(await tab.eval("document.getElementById('status').textContent"))
+    && (await tab.eval('window.__changed.length')) === sentBefore, await tab.eval("document.getElementById('status').textContent"));
+
   // A transaction can be added in the middle of the list: the plus beside a date opens the
-  // editor for that spot, prefilled with that day and this account, so it lands where it looks.
+  // editor for that spot, prefilled with that day and this account, so it lands where it looks,
+  // beside the whole file with the place it will go marked.
   await tab.show('reconcile', 'dark');
   const added = await tab.eval(`(() => {
     document.querySelectorAll('#rows tr[data-id] button[data-insert]')[0].click();
     const area = document.querySelector('tr.editor textarea');
-    return { opened: Boolean(area), text: area ? area.value : '' };
+    const view = document.querySelector('tr.editor .file-view');
+    return {
+      opened: Boolean(area), text: area ? area.value : '',
+      where: view ? view.querySelector('.where').textContent : '',
+      here: view && view.querySelector('.here') ? view.querySelector('.here').textContent : '',
+    };
   })()`);
   check('the plus beside a date opens a new transaction for that spot, on that day',
     added.opened && /^2026-09-01/.test(added.text) && /Assets:Bank:Checking/.test(added.text),
     JSON.stringify(added));
+  check('beside the file, with where it will go marked',
+    added.where === 'fixture.journal: it goes after line 9, after 2026-09-01 Coffee' && /^10\s*$/.test(added.here), JSON.stringify(added));
+  const moving = await tab.eval(`(() => {
+    const area = document.querySelector('tr.editor textarea');
+    area.value = '2026-09-04 Bank fee\\n    Assets:Bank:Checking    -75000 IDR\\n    Expenses:Fees';
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+    const view = document.querySelector('tr.editor .file-view');
+    return { where: view.querySelector('.where').textContent, here: view.querySelector('.here') ? view.querySelector('.here').textContent : '' };
+  })()`);
+  check('and the mark follows the date as it is typed',
+    moving.where === 'fixture.journal: it goes after line 17, after 2026-09-03 Pending transfer' && /^18\s*$/.test(moving.here), JSON.stringify(moving));
+  await tab.eval("document.querySelector('tr.editor [data-close]').click()");
+  const viewed = await tab.eval(`(() => {
+    document.querySelector('#rows button[data-edit]').click();
+    const view = document.querySelector('tr.editor .file-view');
+    const scroll = view.querySelector('.scroll');
+    const lit = [...view.querySelectorAll('.hl')].map((line) => line.textContent);
+    scroll.scrollTop = scroll.scrollHeight;
+    scroll.dispatchEvent(new Event('scroll'));
+    const last = [...view.querySelectorAll('.lines > div')].map((line) => line.textContent).filter((line) => /Assets:Cash/.test(line)).pop();
+    return { where: view.querySelector('.where').textContent, lit, last: last || '', sourced: window.__sourced };
+  })()`);
+  check('editing a transaction shows it lit in its whole file, and the file scrolls',
+    viewed.where === 'fixture.journal, lines 7 to 9' && viewed.lit.length === 3 && /^7\s*2026-09-01 Coffee$/.test(viewed.lit[0])
+    && /Assets:Cash/.test(viewed.last) && viewed.sourced === 'fixture.journal', JSON.stringify(viewed));
 
   // The keyboard gets there from the line with focus, which is not the same line.
   await tab.show('reconcile', 'dark');
@@ -1661,53 +2096,63 @@ async function reconcileDates(tab) {
   check('a read-only journal refuses the date change with the message the write actions use',
     locked.openedEditor === false && /read-only/.test(locked.status) && /run open/.test(locked.status)
     && locked.draggable === null && locked.date === locked.was, JSON.stringify(locked));
+  await tab.eval("document.querySelector('#rows tr[data-id]').focus()");
+  await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40, modifiers: 8 });
+  check('and the order within a day too',
+    /^The journal is read-only, so the order cannot be changed: run open in the terminal to edit it\.$/.test(await tab.eval("document.getElementById('status').textContent"))
+    && (await tab.eval('window.__changed.length')) === 0, await tab.eval("document.getElementById('status').textContent"));
 }
 
 // Where the cleared marks are written is the person's choice, and the window has to show it,
 // carry it in every request, and remember it.
 async function reconcileStyle(tab) {
-  await tab.show('reconcile', 'dark');
+  await tab.show('reconcile', 'dark', '&balance=5670000');
   const initial = await tab.eval("({ value: document.getElementById('style').value, options: [...document.querySelectorAll('#style option')].map((o) => o.value) })");
   check('the marking style is a visible choice, with both styles offered',
     initial.value === 'posting' && initial.options.join() === 'posting,transaction', JSON.stringify(initial));
   // A transaction with two postings to this account ticks as one in transaction mode.
-  const together = await tab.eval(`(() => {
+  await tab.eval(`(() => {
     const select = document.getElementById('style');
     select.value = 'transaction';
     select.dispatchEvent(new Event('change'));
-    const rows = [...document.querySelectorAll('#rows tr[data-id]')];
-    const split = rows.filter((tr) => /Split/.test(tr.textContent));
-    split[0].click();
-    return {
-      splitRows: split.length,
-      ticked: document.querySelectorAll('#rows tr.on').length,
-      splitTicked: [...document.querySelectorAll('#rows tr[data-id]')].filter((tr) => /Split/.test(tr.textContent) && tr.classList.contains('on')).length,
-      status: document.getElementById('status').textContent,
-      remembered: window.__styleSet,
-    };
+    [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Split/.test(tr.textContent)).click();
   })()`);
+  await writesDone(tab);
+  const together = await tab.eval(`(() => ({
+    splitRows: [...document.querySelectorAll('#rows tr[data-id]')].filter((tr) => /Split/.test(tr.textContent)).length,
+    splitTicked: [...document.querySelectorAll('#rows tr[data-id]')].filter((tr) => /Split/.test(tr.textContent) && tr.classList.contains('on')).length,
+    remembered: window.__styleSet,
+    sent: window.__changed[window.__changed.length - 1],
+  }))()`);
   check('in transaction mode one click ticks every row of that transaction, and the choice is remembered',
     together.splitRows === 2 && together.splitTicked === 2 && together.remembered === 'transaction',
     JSON.stringify(together));
+  check('and the tick is sent in that style',
+    together.sent.kind === 'tick' && together.sent.style === 'transaction' && together.sent.changes.length === 1, JSON.stringify(together.sent));
   // The preview says which kind of change it would make.
-  await tab.eval("document.getElementById('progress').click()");
+  await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  await writesDone(tab);
+  await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
   const previewText = await tab.eval("document.getElementById('preview').innerText");
-  check('and the preview says it marks transactions',
-    /Marks transactions/.test(previewText) && /transaction's own line/.test(previewText), previewText.slice(0, 120));
+  check('and the preview says it marks transactions, and asks in that style',
+    /Marks transactions/.test(previewText) && /transaction's own line/.test(previewText) && (await tab.eval('window.__lastPreview.style')) === 'transaction', previewText.slice(0, 120));
   await tab.eval("document.getElementById('cancel').click()");
-  const backToPosting = await tab.eval(`(() => {
+  await tab.eval(`(() => {
+    window.__conflicts = [{ id: '5:Assets:Bank:Checking:0', date: '2026-09-05', description: 'Split', why: 'one posting is cleared and the other is not' }];
     const select = document.getElementById('style');
     select.value = 'posting';
     select.dispatchEvent(new Event('change'));
-    document.getElementById('progress').click();
-    return document.getElementById('style').value;
+    document.getElementById('finish').click();
   })()`);
   await tab.until("!document.getElementById('preview').hidden");
   const postingPreview = await tab.eval("document.getElementById('preview').innerText");
   check('and in posting mode it says it marks postings, and that is what it would write',
-    backToPosting === 'posting' && /Marks postings/.test(postingPreview) && /each posting's own line/.test(postingPreview),
-    postingPreview.slice(0, 120));
+    (await tab.eval("document.getElementById('style').value")) === 'posting' && /Marks postings/.test(postingPreview) && /each posting's own line/.test(postingPreview)
+    && (await tab.eval('window.__lastPreview.style')) === 'posting', postingPreview.slice(0, 120));
+  check('and the transactions whose marks disagree are listed before anything is asserted over them',
+    /1 transaction with marks that disagree/.test(postingPreview) && /2026-09-05 Split: one posting is cleared and the other is not/.test(postingPreview), postingPreview);
+  await tab.eval("document.querySelector('.conflicts p[data-id]') && document.getElementById('cancel').click()");
 }
 
 // A journal kept by marking transactions, with its balance last asserted a while back: the
@@ -1760,20 +2205,22 @@ async function reconcileAlreadyCleared(tab) {
   // Editing works in the filtered view too, where the rows on screen are not the rows in the
   // file: the visible rows carry their own dates, and the hidden ones stay hidden.
   await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
-  const filtered = await tab.eval(`(() => {
+  const filteredBefore = await tab.eval(`(() => {
     const button = document.querySelector('#rows tr[data-id] button[data-date]');
     const before = button.textContent;
     button.click();
     const input = document.querySelector('.date-input');
     input.value = '2026-09-05';
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    return {
-      before,
-      said: document.getElementById('status').textContent,
-      dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
-      hidden: document.getElementById('hidden').innerText,
-    };
+    return before;
   })()`);
+  await writesDone(tab);
+  const filtered = await tab.eval(`({
+    before: ${JSON.stringify(filteredBefore)},
+    said: document.getElementById('status').textContent,
+    dates: [...document.querySelectorAll('#rows button[data-date]')].map((b) => b.textContent),
+    hidden: document.getElementById('hidden').innerText,
+  })`);
   check('a date is edited in the filtered view, on the rows that are actually shown',
     filtered.before === '2026-09-03' && /^Moved Pending transfer to 2026-09-05\./.test(filtered.said)
     && filtered.dates.filter((date) => date === '2026-09-05').length === 3 && /hidden/.test(filtered.hidden),
@@ -1800,6 +2247,12 @@ async function reconcileRunning(tab) {
   const text = (id) => tab.eval(`document.getElementById('${id}').innerText`);
   const cell = (row, column) => tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${row}].children[${column}].textContent.trim()`);
   const expect = (row, value) => tab.eval(`(() => { const input = document.querySelectorAll('#rows tr[data-id] input[data-expect]')[${row}]; input.value = ${JSON.stringify(value)}; input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  const area = () => tab.eval("document.querySelector('tr.editor textarea').value");
+  const typeIn = (value) => tab.eval(`(() => { const t = document.querySelector('tr.editor textarea'); t.value = ${JSON.stringify(value)}; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  const rows = () => tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].map((tr) => tr.children[1].textContent.trim().split('\\n')[0] + '=' + tr.children[3].textContent.trim()).join(' | ')");
+  const rowOf = (pattern) => tab.eval(`[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => ${pattern}.test(tr.textContent))`);
+  const last = () => tab.eval('window.__changed[window.__changed.length - 1]');
+  const done = () => writesDone(tab);
   await tab.show('reconcile', 'dark', '&lines=on');
   check('each posting shows the balance after it', [await cell(0, 3), await cell(1, 3), await cell(2, 3)].join(' | ') === '979,000.00 | 5,979,000.00 | 5,679,000.00',
     [await cell(0, 3), await cell(1, 3), await cell(2, 3)].join(' | '));
@@ -1811,42 +2264,35 @@ async function reconcileRunning(tab) {
   check('the first line where they part is marked', await tab.eval("document.querySelectorAll('#rows tr.first').length === 1 && document.querySelectorAll('#rows tr[data-id]')[3].classList.contains('first')"));
   check('and the hint says where, and that it may be the posting before',
     /part at 2026-09-05 Split, by 4,000\.00 IDR: 2026-09-05 Split \(-4,000\.00 IDR\) is exactly that/.test(await text('hints')), await text('hints'));
-  check('in line-by-line mode, matching balances are counted on Save as ones it writes', /2 line balances/.test(await text('pending')), await text('pending'));
-  // Off, line by line writes nothing: its columns go, the figures typed stay, and none of them
-  // reaches the plugin. On again, they are all still there. Nothing is written that is not shown.
+  // Off, line by line writes nothing: its columns go and the figures typed stay. On again, they
+  // are all still there. That nothing typed is sent while it is off is checked at Finish, below.
   const gated = await tab.eval(`(() => {
     const box = document.getElementById('lines');
     box.checked = false;
     box.dispatchEvent(new Event('change'));
     const off = {
       columns: getComputedStyle(document.querySelector('thead th.line')).display,
-      pending: document.getElementById('pending').textContent,
       said: document.getElementById('status').textContent,
+      remembered: window.__linesSet,
     };
-    // Something real to save, so Save sends a request whose contents can be read.
-    document.querySelector('#rows tr[data-id]:not(.on)').click();
-    off.saveEnabled = !document.getElementById('progress').disabled;
-    window.__previewed.length = 0;
-    document.getElementById('progress').click();
-    off.sent = window.__previewed.length ? Object.keys(window.__previewed[window.__previewed.length - 1].expected).length : -1;
-    document.getElementById('cancel') && document.getElementById('cancel').click();
     box.checked = true;
     box.dispatchEvent(new Event('change'));
-    return { off, kept: [...document.querySelectorAll('#rows input[data-expect]')].filter((input) => input.value).length };
+    return { off, on: window.__linesSet, kept: [...document.querySelectorAll('#rows input[data-expect]')].filter((input) => input.value).length };
   })()`);
-  check('with line by line off, its columns go, nothing typed is written, and the figures are kept',
-    gated.off.columns === 'none' && !/line balance/.test(gated.off.pending) && gated.off.sent === 0
-    && gated.off.saveEnabled && /kept, and not written/.test(gated.off.said) && gated.kept === 3, JSON.stringify(gated));
+  check('with line by line off, its columns go, the figures are kept, and the choice is remembered',
+    gated.off.columns === 'none' && /kept, and not written/.test(gated.off.said) && gated.kept === 3
+    && gated.off.remembered === false && gated.on === true, JSON.stringify(gated));
   await expect(3, '5,675,000');
   check('typing it right clears the mismatch', (await cell(3, 5)) === '✓' && (await tab.eval("document.querySelectorAll('#rows tr.first').length")) === 0, await cell(3, 5));
   await expect(3, '5,600,000');
   const add = await tab.eval("!!document.querySelector('#hints button[data-add]')");
   check('a difference no posting explains offers to add one for it', add, await text('hints'));
   await tab.eval("document.querySelector('#hints button[data-add]').click()");
-  const area = () => tab.eval("document.querySelector('tr.editor textarea').value");
-  const typeIn = (value) => tab.eval(`(() => { const t = document.querySelector('tr.editor textarea'); t.value = ${JSON.stringify(value)}; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   check('which opens the text of a new transaction, with that amount and date, the cursor where its description goes',
     (await area()) === '2026-09-05 \n    Assets:Bank:Checking    -75000.00 IDR\n    ' && (await tab.eval("document.activeElement.tagName === 'TEXTAREA' && document.activeElement.selectionStart === 11")), JSON.stringify(await area()));
+  check('beside the file, marked where it will go: after the transaction where they part',
+    (await tab.eval("document.querySelector('tr.editor .file-view .where').textContent")) === 'fixture.journal: it goes after line 23, after 2026-09-05 Split',
+    await tab.eval("document.querySelector('tr.editor .file-view .where').textContent"));
   check('and says what it lacks as it is typed', /needs another posting/.test(await text('reading')), await text('reading'));
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
   check('so keeping it as it is is refused', /needs another posting/.test(await text('status')), await text('status'));
@@ -1854,27 +2300,46 @@ async function reconcileRunning(tab) {
   check('an amount that does not balance is said', /does not balance: its amounts add up to -5,000\.00 IDR/.test(await text('reading')), await text('reading'));
   await typeIn('2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees');
   check('and a whole one is read back as it would be written', (await text('reading')) === '2026-09-05: -75,000.00 IDR to Assets:Bank:Checking, against Expenses:Fees.', await text('reading'));
-  await tab.eval("document.querySelector('tr.editor textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))");
-  const rows = () => tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].map((tr) => tr.children[1].textContent.trim().split('\\n')[0] + '=' + tr.children[3].textContent.trim()).join(' | ')");
-  check('Ctrl+Enter keeps it: it is ticked, marked new, and placed straight after the posting where they parted, the balances following',
-    // A line's state now sits at the front of its description, so an entry may begin with it:
-    // what is being asserted here is the order and the balances, not where the text starts.
-    /[^|]*Split[^|]*=5,675,000\.00 \| [^|]*Bank feenew[^|]*=5,600,000\.00 \| [^|]*Split[^|]*=5,595,000\.00 \| [^|]*After the statement[^|]*=5,592,500\.00/.test(await rows()), await rows());
-  const feeRow = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Bank fee/.test(tr.textContent))");
-  check('and the statement balance typed where they parted moves to it, where it now matches',
-    (await cell(feeRow, 5)) === '✓' && (await cell(3, 5)) === '' && (await tab.eval("document.querySelectorAll('#rows tr.first').length")) === 0, `${await cell(feeRow, 5)} / ${await cell(3, 5)}`);
-  // Edit a transaction as text: e on the first row.
+  const keeping = await tab.eval(`(() => {
+    document.querySelector('tr.editor textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    const button = document.querySelector('tr.editor [data-keep]');
+    return { label: button.textContent, disabled: button.disabled };
+  })()`);
+  check('Ctrl+Enter writes it: its button says so and cannot be pressed twice', keeping.label === 'Writing…' && keeping.disabled, JSON.stringify(keeping));
+  await done();
+  const inserted = await last();
+  check('it is sent as an insert, after the posting where they parted, with that row as the window saw it',
+    inserted.kind === 'insert' && inserted.text === '2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees'
+    && inserted.after === '5:Assets:Bank:Checking:0' && /^2026-09-05 Split\n/.test(inserted.targets['5:Assets:Bank:Checking:0'].text), JSON.stringify(inserted));
+  check('and it comes back as hledger reads the file: after its transaction, ticked, the balances following, and the editor closed',
+    /[^|]*Split[^|]*=5,675,000\.00 \| [^|]*Split[^|]*=5,670,000\.00 \| [^|]*Bank fee[^|]*=5,595,000\.00 \| [^|]*After the statement[^|]*=5,592,500\.00/.test(await rows())
+    && (await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Bank fee/.test(tr.textContent)).classList.contains('on')"))
+    && (await tab.eval("document.querySelectorAll('tr.editor').length")) === 0, await rows());
+  const feeRow = await rowOf('/Bank fee/');
+  const moved = await tab.eval(`(() => {
+    const inputs = [...document.querySelectorAll('#rows tr[data-id] input[data-expect]')];
+    return { fee: inputs[${feeRow}].value, split: inputs[3].value, focus: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.id || null : null };
+  })()`);
+  check('and the statement balance typed where they parted moves to the new line',
+    moved.fee === '5,600,000.00' && moved.split === '', JSON.stringify(moved));
+  // Edit a transaction as text: e on the first row, reached from the new one.
   await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.key('j', { code: 'KeyJ', keyCode: 74, text: 'j' });
-  await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
+  for (let step = 0; step < 7; step += 1) await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
   await tab.key('e', { code: 'KeyE', keyCode: 69, text: 'e' });
   check('e opens the transaction as it is written in the journal', (await area()) === '2026-09-01 Coffee\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking', JSON.stringify(await area()));
   await typeIn('2026-09-01 * Coffee beans  ; for the office\n    Expenses:Food:Coffee    25000 IDR\n    Assets:Bank:Checking');
   check('the reading follows the text, the amount worked out as hledger would', (await text('reading')) === '2026-09-01: -25,000.00 IDR to Assets:Bank:Checking, against Expenses:Food:Coffee.', await text('reading'));
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
-  check('an edit changes the amount and every balance after it, and is marked',
-    (await cell(0, 2)) === '-25,000.00' && (await cell(0, 3)) === '975,000.00' && /Coffee beansedited/.test(await cell(0, 1)) && /1 edit, 1 new/.test(await text('pending')),
-    `${await cell(0, 2)} ${await cell(0, 3)} ${await text('pending')}`);
+  await done();
+  const edited = await last();
+  check('an edit is sent as one, with the text and the row as the window saw it',
+    edited.kind === 'edit' && edited.id === '2:Assets:Bank:Checking:0' && /Coffee beans/.test(edited.text)
+    && edited.targets['2:Assets:Bank:Checking:0'].text === '2026-09-01 Coffee\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking', JSON.stringify(edited));
+  check('and the window shows it as read back: the amount and every balance after it',
+    (await cell(0, 2)) === '-25,000.00' && (await cell(0, 3)) === '975,000.00' && /^Coffee beans/.test(await cell(0, 1)) && !/edited/.test(await cell(0, 1))
+    && /^Rewrote 2026-09-01 Coffee beans\./.test(await text('status')),
+    `${await cell(0, 2)} ${await cell(0, 3)} ${await cell(0, 1)} ${await text('status')}`);
   // The per-row control is a word, and it lives beside the description instead of in a column of
   // its own: a column for one small control cost width on every row, and on a narrow window that
   // is the width the difference needs. What matters is the name, so the name is asserted.
@@ -1901,25 +2366,33 @@ async function reconcileRunning(tab) {
   check('and there is no column of its own for it any more',
     editControl.editColumn === false && editControl.columns === 6, `${editControl.columns} columns, edit column ${editControl.editColumn}`);
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
-  check('an edit reopens with what was typed, and can be undone', /Coffee beans/.test(await area()) && (await tab.eval("!!document.querySelector('tr.editor [data-undo]')")), '');
-  await tab.eval("document.querySelector('tr.editor [data-undo]').click()");
-  check('and is as it was', (await cell(0, 2)) === '-21,000.00', await cell(0, 2));
+  check('a written edit reopens with what the file now says', /Coffee beans/.test(await area()) && !(await tab.eval("document.querySelector('tr.editor [data-undo]')")), JSON.stringify(await area()));
+  await tab.key('Escape', { code: 'Escape', keyCode: 27 });
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('z', { code: 'KeyZ', keyCode: 90, text: 'z', modifiers: 2 });
+  await done();
+  check('and Ctrl+Z takes it back out of the file', (await cell(0, 2)) === '-21,000.00' && /^Undid: Rewrote/.test(await text('status')), `${await cell(0, 2)} ${await text('status')}`);
   // A transaction with two postings to the account is edited whole.
-  const split = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Split/.test(tr.textContent))");
+  const split = await rowOf('/Split/');
   await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${split}].querySelector('button[data-edit]').click()`);
   check('a transaction of several postings is edited whole, comments and all', (await area()).includes('    ; a comment line\n    Assets:Bank:Checking    -4000 IDR\n    Assets:Bank:Checking'), JSON.stringify(await area()));
   await tab.key('Escape', { keyCode: 27 });
   check('Escape closes an editor', (await tab.eval("document.querySelectorAll('tr.editor').length")) === 0, '');
-  // Emptied, a transaction is deleted, and can be restored.
-  const pendingRow = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Pending transfer/.test(tr.textContent))");
+  // Emptied, a transaction is deleted from the file, and Undo puts it back.
+  const pendingRow = await rowOf('/Pending transfer/');
   await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${pendingRow}].querySelector('button[data-edit]').click()`);
   await typeIn('');
   check('emptying the text says it will delete the transaction', /Empty: the transaction will be deleted/.test(await text('reading')), await text('reading'));
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
-  check('kept, the transaction leaves the list and is listed to restore', !/Pending transfer/.test(await rows()) && /Deleted: 2026-09-03 Pending transfer/.test(await text('notes')) && /1 deleted/.test(await text('pending')), await text('notes'));
-  await tab.eval("document.querySelector('#notes button[data-restore]').click()");
-  check('and restore brings it back', /Pending transfer/.test(await rows()) && !/deleted/.test(await text('pending')), await text('pending'));
-  // n adds a posting; what it lacks is refused, and it can be removed.
+  await done();
+  check('kept, it is sent as an empty edit and the transaction leaves the list',
+    !/Pending transfer/.test(await rows()) && (await last()).kind === 'edit' && (await last()).text === '' && /^Deleted 2026-09-03 Pending transfer\./.test(await text('status')), `${await rows()} ${await text('status')}`);
+  await tab.eval("document.getElementById('undo').click()");
+  await done();
+  check('and Undo brings it back', /Pending transfer/.test(await rows()), await rows());
+  // n adds a posting; what it lacks is refused before anything is sent.
+  const sentBefore = await tab.eval('window.__changed.length');
+  await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.key('n', { code: 'KeyN', keyCode: 78, text: 'n' });
   check('n adds a posting', (await tab.eval("document.querySelectorAll('tr.editor').length")) === 1 && /^\d{4}-\d{2}-\d{2} \n {4}Assets:Bank:Checking {4}\n {4}$/.test(await area()), JSON.stringify(await area()));
   await typeIn('');
@@ -1935,35 +2408,193 @@ async function reconcileRunning(tab) {
   await typeIn('2026-09-05 Off\n    Assets:Bank:Checking    -1 IDR\n    Expenses:Fees    2 IDR');
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
   check('and one that does not balance', /does not balance/.test(await text('status')), await text('status'));
+  await typeIn('2026-08-01 Too early\n    Assets:Bank:Checking    -1 IDR\n    Expenses:Fees');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('and one dated before the asserted balance', /^Not added: 2026-08-01 is before 2026-08-31/.test(await text('status')), await text('status'));
   await tab.eval("document.querySelector('tr.editor [data-close]').click()");
-  const fee = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => /Bank fee/.test(tr.textContent))");
+  check('and none of them was sent to be written', (await tab.eval('window.__changed.length')) === sentBefore && (await tab.eval("document.querySelectorAll('tr.editor').length")) === 0, '');
+  const fee = await rowOf('/Bank fee/');
   await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${fee}].querySelector('button[data-edit]').click()`);
-  check('a new one reopens with its text', /Bank fee/.test(await area()), '');
-  await tab.eval("document.querySelector('tr.editor [data-drop]').click()");
-  check('and can be removed before it is written', !/Bank fee/.test(await rows()) && !/new/.test(await text('pending')), await text('pending'));
-  // Save sends the plugin the ticks, edits, new postings and typed balances together.
-  await expect(3, '5,600,000');
-  await tab.eval("document.querySelector('#hints button[data-add]').click()");
-  await typeIn('2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees');
-  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('a written new one reopens with its text, as any other', /Bank fee/.test(await area()) && !(await tab.eval("document.querySelector('tr.editor [data-drop]')")), '');
+  await tab.key('Escape', { code: 'Escape', keyCode: 27 });
+  // A refused edit leaves the editor open with what was typed, and says why under it.
+  await tab.eval("window.__refuse = 'hledger refused it, so fixture.journal was put back as it was.'");
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
-  await typeIn('2026-09-01 * Coffee\n    Expenses:Food    21000 IDR  ; checked\n    Assets:Bank:Checking');
+  await typeIn('2026-09-01 Coffee\n    Expenses:Food    21000 IDR  ; refused\n    Assets:Bank:Checking');
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
-  await tab.eval("document.getElementById('progress').click()");
-  await tab.until("!document.getElementById('preview').hidden");
-  check('its preview shows the rewritten transaction and the added one', /1 transaction rewritten, 1 transaction added/.test(await text('preview')) && /; checked/.test(await text('preview')) && /after line 24:/.test(await text('preview')),
-    await text('preview'));
-  check('Save sends the new transaction\'s text and the typed balances to be written with the marks',
-    await tab.eval("(() => { const r = window.__previewed.pop(); return r.inserts.length === 1 && /Bank fee/.test(r.inserts[0].text) && r.inserts[0].after === '5:Assets:Bank:Checking:0' && Object.keys(r.expected).length === 3 && r.expected[r.inserts[0].id] === 560000000 && Object.keys(r.edits).length === 1 && !r.finish; })()"),
-    await tab.eval('JSON.stringify(window.__lastPreview)'));
-  await tab.eval("document.getElementById('cancel').click()");
+  await done();
+  const refusedEdit = await tab.eval("({ open: !!document.querySelector('tr.editor'), text: (document.querySelector('tr.editor textarea') || {}).value, reading: document.getElementById('reading').textContent, label: document.querySelector('tr.editor [data-keep]').textContent })");
+  check('a refused edit keeps its editor open with the text, says why, and can be written again',
+    refusedEdit.open && /; refused/.test(refusedEdit.text) && /put back as it was/.test(refusedEdit.reading) && refusedEdit.label === 'Write it', JSON.stringify(refusedEdit));
+  await tab.eval("window.__refuse = ''");
+  await tab.key('Escape', { code: 'Escape', keyCode: 27 });
   // A hint is followed to its posting.
-  await expect(3, '');
   await expect(1, '5,979,000');
   await expect(2, '5,979,000');
   const pointing = await tab.eval("!!document.querySelector('#hints p[data-id]')");
   if (pointing) await tab.eval("document.querySelector('#hints p[data-id]').click()");
   check('a hint that names a posting moves to it', !pointing || (await tab.eval("document.activeElement && document.activeElement.dataset.id")) !== undefined, await text('hints'));
+  await expect(2, '');
+  // Finish sends the typed running balances, line by line, keyed by the rows they were typed
+  // against and with those rows as the window saw them; with line by line off, none.
+  await tab.eval("(() => { const b = document.getElementById('balance'); b.value = '5,595,000'; b.dispatchEvent(new Event('input')); })()");
+  await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  await done();
+  await tab.eval("document.getElementById('finish').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  const asked = await tab.eval('window.__lastPreview');
+  const feeId = await tab.eval(`[...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Bank fee/.test(tr.textContent)).dataset.id`);
+  check('Finish asks with the typed running balances, each with its row as the window saw it',
+    asked.kind === 'finish' && Object.keys(asked.expected).length === 3 && asked.expected[feeId] === 560000000
+    && asked.expected['2:Assets:Bank:Checking:0'] === 97900000 && asked.targets[feeId] && /Bank fee/.test(asked.targets[feeId].text), JSON.stringify(asked));
+  await tab.eval("document.getElementById('apply').click()");
+  await tab.until("/reconciled/.test(document.getElementById('status').textContent)");
+  const finished = await last();
+  check('and writes them with the finish', finished.kind === 'finish' && finished.expected[feeId] === 560000000 && Object.keys(finished.expected).length === 3, JSON.stringify(finished));
+  await tab.eval(`(() => {
+    const box = document.getElementById('lines');
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+    document.getElementById('finish').click();
+  })()`);
+  await tab.until("!document.getElementById('preview').hidden");
+  check('with line by line off, Finish sends none of the figures typed',
+    Object.keys(await tab.eval('window.__lastPreview.expected')).length === 0 && Object.keys(await tab.eval('window.__lastPreview.targets')).length === 3, JSON.stringify(await tab.eval('window.__lastPreview')));
+  await tab.eval("document.getElementById('cancel').click()");
+
+  // Read-only, the window keeps its own changes: edits, deletions and new lines are drawn in it
+  // and sent only to be shown as the assertion to copy.
+  await tab.show('reconcile', 'dark', '&lines=on&writable=no');
+  await expect(3, '5,600,000');
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('n', { code: 'KeyN', keyCode: 78, text: 'n' });
+  await typeIn('2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees');
+  check('read-only, the editor says its changes stay in the window',
+    /keeps it in this window\. The file cannot be written from here/.test(await tab.eval("document.querySelector('tr.editor .buttons').textContent"))
+    && (await tab.eval("document.querySelector('tr.editor [data-keep]').textContent")) === 'Keep', await tab.eval("document.querySelector('tr.editor .buttons').textContent"));
+  await tab.eval("document.querySelector('tr.editor textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))");
+  check('Ctrl+Enter keeps it in the window: ticked, marked new, placed after the day\'s last, the balances following, and nothing sent',
+    // A line's state now sits at the front of its description, so an entry may begin with it:
+    // what is being asserted here is the order and the balances, not where the text starts.
+    /[^|]*Split[^|]*=5,675,000\.00 \| [^|]*Split[^|]*=5,670,000\.00 \| [^|]*Bank feenew[^|]*=5,595,000\.00 \| [^|]*After the statement[^|]*=5,592,500\.00/.test(await rows())
+    && (await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Bank fee/.test(tr.textContent)).classList.contains('on')"))
+    && (await tab.eval('window.__changed.length')) === 0, await rows());
+  await tab.eval("document.querySelector('#rows button[data-edit]').click()");
+  await typeIn('2026-09-01 * Coffee beans  ; for the office\n    Expenses:Food:Coffee    25000 IDR\n    Assets:Bank:Checking');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('an edit changes the amount and every balance after it, and is marked',
+    (await cell(0, 2)) === '-25,000.00' && (await cell(0, 3)) === '975,000.00' && /Coffee beansedited/.test(await cell(0, 1)),
+    `${await cell(0, 2)} ${await cell(0, 3)} ${await cell(0, 1)}`);
+  await tab.eval("document.querySelector('#rows button[data-edit]').click()");
+  check('an edit reopens with what was typed, and can be undone', /Coffee beans/.test(await area()) && (await tab.eval("!!document.querySelector('tr.editor [data-undo]')")), '');
+  await tab.eval("document.querySelector('tr.editor [data-undo]').click()");
+  check('and is as it was', (await cell(0, 2)) === '-21,000.00', await cell(0, 2));
+  const pendingKept = await rowOf('/Pending transfer/');
+  await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${pendingKept}].querySelector('button[data-edit]').click()`);
+  await typeIn('');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  check('kept empty, the transaction leaves the list and is listed to restore', !/Pending transfer/.test(await rows()) && /Deleted: 2026-09-03 Pending transfer/.test(await text('notes')), await text('notes'));
+  await tab.eval("document.querySelector('#notes button[data-restore]').click()");
+  check('and restore brings it back', /Pending transfer/.test(await rows()) && !/Deleted/.test(await text('notes')), await text('notes'));
+  const keptFee = await rowOf('/Bank fee/');
+  await tab.eval(`document.querySelectorAll('#rows tr[data-id]')[${keptFee}].querySelector('button[data-edit]').click()`);
+  check('a new one reopens with its text', /Bank fee/.test(await area()), '');
+  await tab.eval("document.querySelector('tr.editor [data-drop]').click()");
+  check('and can be removed', !/Bank fee/.test(await rows()), await rows());
+  // Show the assertion sends the window's own changes with the statement, to be shown.
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('n', { code: 'KeyN', keyCode: 78, text: 'n' });
+  await typeIn('2026-09-05 Bank fee\n    Assets:Bank:Checking    -75000.00 IDR\n    Expenses:Fees');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  await tab.eval("document.querySelector('#rows button[data-edit]').click()");
+  await typeIn('2026-09-01 * Coffee\n    Expenses:Food    21000 IDR  ; checked\n    Assets:Bank:Checking');
+  await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
+  await tab.eval("(() => { const b = document.getElementById('balance'); b.value = '5,595,000'; b.dispatchEvent(new Event('input')); })()");
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
+  await tab.eval("document.getElementById('finish').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  check('its preview shows the rewritten transaction and the added one', /1 transaction rewritten, 1 transaction added/.test(await text('preview')) && /; checked/.test(await text('preview')) && /after line 23:/.test(await text('preview')),
+    await text('preview'));
+  check('Show the assertion sends the new transaction\'s text and the typed balances with the statement',
+    await tab.eval("(() => { const r = window.__lastPreview; return !r.kind && r.inserts.length === 1 && /Bank fee/.test(r.inserts[0].text) && !r.inserts[0].after && Object.keys(r.expected).length === 1 && r.expected['5:Assets:Bank:Checking:0'] === 560000000 && Object.keys(r.edits).length === 1 && r.finish.balance === 559500000 && r.ticked.length === 6; })()"),
+    await tab.eval('JSON.stringify(window.__lastPreview)'));
+  await tab.eval("document.getElementById('cancel').click()");
+
+  // Finding a transaction booked to another account, from the hint where they part.
+  await tab.show('reconcile', 'dark', '&lines=on');
+  await expect(3, '5,600,000');
+  await tab.eval("document.querySelector('#hints button[data-find]').click()");
+  await tab.until("document.querySelectorAll('#found li').length > 0");
+  const found = await tab.eval(`(() => {
+    const view = document.getElementById('find-file');
+    return {
+      open: !document.getElementById('find').hidden,
+      amount: document.getElementById('find-amount').value,
+      date: document.getElementById('find-date').value,
+      asked: window.__found,
+      said: document.getElementById('find-said').textContent,
+      item: document.querySelector('#found li').innerText,
+      moves: document.querySelectorAll('#found button[data-move]').length,
+      chosen: document.querySelector('#found li').classList.contains('chosen'),
+      where: view.hidden ? '' : view.querySelector('.where').textContent,
+      lit: [...view.querySelectorAll('.hl')].map((line) => line.textContent),
+    };
+  })()`);
+  check('Find it opens the search with the amount where they part and its date, and asks for it',
+    found.open && found.amount === '-75,000.00' && found.date === '2026-09-05'
+    && found.asked.amount === -7500000 && found.asked.date === '2026-09-05' && found.asked.words === '', JSON.stringify(found));
+  check('and lists what it found, why, and a way to move each posting',
+    /^1 transaction under other accounts\. Moving a posting changes its account to Assets:Bank:Checking in place/.test(found.said)
+    && /2026-09-04 Bank fee/.test(found.item) && /1 day from the date/.test(found.item) && found.moves === 2 && found.chosen, JSON.stringify(found));
+  check('with the first shown, lit, in its whole file',
+    found.where === 'fixture.journal, lines 29 to 31' && found.lit.length === 3 && /^29\s*2026-09-04 Bank fee$/.test(found.lit[0]), JSON.stringify(found));
+  await tab.eval("(() => { document.querySelector('#found li').click(); document.querySelector('#found li').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()");
+  check('a click or Enter on it shows it', await tab.eval("document.querySelector('#found li').classList.contains('chosen') && !document.getElementById('find-file').hidden"), '');
+  await tab.eval("document.querySelectorAll('#found button[data-move]')[1].click()");
+  await done();
+  const account = await last();
+  const after = await tab.eval(`({
+    said: document.getElementById('find-said').textContent,
+    found: document.querySelectorAll('#found li').length,
+    file: document.getElementById('find-file').hidden,
+    row: ([...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Bank fee/.test(tr.textContent)) || {}).innerText || '',
+  })`);
+  check('moving a posting sends the transaction as found and the line of the posting',
+    account.kind === 'account' && account.at === 2 && account.candidate.text === FOUND_TEXT && account.candidate.first === 29 && account.candidate.file === 'fixture.journal', JSON.stringify(account));
+  check('and it is in this account now, said, and gone from the list of finds',
+    /^Moved: 2026-09-04 Bank fee is in Assets:Bank:Checking now, and no longer in Assets:Cash\.$/.test(after.said)
+    && after.found === 0 && after.file && /Bank fee/.test(after.row) && /-75,000\.00/.test(after.row), JSON.stringify(after));
+  await tab.eval("(() => { const words = document.getElementById('find-words'); words.value = 'nothing like it'; words.focus(); })()");
+  await tab.key('Enter', { code: 'Enter', keyCode: 13 });
+  await tab.until("/^Nothing/.test(document.getElementById('find-said').textContent)");
+  check('Enter in a field searches, and finding nothing says what to do instead',
+    /^Nothing under another account matches\. It may be missing from the journal: add it instead\.$/.test(await tab.eval("document.getElementById('find-said').textContent")), await tab.eval("document.getElementById('find-said').textContent"));
+  await tab.eval("(() => { document.getElementById('find-amount').value = ''; document.getElementById('find-words').value = ''; document.getElementById('find-go').click(); })()");
+  await tab.until("/^Give/.test(document.getElementById('find-said').textContent)");
+  check('and a search with nothing to look for says what it needs', true, '');
+  await tab.eval(`(() => {
+    window.opener.__reconcileBridges.check.source = () => null;
+    const data = window.__current();
+    data.rows[0].description = 'Coffee, read again';
+    window.__outside = data;
+    window.dispatchEvent(new Event('focus'));
+  })()`);
+  await tab.until("/changed outside/.test(document.getElementById('status').textContent)");
+  await tab.eval("(() => { document.getElementById('find-amount').value = '75,000'; document.getElementById('find-go').click(); })()");
+  await tab.until("!document.getElementById('find-file').hidden");
+  check('a file the app cannot show is said in place of it',
+    /^fixture\.journal cannot be shown here\.$/.test(await tab.eval("document.getElementById('find-file').textContent")), await tab.eval("document.getElementById('find-file').textContent"));
+  await tab.eval("document.getElementById('find-amount').focus()");
+  await tab.key('Escape', { code: 'Escape', keyCode: 27 });
+  check('Escape in the search puts it away', await tab.eval("document.getElementById('find').hidden"), '');
+  await tab.eval("document.activeElement && document.activeElement.blur()");
+  await tab.key('f', { code: 'KeyF', keyCode: 70, text: 'f' });
+  check('f opens it again, at the amount still unaccounted for',
+    (await tab.eval("!document.getElementById('find').hidden && document.activeElement.id === 'find-amount'")), await tab.eval("document.getElementById('find-amount').value"));
+  await tab.eval("document.getElementById('find-close').click()");
+  await tab.eval("document.getElementById('find-open').click()");
+  check('and Close and the button do the same', !(await tab.eval("document.getElementById('find').hidden")), '');
 }
 
 async function theEditor(tab) {
@@ -2046,18 +2677,24 @@ try {
     return height;
   })()`);
   if (!lineHeight) throw new Error('text lays out 0 pixels high, so this machine has no fonts Chrome can use: install one, or set FONTCONFIG_FILE');
-  await everyChartDraws(tab);
-  await theLineChart(tab);
-  await zooming(tab);
-  await byKeyboard(tab);
-  await saving(tab, downloads);
-  await relatedCharts(tab);
-  await goingBack(tab);
-  await moreCharts(tab);
-  await moneyCharts(tab);
-  await playing(tab);
-  await whenThingsGoWrong(tab);
-  await theEditor(tab);
+  // ONLY=reconcile runs the reconcile checks alone, for working on them; the coverage floor is
+  // then not checked, since most of the measured files were never loaded.
+  if (!ONLY) {
+    await everyChartDraws(tab);
+    await theLineChart(tab);
+    await zooming(tab);
+    await byKeyboard(tab);
+    await saving(tab, downloads);
+    await relatedCharts(tab);
+    await goingBack(tab);
+    await moreCharts(tab);
+    await moneyCharts(tab);
+    await playing(tab);
+    await whenThingsGoWrong(tab);
+    await theEditor(tab);
+  }
+  if (!ONLY || ONLY === 'reconcile' || ONLY === 'live') await liveChecks(tab, check);
+  if (ONLY === 'live') throw Object.assign(new Error('only the live checks were asked for'), { quiet: true });
   await reconciling(tab);
   await reconcileRunning(tab);
   await reconcileDates(tab);
@@ -2094,12 +2731,12 @@ try {
     }
   }
 }
-if (failure) {
+if (failure && !failure.quiet) {
   console.log(`FAIL the browser check stopped: ${failure.stack || failure}`);
   process.exit(1);
 }
 
-for (const { name, share } of coverage.report()) {
+for (const { name, share } of ONLY ? [] : coverage.report()) {
   check(`${name} is ${(100 * share).toFixed(1)}% executed (at least ${100 * FLOOR}%)`, share >= FLOOR, '');
 }
 

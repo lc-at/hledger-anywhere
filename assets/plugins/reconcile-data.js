@@ -840,7 +840,7 @@ export function markConflicts(rows, style = 'posting') {
       if (row.ownMark && row.transactionMark !== 'Unmarked' && row.status !== row.transactionMark) {
         said.add(`its line says ${word(row.transactionMark)} but this account's posting says ${word(row.status)}`);
       } else if (row.ownMark && style === 'transaction') {
-        said.add(`this account's posting carries its own mark (${word(row.status)}); marking the transaction takes it off`);
+        said.add(`this account's posting carries its own mark (${word(row.status)}); marking the whole transaction would take it off`);
       }
     }
     if (style === 'transaction' && new Set(group.map((row) => row.status)).size > 1) {

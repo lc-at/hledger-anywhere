@@ -220,14 +220,14 @@ export function rankCandidates(transactions, { account, inclusive, amount, date,
     });
     const reasons = [];
     let score = 0;
-    if (postings.some((posting) => posting.matches)) { score += 4; reasons.push('the amount'); }
+    if (postings.some((posting) => posting.matches)) { score += 4; reasons.push('same amount'); }
     const apart = date ? Math.abs(days(transaction.tdate, date)) : null;
-    if (apart === 0) { score += 3; reasons.push('the date'); }
+    if (apart === 0) { score += 3; reasons.push('same date'); }
     else if (apart != null && apart <= 4) { score += 2; reasons.push(`${apart} day${apart === 1 ? '' : 's'} from the date`); }
     else if (apart != null && apart <= 14) score += 1;
     const description = String(transaction.tdescription || '').toLowerCase();
     const hits = terms.filter((word) => description.includes(word)).length;
-    if (hits) { score += 2 + hits; reasons.push('the payee'); }
+    if (hits) { score += 2 + hits; reasons.push('payee matches'); }
     if (!score) continue;
     out.push({ file, first, last: (positions[1] || positions[0] || {}).sourceLine || first, date: transaction.tdate, description: transaction.tdescription, postings, score, reasons, apart });
   }

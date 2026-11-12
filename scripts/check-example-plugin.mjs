@@ -1455,7 +1455,7 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false, 
   check('an account that is not there is said, with no window, and where to look',
     /^reconcile: no account matches nothing-like-it\. Type accounts to list them\.$/.test(log.said[0]) && !log.pages.length, log.said[0]);
   const page = reconcilePage({ data: readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking'), colors: COLORS, token: 't', files: [{ path: 'x', writable: false }], statementDate: '2026-09-30', statementBalance: '</script>', fingerprint: '', module: 'm.js' });
-  check('the page escapes what it is given and says when nothing can be written', !page.includes('</script>"') && page.includes('id="progress" disabled'), '');
+  check('the page escapes what it is given and says when nothing can be written', !page.includes('</script>"') && page.includes('id="readonly"') && !page.includes('id="progress"'), '');
 }
 
 {
@@ -2063,7 +2063,7 @@ check('every bundled plugin documents itself for `<command>?`',
     findQueries({ account: 'Assets:Bank', inclusive: false, amount: -1500, date: '2026-01-07', words: 'gro ceries', style: data.style }).join(' | '));
   const ranked = rankCandidates(RECONCILE_PRINT, { account: 'Assets:Savings', inclusive: false, amount: 2100000, date: '2026-09-02', words: 'coffee', style: data.style });
   check('candidates are ranked by amount, date and payee, with the reasons, and never ones in this account',
-    ranked[0].description === 'Coffee' && ranked[0].reasons.join() === 'the amount,1 day from the date,the payee' && !ranked.some((candidate) => candidate.description === 'Pending transfer')
+    ranked[0].description === 'Coffee' && ranked[0].reasons.join() === 'same amount,1 day from the date,payee matches' && !ranked.some((candidate) => candidate.description === 'Pending transfer')
     && ranked[0].postings.some((posting) => posting.matches), JSON.stringify(ranked.map((candidate) => [candidate.description, candidate.reasons])));
 
   const { host, log, files } = reconcileHost();
