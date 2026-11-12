@@ -47,7 +47,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, findQueries, fingerprint, parseLine, rankCandidates, resolveAccount, resolveTarget } from '../assets/plugins/reconcile.js';
-import { assertionText, carry, checkpoints, snapshot, fillCommodity, markConflicts, moveAccount, neighbour, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
+import { assertionText, carry, checkpoints, snapshot, fillCommodity, fillCommodityIn, markConflicts, moveAccount, neighbour, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -2093,6 +2093,16 @@ check('every bundled plugin documents itself for `<command>?`',
   check('the assertion floor holds for a date and for a new transaction', /before 2026-08-31/.test(early.error) && /Not added: 2026-08-01 is before 2026-08-31/.test(earlyInsert.error), `${early.error} / ${earlyInsert.error}`);
   const finishEarly = await link.change({ kind: 'finish', finish: { date: '2026-09-30', balance: 1 } });
   check('Finish is refused while a line up to the statement date is not ticked in the file', /not ticked in the file/.test(finishEarly.error), finishEarly.error);
+}
+
+{
+  // The file edited as a whole: only this account's transactions with typed lines are filled in.
+  const style = { commodity: 'IDR', side: 'R', spaced: true, decimal: '.', precision: 2 };
+  const before = '2026-01-01 a\n    x  5\n    assets:bank\n';
+  const after = `${before}\n2026-01-02 b\n    expenses:food    7\n    assets:bank\n\n2026-01-03 c\n    e  3\n    f\n`;
+  check('a whole file keeps every line nobody typed, and gives typed bare numbers in this account\'s transactions its commodity',
+    fillCommodityIn(after, before, 'assets:bank', style) === `${before}\n2026-01-02 b\n    expenses:food  7 IDR\n    assets:bank\n\n2026-01-03 c\n    e  3\n    f\n`
+    && fillCommodityIn(after, before, 'assets:bank', { ...style, commodity: '' }) === after, fillCommodityIn(after, before, 'assets:bank', style));
 }
 
 // ------------------------------------------------------------------ the verdict

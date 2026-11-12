@@ -511,7 +511,7 @@ function amountParts(text) {
  */
 export function fillCommodity(text, style, original = '') {
   if (!style.commodity) return text;
-  const kept = new Set(String(original || '').split('\n'));
+  const kept = original instanceof Set ? original : new Set(String(original || '').split('\n'));
   return String(text).split('\n').map((line) => {
     if (kept.has(line) || !/^[ \t]/.test(line) || line.trim().startsWith(';')) return line;
     const parts = parsePosting(line);
@@ -529,6 +529,30 @@ export function fillCommodity(text, style, original = '') {
     const end = line.indexOf(parts.amount) + parts.amount.length;
     return formatPosting({ ...parts, amount: `${withSymbol(number, style)}${asserted}` }, end, parts);
   }).join('\n');
+}
+
+/**
+ * A whole file, as edited, with the bare numbers typed into this account's transactions given
+ * its commodity, the way a single transaction's are (fillCommodity). Only transactions that post
+ * to the account and have a line `before` did not have are looked at, so the rest of the file,
+ * and every line the person did not type, is written exactly as it was.
+ */
+export function fillCommodityIn(text, before, account, style, inclusive = false) {
+  if (!style.commodity) return text;
+  const kept = new Set(String(before || '').split('\n'));
+  const lines = String(text).split('\n');
+  const out = [];
+  for (let at = 0; at < lines.length;) {
+    if (!/^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(lines[at])) { out.push(lines[at]); at += 1; continue; }
+    let end = at + 1;
+    while (end < lines.length && /^[ \t]/.test(lines[end]) && lines[end].trim() !== '') end += 1;
+    const block = lines.slice(at, end);
+    const fresh = block.some((line) => !kept.has(line));
+    const text = block.join('\n');
+    out.push(...(fresh && readTransaction(text, account, style, inclusive).touches ? fillCommodity(text, style, kept).split('\n') : block));
+    at = end;
+  }
+  return out.join('\n');
 }
 
 /** A bare number as written, with the commodity on the side hledger's style puts it. */

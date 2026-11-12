@@ -19,7 +19,7 @@
  */
 
 import { page } from './reconcile-window.js';
-import { carry, inferStyle, markConflicts, moveAccount, moveRefusal, neighbour, ordered, parseHeader, parsePosting, plan, readPrint, readTransaction, readable, styleOf, summarize, toMinor, quantityOf } from './reconcile-data.js';
+import { carry, fillCommodityIn, inferStyle, markConflicts, moveAccount, moveRefusal, neighbour, ordered, parseHeader, parsePosting, plan, readPrint, readTransaction, readable, styleOf, summarize, toMinor, quantityOf } from './reconcile-data.js';
 import { quote, tokenize } from './chart-args.js';
 import { beside, bridge, colorsOf, shell } from './window-kit.js';
 
@@ -421,6 +421,32 @@ export default {
           }
           return { params: { ticked: cleared(), finish, expected, style }, label: `${account} reconciled to ${finish.date}`, finish: true };
         }
+        case 'file': {
+          // The file itself, as edited in the window: written only over the text the editor
+          // started from, so an edit made in another program since is never written over.
+          const path = String(request.path || '');
+          const now = typeof host.read === 'function' ? host.read(path) : null;
+          if (now == null) return { refused: `${path} cannot be read here, so it cannot be written.` };
+          if (now !== request.before) return { refused: `${path} changed outside this window since this editor opened, so it was not written. What you typed is still here; Reload from disk takes the file as it is now.`, conflict: true };
+          // A bare number typed into one of this account's transactions is its commodity, here
+          // as in a transaction edited on its own, so hledger reads what the window showed.
+          const after = fillCommodityIn(String(request.after == null ? '' : request.after), now, data.account, data.style, data.inclusive);
+          const a = now.split('\n');
+          const b = after.split('\n');
+          let start = 0;
+          while (start < a.length && a[start] === b[start]) start += 1;
+          let end = 0;
+          while (end < a.length - start && end < b.length - start && a[a.length - 1 - end] === b[b.length - 1 - end]) end += 1;
+          const changed = Math.max(a.length - start - end, b.length - start - end);
+          return {
+            result: { files: now === after ? [] : [{ path, before: now, after }], missing: [] },
+            label: `Wrote ${path}: ${changed} line${changed === 1 ? '' : 's'} from line ${start + 1}`,
+            // The transaction the cursor was in is where the window goes next; filling in a
+            // commodity changes no line's number, so the line is still that transaction's.
+            focusAt: Number.isInteger(request.cursor) ? { file: path, line: request.cursor } : null,
+            inserted: true,
+          };
+        }
         default:
           return { refused: `${request.kind} is not a change this window makes.` };
       }
@@ -472,7 +498,8 @@ export default {
       const map = carry(before.rows, data.rows);
       const claimed = new Set(map.values());
       // A new row, or one moved here from another account, is where the person's eye goes next.
-      const focus = extra.inserted ? (data.rows.find((row) => !claimed.has(row.id)) || {}).id || null : null;
+      const at = extra.focusAt ? data.rows.find((row) => row.where.file === extra.focusAt.file && row.where.first <= extra.focusAt.line && extra.focusAt.line < Math.max(row.where.last, row.where.first + 1)) : null;
+      const focus = at ? at.id : extra.inserted ? (data.rows.find((row) => !claimed.has(row.id)) || {}).id || null : null;
       return { ok: true, message: label, data, undo: history.length, focus, ...extra.answer };
     };
 
@@ -540,8 +567,8 @@ export default {
             return { error: `hledger reports a problem in the file as it is now, so nothing was written: ${why(error)}`, data };
           }
           const built = build(ask);
-          if (built.refused) return { error: built.refused, data, outside };
-          const answer = await commit(work(built.params), built.label, progress, { inserted: built.inserted, answer: { outside } });
+          if (built.refused) return { error: built.refused, data, outside, conflict: Boolean(built.conflict) };
+          const answer = await commit(built.result || work(built.params), built.label, progress, { inserted: built.inserted, focusAt: built.focusAt, answer: { outside } });
           if (built.finish && answer.ok) host.say(`${host.name}: ${built.label}.`);
           return { outside, ...answer };
         });
@@ -665,6 +692,8 @@ export default {
       style: markStyle,
       lines: (typeof host.setting === 'function' ? host.setting('lineByLine') : null) === 'on',
       module: beside('reconcile-window.js'),
+      // The editor for the file itself, loaded only when a transaction is first opened.
+      ace: beside('vendor/ace/ace.js'),
     }));
     const from = data.start ? `since the balance asserted on ${data.start.date}` : 'with no balance asserted yet';
     host.say(`${host.name}: ${data.rows.length} postings of ${account} in ${data.commodity || 'its commodity'} ${from}, in a new window.`);

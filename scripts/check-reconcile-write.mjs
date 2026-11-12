@@ -735,6 +735,22 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
       check(Boolean(added) && added.counted && added.amount != null, `${account}: the new row is counted, its amount worked out`, JSON.stringify(added ? { counted: added.counted } : null));
       const undo = await bridge.undo();
       if (undo.data) live.data = undo.data;
+      // The file itself, edited as a whole the way the window's editor does it: one line changed
+      // in a file of tens of thousands, and nothing else.
+      {
+        const text = readFileSync(join(copy, file), 'utf8');
+        const target = pick(1);
+        const lines = text.split('\n');
+        lines[target.where.first - 1] = `${lines[target.where.first - 1]}  ; noted in the window`;
+        const answer = await bridge.change({ kind: 'file', path: file, before: text, after: lines.join('\n'), cursor: target.where.first });
+        if (answer.data) live.data = answer.data;
+        const now = readFileSync(join(copy, file), 'utf8').split('\n');
+        const differ = now.length === lines.length ? now.filter((line, at) => line !== text.split('\n')[at]).length : -1;
+        check(Boolean(answer.ok) && differ === 1, `${account}: the whole file written from the editor changes the one line edited`, String(answer.error || differ).slice(0, 160));
+        const back = await bridge.undo();
+        if (back.data) live.data = back.data;
+        check(Boolean(back.ok) && readFileSync(join(copy, file), 'utf8') === text, `${account}: and undo puts the whole file back`, String(back.error || '').slice(0, 120));
+      }
       check(Boolean(undo.ok) && !readFileSync(join(copy, file), 'utf8').includes('A transaction the check added'), `${account}: undo takes the insert back out`, String(undo.error || '').slice(0, 160));
       // hledger refusing a write puts the file back byte for byte.
       const before = readFileSync(join(copy, file), 'utf8');
@@ -1265,6 +1281,50 @@ async function immediateFinishCase() {
   }
 }
 
+/**
+ * The file itself, edited in the window as a whole: anything in it can change, a bare number in
+ * this account's transactions gets its commodity, an outside edit since the editor opened is
+ * never written over, and hledger refusing the result puts the file back.
+ */
+async function fileCase() {
+  const ctx = await busyWindow('file');
+  try {
+    const before = await readFile(ctx.path, 'utf8');
+    const after = before
+      .replace('expenses:food  20.00 IDR', 'expenses:food  25.00 IDR')
+      .replace('commodity 1,000.00 IDR', '; a note typed at the top\ncommodity 1,000.00 IDR')
+      .concat('\n2026-01-08 Typed in the window\n    expenses:food    7\n    assets:bank\n');
+    const stages = [];
+    const cursor = after.split('\n').indexOf('2026-01-08 Typed in the window') + 2;
+    const answer = await ctx.bridge.change({ kind: 'file', path: ctx.file, before, after, cursor }, (stage) => stages.push(stage));
+    const written = await readFile(ctx.path, 'utf8');
+    check(Boolean(answer.ok) && stages.join() === 'writing,checking', 'file: the whole file is written and checked', JSON.stringify(answer.error || stages));
+    check(written.includes('; a note typed at the top') && written.includes('expenses:food  25.00 IDR') && /Typed in the window\n {4}expenses:food {2,}7 IDR\n/.test(written),
+      'file: every edit in it lands, and the bare number has its commodity', written.slice(-120));
+    const row = answer.data && answer.data.rows.find((entry) => entry.description === 'Typed in the window');
+    check(Boolean(row) && row.counted && row.amount === -700 && answer.focus === row.id, 'file: the new transaction is counted, and is where the window goes next', JSON.stringify(row && { amount: row.amount, focus: answer.focus === row.id }));
+    try {
+      await engine(ctx.path, 'balance assets:bank -O csv');
+      check(true, 'file: the engine parses the file and its assertions hold');
+    } catch (error) {
+      check(false, 'file: the engine parses the file and its assertions hold', error.message.split('\n')[0]);
+    }
+    // Written over a file that changed since the editor opened: refused, and the file kept.
+    const stale = await ctx.bridge.change({ kind: 'file', path: ctx.file, before, after: `${before}\n; stale\n` });
+    check(/changed outside this window since this editor opened, so it was not written/.test(stale.error || '') && stale.conflict && (await readFile(ctx.path, 'utf8')) === written,
+      'file: an editor opened on an older file is refused, and says how to take the new one', JSON.stringify(stale.error || stale.message));
+    // An assertion broken by the edit: hledger refuses, and the file comes back.
+    const broken = await ctx.bridge.change({ kind: 'file', path: ctx.file, before: written, after: written.replace('1000.00 IDR = 1000.00 IDR', '1000.00 IDR = 999.00 IDR') });
+    check(/^hledger refused it, so busy\.journal was put back as it was/.test(broken.error || '') && (await readFile(ctx.path, 'utf8')) === written, 'file: an edit hledger refuses is put back', JSON.stringify((broken.error || '').slice(0, 120)));
+    const undo = await ctx.bridge.undo();
+    check(Boolean(undo.ok) && (await readFile(ctx.path, 'utf8')) === before, 'file: undo puts the whole file back as it was', JSON.stringify(undo.error || undo.message));
+  } catch (error) {
+    check(false, 'file: the case ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
+  } finally {
+    await ctx.close();
+  }
+}
+
 const CASES = {
   tick: tickCase,
   untick: untickCase,
@@ -1346,6 +1406,7 @@ async function main() {
   if (!wanted.length || wanted.includes('same')) await sameTransactionCase();
   if (!wanted.length || wanted.includes('immediaterollback')) await immediateRollbackCase();
   if (!wanted.length || wanted.includes('immediatefinish')) await immediateFinishCase();
+  if (!wanted.length || wanted.includes('file')) await fileCase();
   const fixtures = wanted.includes('generic') ? ['generic'] : ['demo'];
 
   for (const fixture of fixtures) {
