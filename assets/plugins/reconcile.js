@@ -361,13 +361,17 @@ export default {
           const row = find(request.id);
           if (!row) return gone(request.id);
           const text = String(request.text || '').replace(/\s+$/, '');
+          let read = null;
           if (text) {
-            const read = readTransaction(text, data.account, data.style, data.inclusive);
+            read = readTransaction(text, data.account, data.style, data.inclusive);
             if (!read.header) return { refused: 'The first line needs a date: 2026-09-05 Description.' };
             const refused = floor(read.date);
             if (refused) return { refused: `Not written: ${read.date} is ${refused}.` };
           }
-          return { params: { ticked: cleared(), edits: { [row.id]: { text } }, style }, label: text ? `Rewrote ${named(row)}` : `Deleted ${named(row)}` };
+          // Named as it is now, the way Moved and Added name what they moved and added: the old
+          // description is not in the file any more, so it would name nothing to look for.
+          const name = read ? `${read.date || row.date} ${read.description || row.description}`.trim() : named(row);
+          return { params: { ticked: cleared(), edits: { [row.id]: { text } }, style }, label: text ? `Rewrote ${name}` : `Deleted ${named(row)}` };
         }
         case 'insert': {
           const text = String(request.text || '').replace(/\s+$/, '');
