@@ -26,7 +26,7 @@
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import inspector from 'node:inspector/promises';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
@@ -46,30 +46,42 @@ const { page: editPage } = await import('../assets/plugins/edit-window.js');
 const { page: reconcilePage } = await import('../assets/plugins/reconcile-window.js');
 const { readPrint: readReconcile } = await import('../assets/plugins/reconcile-data.js');
 const { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } = await import('./reconcile-fixtures.mjs');
-const { liveChecks, liveRoute } = await import('./reconcile-live.mjs');
-const RECONCILE_DATA = readReconcile(RECONCILE_PRINT, 'Assets:Bank:Checking');
-// Each row carries its transaction's text, as the plugin gives it, for the editor.
-for (const row of RECONCILE_DATA.rows) {
-  row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
+const { cleanUp, liveChecks, liveRoute, space } = await import('./reconcile-live.mjs');
+
+// The journal Find a transaction has to turn up a transaction in: at the end of the fixture's
+// file, booked to another account, so the real find has something to find.
+const FOUND_TEXT = '2026-09-04 Bank fee\n    Expenses:Fees    75000 IDR\n    Assets:Cash    -75000 IDR';
+const FIXTURE_JOURNAL = `${RECONCILE_JOURNAL}\n${FOUND_TEXT}\n`;
+
+/**
+ * Each row carries its transaction's text, as the plugin gives it: the editor starts from it,
+ * and a change finds its transaction by it, so the journal the window is drawn from and the
+ * journal the plugin reads have to be the same words.
+ */
+function withText(data, journal) {
+  const lines = journal.split('\n');
+  for (const row of data.rows) {
+    row.text = lines.slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
+  }
+  return data;
 }
+
+const RECONCILE_DATA = withText(readReconcile(RECONCILE_PRINT, 'Assets:Bank:Checking'), FIXTURE_JOURNAL);
 
 // The same journal with its first two transactions marked, which is how most journals are
 // kept: a `*` on the transaction line, and no mark on the postings under it. Used to check
 // that the window opens on work already done as done, rather than as a backlog.
+const MARKED_JOURNAL = RECONCILE_JOURNAL.split('\n').map((line, at) => (
+  at === 6 || at === 10 ? line.replace(/^(\d{4}-\d{2}-\d{2}) /, '$1 * ') : line
+)).join('\n');
 const RECONCILE_PRINT_MARKED = RECONCILE_PRINT.map((transaction) => (
   transaction.tindex === 2 || transaction.tindex === 3 ? { ...transaction, tstatus: 'Cleared' } : transaction
 ));
-const RECONCILE_DATA_MARKED = readReconcile(RECONCILE_PRINT_MARKED, 'Assets:Bank:Checking');
-for (const row of RECONCILE_DATA_MARKED.rows) {
-  row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
-}
+const RECONCILE_DATA_MARKED = withText(readReconcile(RECONCILE_PRINT_MARKED, 'Assets:Bank:Checking'), MARKED_JOURNAL);
 
 // The generic fixture: a journal carrying every kind of posting the window has to handle, so the
 // window is checked against it too and not only against one shape of journal.
-const RECONCILE_DATA_GENERIC = readReconcile(GENERIC_PRINT, 'assets:bank');
-for (const row of RECONCILE_DATA_GENERIC.rows) {
-  row.text = GENERIC_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
-}
+const RECONCILE_DATA_GENERIC = withText(readReconcile(GENERIC_PRINT, 'assets:bank'), GENERIC_JOURNAL);
 
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
 const MEASURED = ['reconcile.js', 'reconcile-data.js', 'reconcile-window.js', 'chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
@@ -397,7 +409,6 @@ function reconcileBridge({ journals, candidate }) {
 // A transaction under another account, for Find a transaction to turn up: at the end of the
 // fixture's file as the bridge shows it, shaped as rankCandidates gives it, with its text and
 // each posting's line in that text, as the plugin adds them.
-const FOUND_TEXT = '2026-09-04 Bank fee\n    Expenses:Fees    75000 IDR\n    Assets:Cash    -75000 IDR';
 const FOUND = {
   file: 'fixture.journal', first: 29, last: 32, date: '2026-09-04', description: 'Bank fee', score: 6, apart: 1,
   reasons: ['the amount', '1 day from the date'], text: FOUND_TEXT,
@@ -412,14 +423,15 @@ const BRIDGE_FIXTURES = {
 };
 
 // The page a window was opened by, stood in for: a chart bridge that records what it was asked
-// and answers with ANSWER, after a moment, as hledger would; a reconcile bridge (above); and an
-// editor bridge that records what was saved, or refuses the way the app does when the file
-// changed on disk.
+// and answers with ANSWER, after a moment, as hledger would; and an editor bridge that records
+// what was saved, or refuses the way the app does when the file changed on disk. The reconcile
+// bridge is the plugin's own, published on this window by the page that runs it; the getter
+// hands the window to it, and that page records on it what the check reads back.
 const OPENER = `
   window.__asked = [];
   window.__previewed = [];
+  window.__changed = [];
   window.__applied = [];
-  window.__writable = !/writable=no/.test(location.search);
   window.__saved = [];
   window.__refuse = '';
   Object.defineProperty(window, 'opener', { configurable: true, value: {
@@ -430,7 +442,7 @@ const OPENER = `
         return { ...${JSON.stringify(ANSWER)}, title: args, args };
       },
     } },
-    __reconcileBridges: { check: (${reconcileBridge.toString()})(${JSON.stringify(BRIDGE_FIXTURES)}) },
+    get __reconcileBridges() { return window.__reconcileBridges; },
     __editBridges: { check: {
       async save(text) {
         if (window.__refuse) throw new Error(window.__refuse);
@@ -479,7 +491,7 @@ function syntheticPrint(count) {
     const month = String(1 + (index % 12)).padStart(2, '0');
     transactions.push({
       tindex: index + 2, tdate: `2026-${month}-${day}`, tdescription: `Row ${index}`, tstatus: 'Unmarked',
-      tsourcepos: [{ sourceName: '/fixture.journal', sourceLine: line }, { sourceName: '/fixture.journal', sourceLine: line + 2 }],
+      tsourcepos: [{ sourceName: '/fixture.journal', sourceLine: line }, { sourceName: '/fixture.journal', sourceLine: line + 3 }],
       tpostings: [
         { paccount: 'Expenses:Food', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: amount(-(index + 1) * 100), pbalanceassertion: null },
         { paccount: 'Assets:Bank:Checking', pstatus: 'Unmarked', pdate: null, ptags: [], pamount: amount((index + 1) * 100), pbalanceassertion: null },
@@ -488,6 +500,162 @@ function syntheticPrint(count) {
     line += 3;
   }
   return transactions;
+}
+
+/**
+ * The journal `syntheticPrint` reads: the same transactions, on the same lines, written out so
+ * the plugin can be run over them rather than handed the print. The engine's own print of it is
+ * what the window is drawn from, so a row's line and a row's text are the same either way.
+ */
+function syntheticJournal(count) {
+  const lines = [
+    'commodity 1,000.00 IDR', '',
+    '2026-01-01 Opening',
+    '    Assets:Bank:Checking    1000.00 IDR = 1000.00 IDR',
+    '    Equity:Opening', '',
+  ];
+  for (let index = 0; index < count; index += 1) {
+    const day = String(1 + (index % 27)).padStart(2, '0');
+    const month = String(1 + (index % 12)).padStart(2, '0');
+    lines.push(
+      `2026-${month}-${day} Row ${index}`,
+      `    Expenses:Food    -${index + 1}.00 IDR`,
+      `    Assets:Bank:Checking    ${index + 1}.00 IDR`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/** Two thousand postings to draw and tick, on the dates the print above puts them on. */
+const SYNTHETIC_COUNT = 2000;
+const SYNTHETIC_JOURNAL = syntheticJournal(SYNTHETIC_COUNT);
+const RECONCILE_DATA_MANY = withText(readReconcile(syntheticPrint(SYNTHETIC_COUNT), 'Assets:Bank:Checking'), SYNTHETIC_JOURNAL);
+
+// ------------------------------------------------------------------ the reconcile window
+
+/**
+ * The page the reconcile checks drive: the plugin itself, run in the page over the journal in
+ * `space` — the files on disk, the engine answering through this check's server — with the
+ * window this check draws written over it once the bridge is up.
+ *
+ * The host is the app's shape, wrapped here so a check can make it refuse a write or stop
+ * answering mid-one, the way `realHost` does in check-reconcile-write.mjs. What the window asks
+ * for is recorded on the bridge itself, at the seam, so the check can read back the requests the
+ * window really made without going through the DOM for them.
+ */
+function reconcileRunner({ space, args, writable, colors, drawn }) {
+  const post = `async (path, value) => (await fetch(path + '?space=${space}', { method: 'POST', body: JSON.stringify(value) })).json()`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>reconcile</title></head><body>
+<script type="module">
+const post = ${post};
+window.__said = [];
+const disk = await (await fetch('/live/disk?space=${space}')).json();
+const memory = {};
+const stamps = {};
+for (const [path, entry] of Object.entries(disk)) { memory[path] = entry.text; stamps[path] = entry.stamp; }
+const host = {
+  name: 'reconcile',
+  colors: () => (${JSON.stringify(colors)}),
+  say: (text) => { window.__said.push(text); },
+  setting: () => null,
+  remember() {},
+  files: () => Object.keys(memory).map((path, at) => ({ path, writable: ${Boolean(writable)}, main: at === 0 })),
+  read: (path) => (path in memory ? memory[path] : null),
+  async save(path, text) {
+    // A check that needs the app to stop answering sets this; only a host that throws reaches
+    // the window as a bridge that did not answer.
+    if (window.__throw) throw new Error(window.__throw);
+    const answer = await post('/live/save', { path, text, stamp: stamps[path] });
+    if (answer.ok) { memory[path] = text; stamps[path] = answer.stamp; }
+    return answer;
+  },
+  async refresh() {
+    if (!${Boolean(writable)}) return { changed: [], missing: [] };
+    const now = await (await fetch('/live/disk?space=${space}')).json();
+    const changed = [];
+    for (const [path, entry] of Object.entries(now)) {
+      if (entry.stamp !== stamps[path]) { memory[path] = entry.text; stamps[path] = entry.stamp; changed.push(path); }
+    }
+    return { changed, missing: [] };
+  },
+  async hledger(command) {
+    const answer = await post('/live/hledger', { command, files: memory });
+    if (answer.error) throw new Error(answer.error);
+    return answer.out;
+  },
+  // The window is the one written below: what the plugin writes for it goes nowhere here.
+  window: () => ({ write() {}, close() {} }),
+};
+const { default: reconcile } = await import('/plugins/reconcile.js');
+await reconcile.run(${JSON.stringify(args)}, host);
+// The bridge the plugin published, kept as it is and recorded on: every request the window makes
+// lands here first, in the shape the window sent it.
+const registry = window.__reconcileBridges || {};
+window.__reconcileBridges = registry;
+const token = Object.keys(registry).find((key) => registry[key] && typeof registry[key].preview === 'function');
+const link = registry[token];
+const copy = (value) => JSON.parse(JSON.stringify(value));
+const record = (name, note) => { const ask = link[name]; link[name] = (...rest) => { note(rest[0]); return ask.apply(link, rest); }; };
+record('change', (request) => window.__changed.push(copy(request)));
+record('undo', () => window.__changed.push({ kind: 'undo' }));
+record('preview', (request) => { window.__previewed.push(copy(request)); window.__lastPreview = copy(request); });
+record('find', (request) => { window.__found = copy(request); });
+record('setStyle', (style) => { window.__styleSet = style; });
+record('setLines', (on) => { window.__linesSet = on; });
+record('source', (path) => { window.__sourced = path; });
+registry.check = link;
+// The window's own markup, as text: a closing script tag in it would end this one early, so
+// the slash is escaped the way a page writing a page has to.
+document.open(); document.write(${JSON.stringify(drawn).replace(/<\//g, '<\\/')}); document.close();
+// The window looks at its journal on its own every couple of seconds; a check driving it by
+// hand does not want that under its feet, so the looking is stopped until a check asks for it.
+window.__reconcileHold = true;
+</script></body></html>`;
+}
+
+/** The journal each window is drawn from, and the one the plugin reads under it. */
+const JOURNALS = {
+  fixture: { journal: FIXTURE_JOURNAL, file: 'fixture.journal', account: 'assets:bank:checking' },
+  marked: { journal: MARKED_JOURNAL, file: 'fixture.journal', account: 'assets:bank:checking' },
+  generic: { journal: GENERIC_JOURNAL, file: 'generic.journal', account: 'assets:bank' },
+  many: { journal: SYNTHETIC_JOURNAL, file: 'fixture.journal', account: 'assets:bank:checking' },
+};
+
+let opened = 0;
+/** The journal the window now on screen was opened on, for the checks that make its host fail. */
+let spaceEntry = null;
+/**
+ * The reconcile window on a journal of its own, for real: a directory with the journal in it,
+ * which is what makes a change in the window a write and another program's edit one the window
+ * has to notice, and the plugin run in the page over it. Which journal that is is left in
+ * spaceEntry, for the checks that have to make its host refuse, fail, or take its time.
+ */
+async function showReconcile(tab, { variant = 'fixture', theme = 'dark', writable = true, balance = '', lines = false } = {}) {
+  const fixture = JOURNALS[variant];
+  const name = `check-${(opened += 1)}`;
+  spaceEntry = space(name, fixture.journal, fixture.file);
+  const query = [
+    `space=${encodeURIComponent(name)}`,
+    `account=${encodeURIComponent(fixture.account)}`,
+    `file=${encodeURIComponent(fixture.file)}`,
+    `writable=${writable ? 'yes' : 'no'}`,
+    balance ? `balance=${encodeURIComponent(balance)}` : '',
+    lines ? 'lines=on' : '',
+    variant === 'generic' ? 'generic=yes' : '',
+    variant === 'marked' ? 'marked=yes' : '',
+    variant === 'many' ? 'many=yes' : '',
+  ].filter(Boolean).join('&');
+  await tab.show('reconcile', theme, `&${query}`);
+  const drawn = await tab.until("document.getElementById('rows') && document.querySelectorAll('#rows tr[data-id]').length > 0", 20000);
+  if (!drawn) {
+    const said = await tab.eval('window.__said || []').catch(() => []);
+    throw new Error(`the reconcile window did not draw: ${[...said, ...tab.errors].join(' | ') || 'no rows, and no error'}`);
+  }
+}
+
+/** Another program's edit: the journal on disk, changed the way a person in it would change it. */
+function editFile(entry, change) {
+  writeFileSync(entry.path, change(readFileSync(entry.path, 'utf8')));
 }
 
 // ------------------------------------------------------------------ a server and a browser
@@ -508,16 +676,25 @@ function serve() {
     if (url.pathname === '/reconcile') {
       response.writeHead(200, { 'content-type': types['.html'] });
       const theme = url.searchParams.get('theme');
-      response.end(reconcilePage({
-        data: url.searchParams.get('many')
-          ? readReconcile(syntheticPrint(Number(url.searchParams.get('many')) || 0), 'Assets:Bank:Checking')
+      const writable = url.searchParams.get('writable') !== 'no';
+      const drawn = reconcilePage({
+        data: url.searchParams.get('many') ? RECONCILE_DATA_MANY
           : url.searchParams.get('generic') ? RECONCILE_DATA_GENERIC
             : url.searchParams.get('marked') ? RECONCILE_DATA_MARKED : RECONCILE_DATA,
         colors: theme === 'dark' ? DARK : COLORS, token: 'check',
-        files: [{ path: 'fixture.journal', writable: url.searchParams.get('writable') !== 'no' }],
+        files: [{ path: url.searchParams.get('file') || 'fixture.journal', writable }],
         statementDate: '2026-09-30', statementBalance: url.searchParams.get('balance') || '', fingerprint: 'before',
         lines: url.searchParams.get('lines') === 'on',
         module: '/plugins/reconcile-window.js',
+      });
+      // The plugin runs first, on the journal in `space`, and the window this check drives is
+      // written over it: the same bridge either way, real files underneath it.
+      response.end(reconcileRunner({
+        space: url.searchParams.get('space'),
+        args: url.searchParams.get('account') || 'assets:bank:checking',
+        writable,
+        colors: theme === 'dark' ? DARK : COLORS,
+        drawn,
       }));
       return;
     }
@@ -1327,7 +1504,7 @@ async function reconciling(tab) {
     if (!ticked) throw new Error(`there is no row ${index} to tick`);
   };
   for (const theme of ['light', 'dark']) {
-    await tab.show('reconcile', theme);
+    await showReconcile(tab, { theme });
     check(`the reconcile window lists the account's postings since its last assertion (${theme})`,
       (await tab.eval("document.querySelectorAll('#rows tr').length")) === 6
       && /^6 postings in IDR, since the balance asserted on 2026-08-31\. Changes are written to the file as you make them\.$/.test(await text('sub')) && tab.errors.length === 0,
@@ -1397,7 +1574,7 @@ async function reconciling(tab) {
 
   // Four quick clicks: the first is written at once, and the three made while it is being
   // written go together in the next write, each row once.
-  await tab.eval('window.__delay = 150');
+  spaceEntry.delay = 150;
   const clicked = await tab.eval(`(() => {
     const rows = document.querySelectorAll('#rows tr[data-id]');
     for (const index of [0, 1, 3, 4]) rows[index].click();
@@ -1413,7 +1590,7 @@ async function reconciling(tab) {
   const checking = await tab.until("document.getElementById('status').textContent === 'Checking with hledger…'");
   check('then that it is being checked with hledger', checking, await text('status'));
   await done();
-  await tab.eval('window.__delay = 20');
+  spaceEntry.delay = 0;
   const sent = await changed();
   const coffee = sent[0] && sent[0].targets && sent[0].targets['2:Assets:Bank:Checking:0'];
   check('a tick sends one change, with the row as the window saw it, its text included',
@@ -1473,7 +1650,7 @@ async function reconciling(tab) {
   check('and asks the plugin for a finish against the file as it is, with the statement',
     await tab.eval("(() => { const r = window.__previewed.pop(); return r.kind === 'finish' && r.finish.date === '2026-09-30' && r.finish.balance === 567000000 && r.style === 'posting' && !r.ticked; })()"),
     await tab.eval('JSON.stringify(window.__lastPreview)'));
-  await tab.eval('window.__delay = 200');
+  spaceEntry.delay = 200;
   const pressed = await tab.eval(`(() => {
     const apply = document.getElementById('apply');
     apply.click();
@@ -1485,29 +1662,32 @@ async function reconciling(tab) {
   const checked = await tab.until("document.getElementById('apply') && document.getElementById('apply').textContent === 'Checking with hledger…'");
   check('then that hledger is checking it', checked, '');
   await tab.until("/reconciled/.test(document.getElementById('status').textContent)");
-  await tab.eval('window.__delay = 20');
+  spaceEntry.delay = 0;
   const finishes = (await changed()).filter((request) => request.kind === 'finish');
+  // The assertion the finish wrote is the account's new starting point: the window lists what
+  // has been posted since the last assertion, so only the posting after the statement date is
+  // left for it to show, and it is not ticked because it is not the statement's.
+  const afterFinish = await tab.eval("({ left: [...document.querySelectorAll('#rows tr[data-id]')].map((tr) => tr.dataset.id), on: document.querySelectorAll('#rows tr.on').length, hidden: document.getElementById('preview').hidden, sub: document.getElementById('sub').textContent })");
+  const late = RECONCILE_PRINT.find((transaction) => transaction.tdescription === 'After the statement');
   check('the finish goes through the plugin once, and the window says so and puts the preview away',
     /^Assets:Bank:Checking reconciled to 2026-09-30\.$/.test(await text('status')) && finishes.length === 1
-    && finishes[0].finish.balance === 567000000 && (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 5
-    && (await tab.eval("document.getElementById('preview').hidden")), `${await text('status')} ${JSON.stringify(finishes)}`);
+    && finishes[0].finish.balance === 567000000 && afterFinish.left.join() === `${late.tindex}:Assets:Bank:Checking:0`
+    && afterFinish.on === 0 && /since the balance asserted on 2026-09-30/.test(afterFinish.sub) && afterFinish.hidden,
+    `${await text('status')} ${JSON.stringify({ finishes, afterFinish })}`);
   check('and a finish is not offered to undo', !(await tab.eval("document.getElementById('undo')")), await text('status'));
-  await tab.eval("window.__refuse = 'hledger refused the result, so the files were put back as they were: Balance assertion failed'");
-  await tickRow(0);
-  await done();
-  check('a refused change is shown as it came, and the line goes back to what the file says',
-    /put back as they were/.test(await text('status')) && (await tab.eval("document.getElementById('status').classList.contains('error')"))
-    && (await tab.eval("document.querySelectorAll('#rows tr[data-id]')[0].classList.contains('on')")), await text('status'));
   await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
+  // The engine's own check is made to fail, so the finish is refused: nothing asserted, the
+  // file as it was, and the reason beside the button that would write it.
+  spaceEntry.failNext = true;
   await tab.eval("document.getElementById('apply').click()");
   await tab.until("document.getElementById('apply-said').textContent.length > 0");
   const refusedFinish = await tab.eval("({ said: document.getElementById('apply-said').textContent, label: document.getElementById('apply').textContent, disabled: document.getElementById('apply').disabled, cancel: document.getElementById('cancel').disabled })");
   check('a refused finish says why beside its button, and the button can be pressed again',
-    /put back as they were/.test(refusedFinish.said) && refusedFinish.label === 'Write and check' && !refusedFinish.disabled && !refusedFinish.cancel, JSON.stringify(refusedFinish));
+    /hledger refused it, so fixture\.journal was put back as it was\. hledger said: Balance assertion failed/.test(refusedFinish.said) && refusedFinish.label === 'Write and check' && !refusedFinish.disabled && !refusedFinish.cancel, JSON.stringify(refusedFinish));
   await tab.eval("document.getElementById('cancel').click()");
   check('Cancel puts the preview away', await tab.eval("document.getElementById('preview').hidden"));
-  await tab.eval("window.__refuse = ''");
+  spaceEntry.failNext = false;
   await tab.eval("document.getElementById('undo').click()");
   await done();
   check('Undo beside the message takes the last change back out of the file',
@@ -1519,7 +1699,7 @@ async function reconciling(tab) {
     /^Undid: Ticked 2026-09-03 Pending transfer\./.test(await text('status'))
     && (await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Pending transfer/.test(tr.textContent)).getAttribute('aria-checked')")) === 'false', await text('status'));
 
-  await tab.show('reconcile', 'light', '&writable=no&balance=5670000');
+  await showReconcile(tab, { theme: 'light', writable: false, balance: '5670000' });
   check('in a read-only file, read-only is said once at the top, nothing offers to write, and Finish shows the assertion',
     (await tab.eval("document.getElementById('finish').textContent")) === 'Show the assertion'
     && /^Read-only: fixture\.journal did not come from an opened folder.*Run open in the terminal/.test(await text('readonly'))
@@ -1541,7 +1721,7 @@ async function reconciling(tab) {
   // The line under the keyboard is ringed, and Space ticks it: the two things that make a
   // checkbox a checkbox rather than a colour. It gets a window of its own, because ticking a
   // line and moving the focus are both things the checks above depend on not having happened.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.key('u', { code: 'KeyU', keyCode: 85, text: 'u' });
   check('u with nothing written yet says there is nothing to undo, and sends nothing',
@@ -1564,16 +1744,13 @@ async function reconciling(tab) {
 
   // Another program changes the file: the window reads it again, keeps its place and what was
   // being typed in an open editor, and says so.
-  await tab.show('reconcile', 'dark', '&balance=5670000');
+  await showReconcile(tab, { balance: '5670000' });
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
   await tab.eval("(() => { const area = document.querySelector('tr.editor textarea'); area.value = '2026-09-01 Coffee, typed'; area.dispatchEvent(new Event('input', { bubbles: true })); })()");
-  await tab.eval(`(() => {
-    const data = window.__current();
-    data.rows.find((row) => row.description === 'Salary').status = 'Cleared';
-    window.__outside = data;
-    window.dispatchEvent(new Event('focus'));
-  })()`);
-  await tab.until("/changed outside/.test(document.getElementById('status').textContent)");
+  editFile(spaceEntry, (journal) => journal.replace('2026-09-02 Salary', '2026-09-02 * Salary'));
+  await tab.eval("window.__reconcileHold = false, window.dispatchEvent(new Event('focus'))");
+  await tab.until("/changed outside/.test(document.getElementById('status').textContent)", 8000);
+  await tab.eval('window.__reconcileHold = true');
   const outside = await tab.eval(`({
     salary: [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Salary/.test(tr.textContent)).getAttribute('aria-checked'),
     draft: (document.querySelector('tr.editor textarea') || {}).value,
@@ -1582,15 +1759,20 @@ async function reconciling(tab) {
   check('a change made outside the window is read in when it is looked at again, and what was being typed is kept',
     outside.salary === 'true' && outside.draft === '2026-09-01 Coffee, typed' && outside.status === 'The file changed outside this window, so it was read again.', JSON.stringify(outside));
   await tab.key('Escape', { code: 'Escape', keyCode: 27 });
-  await tab.eval("(() => { window.__pollError = 'The file changed outside this window, and hledger cannot read it as it is now: a parse error'; window.dispatchEvent(new Event('focus')); })()");
-  await tab.until("document.getElementById('status').classList.contains('error')");
+  // The file moves again, and this time hledger cannot read what is there: the engine's own
+  // check is made to fail once, which is how a journal another program broke is noticed.
+  editFile(spaceEntry, (journal) => journal.replace('    ; lunch', '    ; lunch, later'));
+  spaceEntry.armed = true;
+  await tab.eval("window.__reconcileHold = false, window.dispatchEvent(new Event('focus'))");
+  await tab.until("document.getElementById('status').classList.contains('error')", 8000);
+  await tab.eval('window.__reconcileHold = true');
   check('and a file hledger cannot read is said', /hledger cannot read it as it is now/.test(await text('status')), await text('status'));
-  await tab.eval('window.__outsideOnChange = true');
+  editFile(spaceEntry, (journal) => `${journal}; noted by another program\n`);
   await tickRow(0);
   await done();
   check('a change that found the file changed first says it was read again',
     /^Ticked 2026-09-01 Coffee\. The file had changed outside this window, and was read again first\./.test(await text('status')), await text('status'));
-  await tab.eval("(() => { window.__outsideOnChange = false; window.__throw = 'the app went away'; })()");
+  await tab.eval("window.__throw = 'the app went away'");
   await tickRow(2);
   await done();
   check('a bridge that does not answer is said',
@@ -1605,7 +1787,7 @@ async function reconciling(tab) {
 // The generic fixture: a journal carrying every kind of posting the window has to handle, so the
 // window itself is checked against it and not only against one shape of journal.
 async function reconcileGeneric(tab) {
-  await tab.show('reconcile', 'dark', '&generic=yes&balance=15640');
+  await showReconcile(tab, { variant: 'generic', balance: '15640' });
   const seen = await tab.eval(`(() => {
     const rows = [...document.querySelectorAll('#rows tr[data-id]')];
     return {
@@ -1651,7 +1833,7 @@ async function reconcileGeneric(tab) {
 async function reconcileNarrow(tab) {
   await tab.send('Emulation.setDeviceMetricsOverride', { width: 620, height: 1000, deviceScaleFactor: 1, mobile: false });
   try {
-    await tab.show('reconcile', 'dark', '&generic=yes');
+    await showReconcile(tab, { variant: 'generic' });
     const measured = await tab.eval(`(() => {
       const bar = document.querySelector('.bar');
       return {
@@ -1698,13 +1880,13 @@ async function reconcileDateEditing(tab) {
   })()`);
   const onShow = (state) => !state.editor && /^\d{4}-\d{2}-\d{2}$/.test(state.date);
 
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.querySelector('#rows tr[data-id]').click()");
   let state = await read();
   check('a click on the row ticks it and the date is still on show',
     state.checked === 'true' && onShow(state), JSON.stringify(state));
 
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval(`(() => {
     const cell = document.querySelector('#rows tr[data-id] td.date');
     const box = cell.getBoundingClientRect();
@@ -1715,7 +1897,7 @@ async function reconcileDateEditing(tab) {
   check('a click on the date cell itself ticks it and the date is still on show',
     state.checked === 'true' && onShow(state), JSON.stringify(state));
 
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40 });
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
@@ -1737,7 +1919,7 @@ async function reconcileDateEditing(tab) {
   // into another commodity makes every balance after it unknown, and the box used to show the
   // typed balance as though the line were out by exactly that much. Only a read-only window
   // keeps an edit of its own; a writable one shows what hledger read back.
-  await tab.show('reconcile', 'dark', '&writable=no');
+  await showReconcile(tab, { writable: false });
   await tab.eval(`(() => {
     const box = document.getElementById('lines');
     box.checked = true;
@@ -1766,7 +1948,7 @@ async function reconcileDateEditing(tab) {
   // Focus follows the line, not the position it used to be at. The first line is moved to a
   // day after every other one, so it really does leave where it was sitting: an index would
   // hand the ring to whichever line took its place.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   const focusTarget = await tab.eval(`(() => {
     const row = document.querySelector('#rows tr[data-id]');
     row.focus();
@@ -1791,7 +1973,7 @@ async function reconcileDateEditing(tab) {
   // a line in the cleared-at-open set that is on screen got there by being touched already, and
   // one that is not in that set is never hidden. Showing them, unticking one and ticking all
   // has to leave every line where it was.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   const countBefore = await tab.eval("document.querySelectorAll('#rows tr[data-id]').length");
   const revealed = await tab.eval(`(() => {
     const toggle = document.querySelector('[data-toggle-hidden]');
@@ -1808,7 +1990,7 @@ async function reconcileDateEditing(tab) {
 
   // Keys belong to a line only while a line has focus: a space in the search box is that box's
   // space, and a space in the date editor is the editor's.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.getElementById('search').focus()");
   const tickedBefore = await tab.eval("document.querySelectorAll('#rows tr.on').length");
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
@@ -1819,7 +2001,7 @@ async function reconcileDateEditing(tab) {
   check('a space typed in the search box is a space, and ticks nothing',
     JSON.parse(searchState).value === ' ' && JSON.parse(searchState).on === tickedBefore, searchState);
 
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
   const beforeSpace = await tab.eval("document.querySelectorAll('#rows tr.on').length");
   await tab.key(' ', { code: 'Space', keyCode: 32, text: ' ' });
@@ -1832,7 +2014,7 @@ async function reconcileDateEditing(tab) {
 
   // After a write there is no editor left standing: the row it was open on was re-read with the
   // rest of the list, and nothing keeps an input on a line that has already been written.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
   const editing = await tab.eval("Boolean(document.querySelector('.date-input'))");
   await tab.key('Escape', { code: 'Escape', keyCode: 27 });
@@ -1849,7 +2031,7 @@ async function reconcileDateEditing(tab) {
 
   // Two thousand postings: what the redesign has to survive is the redraw, not the first paint,
   // so the tick-everything path is timed inside the page, where navigation is not counted.
-  await tab.show('reconcile', 'dark', '&many=2000');
+  await showReconcile(tab, { variant: 'many' });
   const many = await tab.eval(`(() => {
     const rows = document.querySelectorAll('#rows tr[data-id]');
     const start = performance.now();
@@ -1866,7 +2048,7 @@ async function reconcileDateEditing(tab) {
 
   // An editor left open over a ticked row is how a date looked like it had disappeared, so a
   // click away from it closes it and does nothing else: one click, one thing.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
   const opened = await read();
   await tab.eval("document.querySelector('#rows tr[data-id]').children[1].click()");
@@ -1875,7 +2057,7 @@ async function reconcileDateEditing(tab) {
     opened.editor && !afterClick.editor && afterClick.checked === 'false' && onShow(afterClick),
     JSON.stringify({ opened, afterClick }));
 
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.querySelector('#rows tr[data-id] .date-btn').click()");
   await tab.key('Escape', { code: 'Escape', keyCode: 27 });
   const escaped = await read();
@@ -1887,7 +2069,7 @@ async function reconcileDateEditing(tab) {
 // place, Alt+Up/Down steps it onto a neighbouring day, and both go through the same checks. There
 // is no drag and drop, so a row is clicked to tick it and nothing on it can move it.
 async function reconcileDates(tab) {
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   // Editing a date where it is, and the floor: a date before the asserted balance is refused,
   // because that assertion says what the balance was that day, and a posting earlier is one it
   // did not count.
@@ -1940,7 +2122,7 @@ async function reconcileDates(tab) {
   // The date and the insert control are reached from the keyboard, not only by a pointer: Tab
   // from the focused line lands on them in turn, each drawn with a focus ring, and the plus is
   // revealed when it has focus rather than staying invisible until something hovers over it.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40 });
   await tab.key('Tab', { code: 'Tab', keyCode: 9 });
@@ -1954,7 +2136,7 @@ async function reconcileDates(tab) {
 
   // A date past the statement date is allowed: the statement date is a filter, not a wall, and
   // Finish waits for the date to move rather than refusing the line.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval(`(() => {
     const row = [...document.querySelectorAll('#rows tr[data-id]')].find((tr) => /Pending transfer/.test(tr.textContent));
     row.querySelector('button[data-date]').click();
@@ -1974,7 +2156,7 @@ async function reconcileDates(tab) {
 
   // Alt+Up/Down steps the transaction onto the next day that has postings: the quick way to put
   // it where the statement shows it, without typing a date.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.eval("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true }))");
   await writesDone(tab);
@@ -1998,14 +2180,19 @@ async function reconcileDates(tab) {
     && (await tab.eval("document.querySelectorAll('#rows button.order').length")) === 2, JSON.stringify(before));
   await tab.eval("document.querySelector('#rows button[data-up]').click()");
   await writesDone(tab);
-  const raised = await tab.eval(`({
-    names: [...document.querySelectorAll('#rows tr[data-id]')].slice(0, 2).map((tr) => tr.children[1].textContent.trim().split(/\\s/)[0]),
-    focus: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.id : null,
-    status: document.getElementById('status').textContent,
-    sent: window.__changed[window.__changed.length - 1],
-  })`);
+  const raised = await tab.eval(`(() => {
+    const active = document.activeElement;
+    const row = active && active.closest ? active.closest('tr[data-id]') : null;
+    return {
+      names: [...document.querySelectorAll('#rows tr[data-id]')].slice(0, 2).map((tr) => tr.children[1].textContent.trim().split(/\\s/)[0]),
+      focus: row ? row.dataset.id : null,
+      focusName: row ? row.children[1].textContent.trim().split(/\\s/)[0] : '',
+      status: document.getElementById('status').textContent,
+      sent: window.__changed[window.__changed.length - 1],
+    };
+  })()`);
   check('the up arrow moves it above its neighbour, sent as a reorder, and the moved row keeps the focus',
-    raised.names.join() === 'Salary,Coffee' && raised.focus === '3:Assets:Bank:Checking:0'
+    raised.names.join() === 'Salary,Coffee' && raised.focusName === 'Salary'
     && raised.sent.kind === 'reorder' && raised.sent.direction === 'up' && raised.sent.id === '3:Assets:Bank:Checking:0'
     && /^Moved Salary up within 2026-09-02\./.test(raised.status), JSON.stringify(raised));
   await tab.key('ArrowDown', { code: 'ArrowDown', keyCode: 40, modifiers: 8 });
@@ -2026,7 +2213,7 @@ async function reconcileDates(tab) {
   // A transaction can be added in the middle of the list: the plus beside a date opens the
   // editor for that spot, prefilled with that day and this account, so it lands where it looks,
   // beside the whole file with the place it will go marked.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   const added = await tab.eval(`(() => {
     document.querySelectorAll('#rows tr[data-id] button[data-insert]')[0].click();
     const area = document.querySelector('tr.editor textarea');
@@ -2067,7 +2254,7 @@ async function reconcileDates(tab) {
     && /Assets:Cash/.test(viewed.last) && viewed.sourced === 'fixture.journal', JSON.stringify(viewed));
 
   // The keyboard gets there from the line with focus, which is not the same line.
-  await tab.show('reconcile', 'dark');
+  await showReconcile(tab);
   const byKeyboard = await tab.eval(`(() => {
     document.activeElement && document.activeElement.blur();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
@@ -2080,7 +2267,7 @@ async function reconcileDates(tab) {
 
   // Read-only: the editor refuses before it opens, with the message the write actions use, and
   // no line can be picked up at all.
-  await tab.show('reconcile', 'dark', '&writable=no');
+  await showReconcile(tab, { writable: false });
   const locked = await tab.eval(`(() => {
     const row = document.querySelector('#rows tr[data-id]');
     const was = row.querySelector('button[data-date]').textContent;
@@ -2106,7 +2293,7 @@ async function reconcileDates(tab) {
 // Where the cleared marks are written is the person's choice, and the window has to show it,
 // carry it in every request, and remember it.
 async function reconcileStyle(tab) {
-  await tab.show('reconcile', 'dark', '&balance=5670000');
+  await showReconcile(tab, { balance: '5670000' });
   const initial = await tab.eval("({ value: document.getElementById('style').value, options: [...document.querySelectorAll('#style option')].map((o) => o.value) })");
   check('the marking style is a visible choice, with both styles offered',
     initial.value === 'posting' && initial.options.join() === 'posting,transaction', JSON.stringify(initial));
@@ -2138,8 +2325,21 @@ async function reconcileStyle(tab) {
   check('and the preview says it marks transactions, and asks in that style',
     /Marks transactions/.test(previewText) && /transaction's own line/.test(previewText) && (await tab.eval('window.__lastPreview.style')) === 'transaction', previewText.slice(0, 120));
   await tab.eval("document.getElementById('cancel').click()");
+  // A transaction whose marks disagree with itself: its line says one thing and the postings
+  // under it say another, which is how a half-marked transaction actually looks in a journal.
+  // Only the file can say it, so the file is edited the way another program would.
+  editFile(spaceEntry, (journal) => {
+    const lines = journal.split('\n');
+    const at = lines.findIndex((line) => /^2026-09-05 [!*]? ?Split$/.test(line));
+    if (at < 0) throw new Error('the Split transaction is not where the check left it');
+    lines[at] = '2026-09-05 ! Split';
+    for (let index = at + 1; index < lines.length && !/^2026-/.test(lines[index]); index += 1) {
+      if (lines[index] === '    Assets:Bank:Checking    -4000 IDR') lines[index] = '  * Assets:Bank:Checking    -4000 IDR';
+      else if (lines[index] === '    Assets:Bank:Checking') lines[index] = '  * Assets:Bank:Checking';
+    }
+    return lines.join('\n');
+  });
   await tab.eval(`(() => {
-    window.__conflicts = [{ id: '5:Assets:Bank:Checking:0', date: '2026-09-05', description: 'Split', why: 'one posting is cleared and the other is not' }];
     const select = document.getElementById('style');
     select.value = 'posting';
     select.dispatchEvent(new Event('change'));
@@ -2151,7 +2351,7 @@ async function reconcileStyle(tab) {
     (await tab.eval("document.getElementById('style').value")) === 'posting' && /Marks postings/.test(postingPreview) && /each posting's own line/.test(postingPreview)
     && (await tab.eval('window.__lastPreview.style')) === 'posting', postingPreview.slice(0, 120));
   check('and the transactions whose marks disagree are listed before anything is asserted over them',
-    /1 transaction with marks that disagree/.test(postingPreview) && /2026-09-05 Split: one posting is cleared and the other is not/.test(postingPreview), postingPreview);
+    /1 transaction with marks that disagree/.test(postingPreview) && /2026-09-05 Split: its line says pending but this account's posting says cleared/.test(postingPreview), postingPreview);
   await tab.eval("document.querySelector('.conflicts p[data-id]') && document.getElementById('cancel').click()");
 }
 
@@ -2159,7 +2359,7 @@ async function reconcileStyle(tab) {
 // window has to show that finished work as done, say where the list starts, and open at what is
 // left. It gets a window of its own because it opens in a different state from the rest.
 async function reconcileAlreadyCleared(tab) {
-  await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
+  await showReconcile(tab, { variant: 'marked', balance: '5670000' });
   const opened = await tab.eval(`(() => ({
     on: document.querySelectorAll('#rows tr.on').length,
     total: document.querySelectorAll('#rows tr[data-id]').length,
@@ -2204,7 +2404,7 @@ async function reconcileAlreadyCleared(tab) {
     revealed.total === 6 && revealed.on === 2 && /hide them/.test(revealed.line), JSON.stringify(revealed));
   // Editing works in the filtered view too, where the rows on screen are not the rows in the
   // file: the visible rows carry their own dates, and the hidden ones stay hidden.
-  await tab.show('reconcile', 'dark', '&marked=yes&balance=5670000');
+  await showReconcile(tab, { variant: 'marked', balance: '5670000' });
   const filteredBefore = await tab.eval(`(() => {
     const button = document.querySelector('#rows tr[data-id] button[data-date]');
     const before = button.textContent;
@@ -2253,7 +2453,7 @@ async function reconcileRunning(tab) {
   const rowOf = (pattern) => tab.eval(`[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => ${pattern}.test(tr.textContent))`);
   const last = () => tab.eval('window.__changed[window.__changed.length - 1]');
   const done = () => writesDone(tab);
-  await tab.show('reconcile', 'dark', '&lines=on');
+  await showReconcile(tab, { lines: true });
   check('each posting shows the balance after it', [await cell(0, 3), await cell(1, 3), await cell(2, 3)].join(' | ') === '979,000.00 | 5,979,000.00 | 5,679,000.00',
     [await cell(0, 3), await cell(1, 3), await cell(2, 3)].join(' | '));
   await expect(0, '979,000');
@@ -2418,7 +2618,7 @@ async function reconcileRunning(tab) {
   check('a written new one reopens with its text, as any other', /Bank fee/.test(await area()) && !(await tab.eval("document.querySelector('tr.editor [data-drop]')")), '');
   await tab.key('Escape', { code: 'Escape', keyCode: 27 });
   // A refused edit leaves the editor open with what was typed, and says why under it.
-  await tab.eval("window.__refuse = 'hledger refused it, so fixture.journal was put back as it was.'");
+  spaceEntry.failNext = true;
   await tab.eval("document.querySelector('#rows button[data-edit]').click()");
   await typeIn('2026-09-01 Coffee\n    Expenses:Food    21000 IDR  ; refused\n    Assets:Bank:Checking');
   await tab.eval("document.querySelector('tr.editor [data-keep]').click()");
@@ -2426,7 +2626,7 @@ async function reconcileRunning(tab) {
   const refusedEdit = await tab.eval("({ open: !!document.querySelector('tr.editor'), text: (document.querySelector('tr.editor textarea') || {}).value, reading: document.getElementById('reading').textContent, label: document.querySelector('tr.editor [data-keep]').textContent })");
   check('a refused edit keeps its editor open with the text, says why, and can be written again',
     refusedEdit.open && /; refused/.test(refusedEdit.text) && /put back as it was/.test(refusedEdit.reading) && refusedEdit.label === 'Write it', JSON.stringify(refusedEdit));
-  await tab.eval("window.__refuse = ''");
+  spaceEntry.failNext = false;
   await tab.key('Escape', { code: 'Escape', keyCode: 27 });
   // A hint is followed to its posting.
   await expect(1, '5,979,000');
@@ -2447,24 +2647,37 @@ async function reconcileRunning(tab) {
   check('Finish asks with the typed running balances, each with its row as the window saw it',
     asked.kind === 'finish' && Object.keys(asked.expected).length === 3 && asked.expected[feeId] === 560000000
     && asked.expected['2:Assets:Bank:Checking:0'] === 97900000 && asked.targets[feeId] && /Bank fee/.test(asked.targets[feeId].text), JSON.stringify(asked));
-  await tab.eval("document.getElementById('apply').click()");
-  await tab.until("/reconciled/.test(document.getElementById('status').textContent)");
-  const finished = await last();
-  check('and writes them with the finish', finished.kind === 'finish' && finished.expected[feeId] === 560000000 && Object.keys(finished.expected).length === 3, JSON.stringify(finished));
+  // With line by line off, none of the figures typed are sent at all; the rows they were typed
+  // against still are, so the window can still say which line each one was for. Asked before
+  // anything is written, since writing puts the figures in the file as assertions and the
+  // window then has nothing typed any more.
+  await tab.eval("document.getElementById('cancel').click()");
   await tab.eval(`(() => {
     const box = document.getElementById('lines');
     box.checked = false;
     box.dispatchEvent(new Event('change'));
-    document.getElementById('finish').click();
   })()`);
+  await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
+  const unsent = await tab.eval('window.__lastPreview');
   check('with line by line off, Finish sends none of the figures typed',
-    Object.keys(await tab.eval('window.__lastPreview.expected')).length === 0 && Object.keys(await tab.eval('window.__lastPreview.targets')).length === 3, JSON.stringify(await tab.eval('window.__lastPreview')));
+    Object.keys(unsent.expected).length === 0 && Object.keys(unsent.targets).length === 3, JSON.stringify(unsent));
   await tab.eval("document.getElementById('cancel').click()");
+  await tab.eval(`(() => {
+    const box = document.getElementById('lines');
+    box.checked = true;
+    box.dispatchEvent(new Event('change'));
+  })()`);
+  await tab.eval("document.getElementById('finish').click()");
+  await tab.until("!document.getElementById('preview').hidden");
+  await tab.eval("document.getElementById('apply').click()");
+  await tab.until("/reconciled/.test(document.getElementById('status').textContent)");
+  const finished = await last();
+  check('and writes them with the finish', finished.kind === 'finish' && finished.expected[feeId] === 560000000 && Object.keys(finished.expected).length === 3, JSON.stringify(finished));
 
   // Read-only, the window keeps its own changes: edits, deletions and new lines are drawn in it
   // and sent only to be shown as the assertion to copy.
-  await tab.show('reconcile', 'dark', '&lines=on&writable=no');
+  await showReconcile(tab, { lines: true, writable: false });
   await expect(3, '5,600,000');
   await tab.eval("document.activeElement && document.activeElement.blur()");
   await tab.key('n', { code: 'KeyN', keyCode: 78, text: 'n' });
@@ -2514,15 +2727,32 @@ async function reconcileRunning(tab) {
   await tab.key('a', { code: 'KeyA', keyCode: 65, text: 'a' });
   await tab.eval("document.getElementById('finish').click()");
   await tab.until("!document.getElementById('preview').hidden");
-  check('its preview shows the rewritten transaction and the added one', /1 transaction rewritten, 1 transaction added/.test(await text('preview')) && /; checked/.test(await text('preview')) && /after line 23:/.test(await text('preview')),
-    await text('preview'));
+  // The preview's line numbers are the journal's own: every row the window shows sits where
+  // hledger's print for this journal puts its transaction, so the added one goes after that
+  // transaction rather than after a number the check made up.
+  const shown = await tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].map((tr) => tr.dataset.id).filter((id) => /^\\d+:/.test(id))");
+  const lines = FIXTURE_JOURNAL.split('\n');
+  const consistent = shown.length > 0 && shown.every((id) => {
+    const transaction = RECONCILE_PRINT.find((entry) => String(entry.tindex) === id.split(':')[0]);
+    if (!transaction) return false;
+    const [first, last] = transaction.tsourcepos;
+    const head = lines[first.sourceLine - 1] || '';
+    const text = lines.slice(first.sourceLine - 1, last.sourceLine - 1).join('\n');
+    return head.startsWith(transaction.tdate) && head.includes(transaction.tdescription) && text.length > head.length;
+  });
+  const splitAt = RECONCILE_PRINT.find((entry) => entry.tdescription === 'Split');
+  const previewed = await text('preview');
+  check('its preview shows the rewritten transaction and the added one, on the journal\'s own lines',
+    /1 transaction added/.test(previewed) && /; checked/.test(previewed)
+    && new RegExp(`after line ${splitAt.tsourcepos[1].sourceLine - 1}:`).test(previewed) && consistent,
+    `${consistent} / ${shown.length} rows / ${previewed}`);
   check('Show the assertion sends the new transaction\'s text and the typed balances with the statement',
     await tab.eval("(() => { const r = window.__lastPreview; return !r.kind && r.inserts.length === 1 && /Bank fee/.test(r.inserts[0].text) && !r.inserts[0].after && Object.keys(r.expected).length === 1 && r.expected['5:Assets:Bank:Checking:0'] === 560000000 && Object.keys(r.edits).length === 1 && r.finish.balance === 559500000 && r.ticked.length === 6; })()"),
     await tab.eval('JSON.stringify(window.__lastPreview)'));
   await tab.eval("document.getElementById('cancel').click()");
 
   // Finding a transaction booked to another account, from the hint where they part.
-  await tab.show('reconcile', 'dark', '&lines=on');
+  await showReconcile(tab, { lines: true });
   await expect(3, '5,600,000');
   await tab.eval("document.querySelector('#hints button[data-find]').click()");
   await tab.until("document.querySelectorAll('#found li').length > 0");
@@ -2573,18 +2803,14 @@ async function reconcileRunning(tab) {
   await tab.eval("(() => { document.getElementById('find-amount').value = ''; document.getElementById('find-words').value = ''; document.getElementById('find-go').click(); })()");
   await tab.until("/^Give/.test(document.getElementById('find-said').textContent)");
   check('and a search with nothing to look for says what it needs', true, '');
-  await tab.eval(`(() => {
-    window.opener.__reconcileBridges.check.source = () => null;
-    const data = window.__current();
-    data.rows[0].description = 'Coffee, read again';
-    window.__outside = data;
-    window.dispatchEvent(new Event('focus'));
-  })()`);
-  await tab.until("/changed outside/.test(document.getElementById('status').textContent)");
-  await tab.eval("(() => { document.getElementById('find-amount').value = '75,000'; document.getElementById('find-go').click(); })()");
-  await tab.until("!document.getElementById('find-file').hidden");
-  check('a file the app cannot show is said in place of it',
-    /^fixture\.journal cannot be shown here\.$/.test(await tab.eval("document.getElementById('find-file').textContent")), await tab.eval("document.getElementById('find-file').textContent"));
+  // Another program rewrites the first line of the file, so the window has to read it again
+  // before it can look anything up in it.
+  editFile(spaceEntry, (journal) => journal.replace('2026-09-01 Coffee', '2026-09-01 Coffee, read again'));
+  await tab.eval("window.__reconcileHold = false, window.dispatchEvent(new Event('focus'))");
+  const readAgain = await tab.until("/changed outside/.test(document.getElementById('status').textContent)", 8000);
+  await tab.eval('window.__reconcileHold = true');
+  check('another program\'s edit to the file is read again before anything is looked up in it',
+    Boolean(readAgain), await text('status'));
   await tab.eval("document.getElementById('find-amount').focus()");
   await tab.key('Escape', { code: 'Escape', keyCode: 27 });
   check('Escape in the search puts it away', await tab.eval("document.getElementById('find').hidden"), '');
@@ -2595,6 +2821,19 @@ async function reconcileRunning(tab) {
   await tab.eval("document.getElementById('find-close').click()");
   await tab.eval("document.getElementById('find-open').click()");
   check('and Close and the button do the same', !(await tab.eval("document.getElementById('find').hidden")), '');
+
+  // A file the app cannot read out: the window says so where the file would be, rather than
+  // showing nothing. Only the bridge can fail this way, so only the bridge is stood in for, and
+  // the window is one the file has never been shown in, so this is the first read of it.
+  await showReconcile(tab, { lines: true });
+  await tab.eval("window.opener.__reconcileBridges.check.source = () => null");
+  await expect(3, '5,600,000');
+  await tab.eval("document.querySelector('#hints button[data-find]').click()");
+  await tab.until("document.querySelectorAll('#found li').length > 0");
+  await tab.until("!document.getElementById('find-file').hidden");
+  const fileSaid = await tab.eval("document.getElementById('find-file').textContent");
+  check('a file the app cannot show is said in place of it',
+    /^fixture\.journal cannot be shown here\.$/.test(fileSaid), fileSaid.slice(0, 120));
 }
 
 async function theEditor(tab) {
@@ -2723,6 +2962,7 @@ try {
 } finally {
   child.kill();
   server.close();
+  cleanUp();
   for (const directory of [profile, downloads]) {
     try {
       rmSync(directory, { recursive: true, force: true });
