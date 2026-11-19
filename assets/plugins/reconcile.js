@@ -322,7 +322,7 @@ export default {
         const text = host.read(path);
         if (text != null) texts[path] = text;
       }
-      return plan({ data, texts, ...params, style: params.style === 'transaction' ? 'transaction' : 'posting' });
+      return plan({ data, texts, ...params });
     };
 
     const cleared = () => new Set(data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
@@ -341,6 +341,10 @@ export default {
         return { refused: `${said} changed outside this window, so this change was not made. The window shows the file as it is now.` };
       };
       const floor = (date) => (date ? moveRefusal(data, date) : null);
+      // Every change is one bag, all nine keys of it, built here and then passed on untouched.
+      const bag = (ticked, change = {}) => ({
+        ticked, finish: null, edits: {}, inserts: [], expected: {}, moved: {}, style, relocate: [], replace: [], ...change,
+      });
       switch (request.kind) {
         case 'tick': {
           const ticked = cleared();
@@ -355,7 +359,7 @@ export default {
           const label = rows.length === 1
             ? `${rows[0].on ? 'Ticked' : 'Unticked'} ${named(rows[0].row)}`
             : `${rows.filter((entry) => entry.on).length} ticked, ${rows.filter((entry) => !entry.on).length} unticked`.replace(/^0 ticked, |, 0 unticked$/g, '');
-          return { params: { ticked, style }, label };
+          return { params: bag(ticked), label };
         }
         case 'edit': {
           const row = find(request.id);
@@ -371,7 +375,7 @@ export default {
           // Named as it is now, the way Moved and Added name what they moved and added: the old
           // description is not in the file any more, so it would name nothing to look for.
           const name = read ? `${read.date || row.date} ${read.description || row.description}`.trim() : named(row);
-          return { params: { ticked: cleared(), edits: { [row.id]: { text } }, style }, label: text ? `Rewrote ${name}` : `Deleted ${named(row)}` };
+          return { params: bag(cleared(), { edits: { [row.id]: { text } } }), label: text ? `Rewrote ${name}` : `Deleted ${named(row)}` };
         }
         case 'insert': {
           const text = String(request.text || '').replace(/\s+$/, '');
@@ -383,21 +387,21 @@ export default {
           const anchor = request.after ? find(request.after) : null;
           const ticked = cleared();
           ticked.add('new');
-          return { params: { ticked, inserts: [{ id: 'new', text, after: anchor ? anchor.id : null }], style }, label: `Added ${read.date} ${read.description || ''}`.trim(), inserted: true };
+          return { params: bag(ticked, { inserts: [{ id: 'new', text, after: anchor ? anchor.id : null }] }), label: `Added ${read.date} ${read.description || ''}`.trim(), inserted: true };
         }
         case 'date': {
           const row = find(request.id);
           if (!row) return gone(request.id);
           const refused = floor(request.date);
           if (refused) return { refused: `Cannot move it to ${request.date}: it is ${refused}.` };
-          return { params: { ticked: cleared(), moved: { [row.id]: request.date }, style }, label: `Moved ${row.description} to ${request.date}` };
+          return { params: bag(cleared(), { moved: { [row.id]: request.date } }), label: `Moved ${row.description} to ${request.date}` };
         }
         case 'reorder': {
           const row = find(request.id);
           if (!row) return gone(request.id);
           const where = neighbour(ordered(data), row.id, request.direction);
           if (where.refused) return { refused: `${row.description} stays where it is: ${where.refused}.` };
-          return { params: { ticked: cleared(), relocate: [{ id: row.id, to: where.to }], style }, label: `Moved ${row.description} ${request.direction === 'down' ? 'down' : 'up'} within ${row.date}` };
+          return { params: bag(cleared(), { relocate: [{ id: row.id, to: where.to }] }), label: `Moved ${row.description} ${request.direction === 'down' ? 'down' : 'up'} within ${row.date}` };
         }
         case 'account': {
           const candidate = request.candidate || {};
@@ -406,7 +410,7 @@ export default {
           if (!parts) return { refused: 'That posting is not in the transaction any more.' };
           const after = moveAccount(candidate.text, request.at, data.account);
           return {
-            params: { ticked: cleared(), replace: [{ file: candidate.file, first: candidate.first, last: candidate.last, before: candidate.text, after }], style },
+            params: bag(cleared(), { replace: [{ file: candidate.file, first: candidate.first, last: candidate.last, before: candidate.text, after }] }),
             label: `Moved ${candidate.description}'s ${parts.account} posting to ${data.account}`,
             inserted: true,
           };
@@ -423,7 +427,7 @@ export default {
             const row = find(id);
             if (row) expected[row.id] = value;
           }
-          return { params: { ticked: cleared(), finish, expected, style }, label: `${account} reconciled to ${finish.date}`, finish: true };
+          return { params: bag(cleared(), { finish, expected }), label: `${account} reconciled to ${finish.date}`, finish: true };
         }
         case 'file': {
           // The file itself, as edited in the window: written only over the text the editor
@@ -523,8 +527,9 @@ export default {
             if (built.refused) return { files: [], missing: [{ id: null, why: built.refused }], assertion: '', writable: writableFiles(host, data), conflicts: [], data };
             result = work(built.params);
           } else {
-            const { ticked, finish, edits = {}, inserts = [], expected = {}, moved = {}, style, relocate = [], replace = [] } = plainRequest;
-            result = work({ ticked: new Set(ticked), finish, edits, inserts, expected, moved, relocate, replace, style });
+            // The window's own state, not a change: its bag is built here once, with the ticks
+            // it sent as the set the plan reads, and every key it left out is the plan's own.
+            result = work({ ...plainRequest, ticked: new Set(plainRequest.ticked) });
           }
           const until = plainRequest.finish && plainRequest.finish.date;
           return {
@@ -661,12 +666,11 @@ export default {
           if (fingerprint(data) !== ask.fingerprint) {
             return { error: 'The journal changed since this window was drawn, so it has been read again. Check the ticks and try again.', data, fingerprint: fingerprint(data) };
           }
-          const { ticked = [], finish = null, edits = {}, inserts = [], expected = {}, moved = {}, style, relocate = [], replace = [] } = ask;
-          const result = work({ ticked: new Set(ticked), finish, edits, inserts, expected, moved, relocate, replace, style });
+          const result = work({ ...ask, ticked: new Set(ask.ticked) });
           const lines = result.files.reduce((sum, file) => sum + file.changes.length, 0);
           const rewritten = result.files.reduce((sum, file) => sum + file.replaced.filter((block) => block.after).length, 0);
           const deleted = result.files.reduce((sum, file) => sum + file.replaced.filter((block) => !block.after).length, 0);
-          const added = inserts.length;
+          const added = (ask.inserts || []).length;
           const done = [
             lines && `${lines} line${lines === 1 ? '' : 's'} changed`,
             rewritten && `${rewritten} transaction${rewritten === 1 ? '' : 's'} rewritten`,
@@ -674,8 +678,8 @@ export default {
             added && `${added} posting${added === 1 ? '' : 's'} added`,
             result.asserted && `${result.asserted} running balance${result.asserted === 1 ? '' : 's'} asserted`,
           ].filter(Boolean).join(', ');
-          const what = finish
-            ? `${account} reconciled to ${finish.date}: ${done ? `${done}, and ` : ''}the statement balance asserted`
+          const what = ask.finish
+            ? `${account} reconciled to ${ask.finish.date}: ${done ? `${done}, and ` : ''}the statement balance asserted`
             : `${account}: saved, ${done || 'nothing to change'}`;
           const answer = await commit(result, what, progress);
           if (answer.ok) host.say(`${host.name}: ${what}.`);
