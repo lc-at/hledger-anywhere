@@ -591,6 +591,12 @@ export function mount(root = document) {
   }
 
   /** What a transaction's text means for the account, said under the editor as it is typed. */
+  /**
+   * Advice, before anything is sent: what the window tells the user this text
+   * amounts to. The plugin's own refusal lives in build() in reconcile.js and is
+   * the one that decides — the two may disagree, and when they do the plugin's
+   * word is final.
+   */
   function reading(text) {
     if (!text.trim()) return 'Empty: the transaction will be deleted.';
     const read = readTransaction(text, state.data.account, style(), state.data.inclusive);
@@ -603,7 +609,7 @@ export function mount(root = document) {
   }
 
   /** The text an editor starts from: what was typed, the edit so far, the transaction, or a template. */
-  function textOf(row) {
+  function editorText(row) {
     if (drafts[row.id] != null) return drafts[row.id];
     if (edits[row.id]) return edits[row.id].text;
     const insert = inserts.find((entry) => entry.id === row.id);
@@ -613,7 +619,7 @@ export function mount(root = document) {
 
   /** An editor in place of a row: the transaction's journal text, all of it, beside its file. */
   function editorHtml(row) {
-    const text = textOf(row);
+    const text = editorText(row);
     const readable = text != null;
     const height = Math.min(16, Math.max(4, (text || '').split('\n').length + 1));
     const keepsWhat = writable
