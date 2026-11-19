@@ -322,10 +322,11 @@ pub fn overview(plugins: &[(&str, &str, &str)], width: usize) -> String {
     text.push_str(&format!("{}\r\n", bold("Keys")));
     for line in [
         "Enter runs a command. Tab completes commands, flags, accounts, aliases and paths,",
-        "ignoring case. A second Tab offers a menu: Tab and Shift+Tab step through it,",
-        "Escape undoes it. Tab on an empty line lists the commands you can run; when the",
-        "start of a word matches nothing, the closest names are listed instead. Either way",
-        "the line is left exactly as you typed it.",
+        "ignoring case. When several words start with what you typed, the first Tab opens",
+        "a menu of them: Tab and Shift+Tab step through it, Escape puts the line back, and",
+        "the line shows the choice while the menu is up. Tab on an empty line lists the",
+        "commands you can run; when the start of a word matches nothing, the closest",
+        "names are listed instead, and the line is left exactly as you typed it.",
         "Up and Down recall history. Ctrl+C stops a running command, or clears the line.",
         "Ctrl+A and Ctrl+E are the ends of the line, Ctrl+B and Ctrl+F move by character,",
         "Alt+B and Alt+F by word. Ctrl+K, Ctrl+U and Ctrl+W cut to the end, the start and",
