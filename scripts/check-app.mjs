@@ -841,6 +841,203 @@ async function main() {
       await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
     });
 
+    // The rest of what the help's line on Tab promises — commands, flags,
+    // accounts, aliases and paths — driven where each list comes from: the
+    // cursor's position picks the list (terminal/commands.rs `completion`),
+    // `complete_or_menu` (app.rs) gathers the sources for it, and the rows are
+    // what `show_options` drew. The line may only change where `complete`
+    // changes it, and each assertion is on the words the code itself offers.
+
+    await run('tab completes a flag after a command', async () => {
+      await tab.type('balance -');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // Every flag in FLAGS (terminal/mod.rs) starts with `-` and they agree on
+      // nothing past it, so `complete` opens the menu: sorted, the first of them
+      // — `--account` — goes on the line where the `-` was.
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith('» balance --account')`,
+        'the first flag on the line',
+      );
+      const lines = (await tab.read()).split('\n').filter((line) => line.trim());
+      // The menu is printed above the prompt with no heading — the line itself
+      // shows the choice — so the rows over the prompt are the candidates: the
+      // run of rows that start with the flag character, `format_columns` having
+      // laid them out one line that never wraps (its width formula guarantees
+      // the widest item fits).
+      const rows = [];
+      for (let at = lines.length - 2; at >= 0; at -= 1) {
+        const row = lines[at].trim();
+        if (row.startsWith('--') || row === '-O') rows.unshift(row);
+        else break;
+      }
+      if (!rows.length) throw new Error('no menu above the prompt');
+      // The whole menu, not a sample: FLAGS holds 32 names and every one of them
+      // is a word for `balance`, laid out column-major and padded to the widest.
+      const offered = rows.join(' ').split(/\s+/);
+      const unique = new Set(offered);
+      if (unique.size !== 32 || !offered.every((word) => word.startsWith('-'))) {
+        throw new Error(`the menu holds ${unique.size} words, not the 32 flags: ${rows.join(' | ')}`);
+      }
+      for (const flag of ['--tree', '--depth', '--real']) {
+        if (!unique.has(flag)) throw new Error(`${flag} is not among the flags offered`);
+      }
+      // Escape is `menu_cancel`: the line goes back to what was typed...
+      await tab.press('Escape', { code: 'Escape', keyCode: 27 });
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith('» balance -')`,
+        'the line to be put back',
+      );
+      // ...and is emptied for the steps below.
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
+    });
+
+    await run('tab lists the loaded files after a command', async () => {
+      await tab.type('journal ');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // Nothing is typed after the space, so there is no token to complete from
+      // and `complete` lists instead of typing a guess: the heading is the one
+      // `completion` gives an argument-position list, and the words under it
+      // start with the loaded paths (Sources.paths ← App::paths).
+      const heading = 'Flags, accounts and paths:';
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes(${JSON.stringify(heading)})`,
+        'the argument list to be drawn',
+      );
+      const lines = (await tab.read()).split('\n').filter((line) => line.trim());
+      const at = lines.lastIndexOf(heading);
+      if (at < 0) throw new Error('the heading is not a line of its own');
+      // The list ends at the prompt, and the prompt row is the line itself: the
+      // empty token left `journal ` exactly as it was typed — its own trailing
+      // space plus the one xterm leaves in the cursor's cell, so the two.
+      const raw = lines[lines.length - 1];
+      if (!raw.endsWith('» journal  ')) throw new Error(`the last line reads ${JSON.stringify(raw)}`);
+      const listed = lines.slice(at + 1, lines.length - 1).join(' ');
+      // What the session has loaded: the demo's two journals, plus the file
+      // `settings export` absorbed into the same list earlier in the run.
+      for (const name of ['hledger.journal', 'demo-prices.journal', 'hledger-anywhere-settings.json']) {
+        if (!listed.includes(name)) throw new Error(`${name} is not among the words offered`);
+      }
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
+    });
+
+    await run('tab offers the accounts from the loaded journal', async () => {
+      await tab.type('balance ');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      const heading = 'Flags, accounts and paths:';
+      const holds = `(() => {
+        const lines = (${READ_TERMINAL}).text.split('\\n').map((line) => line.trim()).filter(Boolean);
+        const at = lines.lastIndexOf(${JSON.stringify(heading)});
+        return at >= 0 && lines.slice(at + 1).some((line) => line.includes('assets:bank:checking'));
+      })()`;
+      // Account names are a whole engine run, fetched in the background when
+      // the first Tab asks for them (App::ensure_accounts → `hledger accounts`),
+      // and a Tab while they load lists what has arrived — so the Tab is pressed
+      // again until the journal's own names are in the list, rather than
+      // assuming the run finished by some deadline.
+      const end = Date.now() + 30000;
+      while (!(await tab.eval(holds))) {
+        if (Date.now() > end) throw new Error('timed out waiting for the account names to arrive');
+        await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      }
+      const lines = (await tab.read()).split('\n').filter((line) => line.trim());
+      const at = lines.lastIndexOf(heading);
+      if (at < 0) throw new Error('the heading is not a line of its own');
+      const raw = lines[lines.length - 1];
+      if (!raw.endsWith('» balance  ')) throw new Error(`the last line reads ${JSON.stringify(raw)}`);
+      // Both accounts are written in the demo journal (terminal/mod.rs
+      // DEMO_JOURNAL), and the rows after the heading are the list alone.
+      const listed = lines.slice(at + 1, lines.length - 1).join(' ');
+      for (const account of ['assets:bank:checking', 'income:salary']) {
+        if (!listed.includes(account)) throw new Error(`${account} is not among the words offered`);
+      }
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
+    });
+
+    await run('tab completes the alias where an alias may follow', async () => {
+      await tab.type('balance b');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // Aliases join an argument-position list (completion adds
+      // Sources.aliases when no plugin owns the line), and `bal` is the only
+      // word offered starting with `b` — no flag, path or demo account does —
+      // so `complete` puts it on the line whole with the space it appends to a
+      // completion, exactly as it did for `dem` above.
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith('» balance bal')`,
+        'the alias on the line',
+      );
+      const raw = (await tab.read()).split('\n').filter((line) => line.trim()).pop();
+      if (!raw.trimEnd().endsWith('» balance bal') || !/\bbal\s+$/.test(raw)) {
+        throw new Error(`the row reads ${JSON.stringify(raw)}`);
+      }
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
+    });
+
+    await run('a word nothing starts with is answered with the closest names', async () => {
+      await tab.type('bnc');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // No command starts with `bnc`, but `balance` holds those letters in
+      // order, so `complete` answers with the fuzzy list under this exact
+      // heading (app.rs) — and the line is left as typed: a closest name is
+      // worth showing, not worth typing over someone.
+      const heading = 'Nothing starts with that. Closest names:';
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes(${JSON.stringify(heading)})`,
+        'the closest names to be drawn',
+      );
+      const lines = (await tab.read()).split('\n').filter((line) => line.trim());
+      const at = lines.lastIndexOf(heading);
+      if (at < 0) throw new Error('the heading is not a line of its own');
+      const listed = lines.slice(at + 1, lines.length - 1).join(' ');
+      if (!/\bbalance\b/.test(listed)) throw new Error('balance is not among the closest names');
+      const raw = lines[lines.length - 1];
+      // The line is untouched: the row ends with `bnc` and the one space xterm
+      // leaves in the cursor's own cell — the empty prompt row read
+      // `hledger.journal »  ` for the same reason — and with no second one,
+      // which a space typed onto the line would put there.
+      if (!raw.endsWith('» bnc ') || raw.endsWith('» bnc  ')) {
+        throw new Error(`the last line reads ${JSON.stringify(raw)}`);
+      }
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
+    });
+
+    await run('shift+tab steps backward through the menu', async () => {
+      await tab.focus();
+      await tab.type('d');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // The same four commands starting with `d` as the menu step above: sorted,
+      // the first on the line, all four printed over the prompt.
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('» demo')`, 'the first candidate on the line');
+      const menu = /^demo\s+descriptions\s+diff\s+download$/;
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('\\n').some((line) => ${menu}.test(line.trim()))`,
+        'the menu to be drawn',
+      );
+      // Shift+Tab reaches the app as xterm's CSI Z: keyCode 9 with Shift set —
+      // 8 in the modifier field this file sends Ctrl as 2 in — and app.rs reads
+      // it as `menu_previous`. From the first candidate that wraps to the last,
+      // which no forward step could produce: a Tab from `demo` is
+      // `descriptions`.
+      await tab.press('Tab', { code: 'Tab', keyCode: 9, modifiers: 8 });
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith('» download')`,
+        'the selection to step back to',
+      );
+      // And a plain backward step: `download`'s predecessor in the sorted list.
+      await tab.focus();
+      await tab.press('Tab', { code: 'Tab', keyCode: 9, modifiers: 8 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('» diff')`, 'the previous candidate');
+      await tab.focus();
+      await tab.press('Escape', { code: 'Escape', keyCode: 27 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('» d')`, 'the line to be put back');
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
+    });
+
     await run('theme paints the page in the theme’s own background', async () => {
       // `apply_theme` writes the theme's colours onto the document element as custom
       // properties; `--term-bg` is the background, and it starts at the built-in
