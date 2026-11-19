@@ -409,6 +409,7 @@ assets/wasm/hledger.wasm     the engine, fetched at build time and verified
 assets/icons/                the ledger mark, drawn by scripts/make-icons.py
 src/terminal/                the line editor, commands, messages, quoting (pure)
 src/terminal/view.rs         xterm.js, wrapped (wasm)
+src/dispatch.rs              what a typed line asks for, decided where it can be tested (pure)
 src/plugins/mod.rs           the plugin contract (pure)
 src/hledger/                 the engine's request and response types, and its bridge
 src/journal.rs               choosing which file is the journal (pure)

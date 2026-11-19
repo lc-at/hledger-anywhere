@@ -13,5 +13,5 @@ A plugin's environment as the plugin sees it: its files, the hledger engine, and
 _Avoid_: backend, server, context
 
 **Chatter**:
-The app's own words on screen — echoed commands and messages — kept apart from engine output so search skips them.
+This visit's own words on screen — echoed commands and messages — kept apart from engine output so search skips them. After a reload they are history, and searchable like the rest of the scrollback.
 _Avoid_: echo, log
