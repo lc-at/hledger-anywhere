@@ -639,6 +639,121 @@ async function main() {
       }
     });
 
+    // The two history surfaces, after the journal chain and before the reload. They are
+    // the only parts of Ctrl+R's finder and of `history` that no other check touches: the
+    // matching and the drawing are pinned by `cargo test` against `Picker` and
+    // `history_listing`, but only a real window can show that a keystroke opened the
+    // finder, that what was typed went into its query rather than the line, and that the
+    // selection ran. Every count around them is read off the screen at the moment it is
+    // used, so the extra report these steps draw moves nothing, and the reload at the end
+    // is what stops this visit's screen from mattering to anything after it.
+
+    // The command the finder holds on the selection, read off the list itself: what is
+    // put on the prompt is whatever row carries the marker, so the run below asserts the
+    // command that was actually chosen rather than the one this script guessed at.
+    let chosen = '';
+
+    await run('ctrl+r opens the finder over the history', async () => {
+      await tab.focus();
+      // The same shape as Ctrl+L above: keyCode 82 for `r`, modifiers 2 for Ctrl, and no
+      // text — xterm translates the pair to the control character `\u{12}`, which is what
+      // app.rs matches to open the finder.
+      await tab.press('r', { code: 'KeyR', keyCode: 82, modifiers: 2 });
+      // The query line is drawn synchronously with the key, but the terminal is read out
+      // of the DOM, so the drawing is waited for rather than assumed.
+      await tab.until(`(${READ_TERMINAL}).text.includes('history>')`, 'the finder query line');
+      const lines = (await tab.read()).split('\n').map((line) => line.trim());
+      const query = lines.find((line) => line.startsWith('history>'));
+      // `history> ` + the query + the count, which is ` {matches}/{total}` (history.rs
+      // picker_lines). Nothing is typed yet, so the query is empty and the count is the
+      // whole history: three spaces between the prompt and the first digit.
+      if (!query || !/^history>\s+\d+\/\d+$/.test(query)) {
+        throw new Error(`the query line reads ${JSON.stringify(query)}`);
+      }
+      // Under the query the matches, newest first with an empty query, the selected one
+      // marked `▌ ` — and the most recent command run was `balance --tree`.
+      const selected = lines.find((line) => line.startsWith('▌'));
+      if (!selected) throw new Error('no row of the list is selected');
+      if (!selected.includes('balance')) throw new Error(`the top of the list is ${JSON.stringify(selected)}`);
+    });
+
+    await run('typing narrows the finder to the matching commands', async () => {
+      await tab.type('bal');
+      // The count after the query is the filtered one, in the format picker_lines writes:
+      // two spaces, then `{matches}/{total}`.
+      const counter = /^history> bal {2}(\d+)\/(\d+)$/;
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('\\n').some((line) => ${counter}.test(line.trim()))`,
+        'the filtered match count',
+      );
+      const lines = (await tab.read()).split('\n').map((line) => line.trim());
+      const query = lines.find((line) => line.startsWith('history>'));
+      const [, matches, total] = counter.exec(query);
+      // `balance --tree` and `bal` are both in the history and both match as a run at the
+      // start of the word, so one match would mean the query never left the line editor.
+      if (Number(matches) < 2) throw new Error(`only ${matches} of ${total} commands match bal`);
+      if (Number(matches) > Number(total)) throw new Error(`${matches} matches out of ${total}`);
+      const selected = lines.find((line) => line.startsWith('▌'));
+      if (!selected || !selected.includes('balance')) {
+        throw new Error(`the selection is ${JSON.stringify(selected)}`);
+      }
+      chosen = selected.replace(/^▌ /, '');
+    });
+
+    await run('enter puts the chosen command on the prompt and it runs', async () => {
+      await tab.enter();
+      // Enter closes the finder and leaves the selection on the line, as fzf's does:
+      // running is a second, deliberate Enter (app.rs finder_input). The echo is what
+      // says the choice reached the line editor rather than only the list.
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith(${JSON.stringify(chosen)})`,
+        'the chosen command to land on the prompt',
+      );
+      const before = occurrences(await tab.read(), '--------------------');
+      await tab.enter();
+      // A fresh rule means a fresh report: hledger's total rule is twenty dashes whatever
+      // the report holds, so the count only moves when one arrives.
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('--------------------').length - 1 > ${before}`,
+        'the report from the chosen command',
+      );
+    });
+
+    await run('escape closes the finder without running anything', async () => {
+      await tab.focus();
+      await tab.press('r', { code: 'KeyR', keyCode: 82, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.includes('history>')`, 'the finder to open again');
+      await tab.type('zz');
+      // No command in the history holds a z: with a query and nothing under it,
+      // picker_lines draws this line instead of a list.
+      await tab.until(`(${READ_TERMINAL}).text.includes('nothing matches')`, 'the empty list to be said');
+      await tab.press('Escape', { code: 'Escape', keyCode: 27 });
+      await tab.until(`!(${READ_TERMINAL}).text.includes('history>')`, 'the finder to close');
+      const text = await tab.read();
+      // `close_finder` erased from the query line down and redrew the prompt with the line
+      // as it was — empty, because nothing was typed into it before Ctrl+R — so the last
+      // row is the prompt again and none of the finder is left.
+      if (text.includes('nothing matches')) throw new Error('the list is still on screen');
+      if (!text.trimEnd().endsWith('»')) {
+        throw new Error(`the last line is ${JSON.stringify(text.trimEnd().split('\n').pop())}`);
+      }
+    });
+
+    await run('history lists the commands that were run', async () => {
+      await tab.type('history');
+      await tab.enter();
+      // `history_listing` numbers every entry oldest first, two spaces after the number:
+      // `{n}  {command}`, raw command lines rather than what they expanded to. `demo`
+      // opened the sample journal and `settings export` wrote the settings file, both
+      // run earlier this visit, and the listing is waited for rather than the echo of it.
+      await tab.until(`(${READ_TERMINAL}).text.includes('  settings export')`, 'the listing to be drawn');
+      const lines = (await tab.read()).split('\n').map((line) => line.trim());
+      if (!lines.some((line) => /^\d+  demo$/.test(line))) throw new Error('demo is not in the listing');
+      if (!lines.some((line) => /^\d+  settings export$/.test(line))) {
+        throw new Error('settings export is not in the listing');
+      }
+    });
+
     await run('the report and a fresh banner are there after a reload', async () => {
       // `booted` waits for the banners in the stored copy plus this visit's own, so what is
       // left to prove is the order: the report came back from the replay, and this visit's
