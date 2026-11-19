@@ -2821,10 +2821,11 @@ fn replay_scrollback(screen: &Screen) {
 
 /// Keep what is on screen for the next visit, when this one ends.
 ///
-/// One write, on `beforeunload`: the closure is handed to the browser and
-/// deliberately never dropped, the same way the terminal's input handler is
-/// kept (see `Screen::on_data`). An empty capture removes the key, which is
-/// what `clear` asked for.
+/// One write, on the way out: `pagehide` is the event that mobile browsers and
+/// the back/forward cache actually fire, `beforeunload` the one desktops do, and
+/// the closure is handed to the browser for both and deliberately never dropped,
+/// the same way the terminal's input handler is kept (see `Screen::on_data`).
+/// An empty capture removes the key, which is what `clear` asked for.
 fn save_scrollback_on_exit(screen: &Rc<Screen>) {
     let screen = Rc::clone(screen);
     let closure = Closure::<dyn FnMut()>::new(move || {
@@ -2841,6 +2842,7 @@ fn save_scrollback_on_exit(screen: &Rc<Screen>) {
     if let Some(window) = web_sys::window() {
         let _ = window
             .add_event_listener_with_callback("beforeunload", closure.as_ref().unchecked_ref());
+        let _ = window.add_event_listener_with_callback("pagehide", closure.as_ref().unchecked_ref());
     }
     closure.forget();
 }
