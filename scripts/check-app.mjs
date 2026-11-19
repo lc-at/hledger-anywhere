@@ -1452,6 +1452,29 @@ async function main() {
       }
     });
 
+    await run('a second reload does not grow the stored scrollback', async () => {
+      // The byte count either side of one more reload, with no typing in between. What
+      // the first reload left in storage is the whole screen that visit wrote, report
+      // included; what the second one saves is only this visit's own boot — banner,
+      // greeting, prompt, 665 bytes as measured here — because the replay that printed
+      // that first screen back goes to xterm without being captured again
+      // (`Screen::replay` never reaches the capture, so there is no flag to get wrong).
+      const before = (await tab.storedScrollback()).length;
+      await tab.reload();
+      await tab.booted();
+      const after = (await tab.storedScrollback()).length;
+      // So the count falls a long way and must not rise: a capture that took the
+      // replayed text back in would hold that same screen plus this visit's boot
+      // again — growth of the boot's 665 bytes, where the slack allows 256, under half
+      // this redraw: room for the greeting to differ between visits and no room for a
+      // boot to be stored twice.
+      const slack = 256;
+      console.log(`note the stored scrollback held ${before} bytes, then ${after}`);
+      if (after > before + slack) {
+        throw new Error(`the stored scrollback grew from ${before} to ${after} bytes across a reload that wrote nothing new`);
+      }
+    });
+
     await run('clear takes the report off the screen', async () => {
       await tab.clearScreen();
       await tab.until(`!(${READ_TERMINAL}).text.includes('income:salary')`, 'the screen to be cleared');

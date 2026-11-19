@@ -1116,11 +1116,13 @@ pub fn font_size(text: &str) -> Result<u32, String> {
 
 // The pieces live next door, re-exported so `terminal::bold` and the rest are still one
 // namespace to the rest of the app.
+mod capture;
 mod commands;
 mod history;
 mod messages;
 mod text;
 
+pub use capture::*;
 pub use commands::*;
 pub use history::*;
 pub use messages::*;

@@ -11,23 +11,20 @@
 //! (`FitAddon.FitAddon`), which the `wasm_bindgen` macro cannot spell; the buffer
 //! is read the same way for the same reason, xterm's scrollback API is deep and
 //! mostly untyped, and searching it is the app's job, not an addon's.
+//!
+//! What is written, and how much of it is kept for the next visit, is bookkeeping
+//! rather than browser, so it lives in [`Capture`](super::capture::Capture) where
+//! `cargo test` compiles it too. Only the call into xterm is left here.
 
-use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::cell::RefCell;
 
 use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
+use super::Capture;
 use crate::theme::Theme;
-
-/// The most captured text kept for the next visit, in bytes.
-///
-/// `localStorage` is about 5 MB, shared with the settings, the history and the
-/// session's files, and xterm's own scrollback is 50_000 rows: the capture is
-/// the persistent tail of the screen, not an archive of the visit.
-const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 
 #[wasm_bindgen]
 extern "C" {
@@ -71,14 +68,11 @@ pub struct Screen {
     /// The fit addon, if it loaded. Without it the terminal still works; it just
     /// keeps whatever size it was created at.
     fit: Option<JsValue>,
-    /// Everything written, in the chunks it was given, raw ANSI included, so a
-    /// reload can put the screen back with its colours intact.
-    captured: RefCell<VecDeque<String>>,
-    /// The capture's size in bytes, kept so trimming costs only what it drops.
-    captured_bytes: Cell<usize>,
-    /// True while a replay is going in: replayed text must not be captured
-    /// again, or every reload would store the last reload's copy on top.
-    replaying: Cell<bool>,
+    /// Everything written since the mount or the last `clear`, in the chunks it was
+    /// given, so a reload can put the screen back with its colours intact. The
+    /// bookkeeping itself is [`Capture`], which `cargo test` reaches; see
+    /// `terminal::capture`.
+    capture: RefCell<Capture>,
 }
 
 impl Screen {
@@ -101,9 +95,7 @@ impl Screen {
         let screen = Screen {
             terminal,
             fit,
-            captured: RefCell::new(VecDeque::new()),
-            captured_bytes: Cell::new(0),
-            replaying: Cell::new(false),
+            capture: RefCell::new(Capture::default()),
         };
         screen.fit();
         screen.focus();
@@ -113,39 +105,22 @@ impl Screen {
     /// Write text. The caller normalises newlines; see
     /// [`to_terminal_text`](super::to_terminal_text).
     pub fn write(&self, text: &str) {
-        if !self.replaying.get() {
-            self.capture(text);
-        }
-        self.terminal.write(text);
+        self.capture.borrow_mut().push(text);
+        self.write_raw(text);
     }
 
     /// Put the previous visit's scrollback back, without capturing it again.
+    ///
+    /// Replay goes to xterm instead of through [`Screen::write`], and that is the whole
+    /// of the not-capturing: [`Screen::write`] is the one path that pushes, so no reload
+    /// can store the replayed screen on top of itself.
     pub fn replay(&self, text: &str) {
-        self.replaying.set(true);
-        self.write(text);
-        self.replaying.set(false);
+        self.write_raw(text);
     }
 
     /// Everything written since the mount or the last `clear`, in order.
     pub fn captured(&self) -> String {
-        self.captured.borrow_mut().make_contiguous().join("")
-    }
-
-    /// Keep a chunk of what was written, dropping the oldest until it fits.
-    ///
-    /// The trim runs chunk by chunk, so a write costs what it appends and
-    /// nothing else; only crossing the cap walks back over old chunks.
-    fn capture(&self, text: &str) {
-        let mut captured = self.captured.borrow_mut();
-        captured.push_back(text.to_string());
-        let mut bytes = self.captured_bytes.get() + text.len();
-        while bytes > MAX_CAPTURE_BYTES {
-            let Some(oldest) = captured.pop_front() else {
-                break;
-            };
-            bytes -= oldest.len();
-        }
-        self.captured_bytes.set(bytes);
+        self.capture.borrow().as_text()
     }
 
     /// Clear the screen, and the capture with it.
@@ -153,9 +128,17 @@ impl Screen {
     /// `clear` means the scrollback is gone, so the stored copy goes too: the
     /// next save stores only what was written after this.
     pub fn clear(&self) {
-        self.captured.borrow_mut().clear();
-        self.captured_bytes.set(0);
+        self.capture.borrow_mut().clear();
         self.terminal.clear();
+    }
+
+    /// Put text on the terminal itself, leaving the capture alone.
+    ///
+    /// Both writing paths end here: [`Screen::write`] captured first, because what the
+    /// visitor produced should survive the reload; [`Screen::replay`] did not, because
+    /// that text is the capture already.
+    fn write_raw(&self, text: &str) {
+        self.terminal.write(text);
     }
 
     fn focus(&self) {
