@@ -220,7 +220,10 @@ class Tab {
     // rows to be read, and a report scrolled off the top would fail for want of a scrollbar.
     // The app's own commands pile up quickly — a help overview alone is most of a hundred
     // rows — so the height is what the stored copy needs rather than a person's window.
-    await tab.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 3200, deviceScaleFactor: 1, mobile: false });
+    // xterm puts only the rows on screen into the DOM, so this is also the ceiling the
+    // run's output has to fit under: 3200 was 198 rows and the scrollback outgrew it,
+    // taking the first banner out of the read window and failing the reload below.
+    await tab.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 4800, deviceScaleFactor: 1, mobile: false });
     return tab;
   }
 
@@ -752,6 +755,139 @@ async function main() {
       if (!lines.some((line) => /^\d+  settings export$/.test(line))) {
         throw new Error('settings export is not in the listing');
       }
+    });
+
+    // Three surfaces the Keys section of the help promises and no step above drives:
+    // the menu Tab draws, the colours `theme` writes into the page, and the size `font`
+    // gives xterm. Each is asserted by the value the code itself formats — the heading
+    // `completion` prints, the theme's own background as a custom property, the font
+    // size as the rows measure it — rather than by something having changed. The font
+    // goes back to the size it was before the reload section: `booted` counts banners
+    // in a window sized for the default font, and a big one scrolls them out of it.
+
+    await run('tab on an empty line lists the commands', async () => {
+      await tab.focus();
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // `completion` heads the empty-line list with this sentence (terminal/commands.rs)
+      // and `show_options` prints it directly above the columns, so the row under the
+      // heading is the first candidate: `starting_words` opens with `upload`.
+      const heading = 'Commands you can run:';
+      await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(heading)})`, 'the command list to be drawn');
+      // Blank rows are the rest of the tall window, so the empty ones are dropped
+      // before the end of the text is read as the prompt.
+      const lines = (await tab.read()).split('\n').map((line) => line.trim()).filter(Boolean);
+      const at = lines.findIndex((line) => line === heading);
+      if (at < 0) throw new Error('the heading is not a line of its own');
+      if (!lines[at + 1] || !lines[at + 1].startsWith('upload')) {
+        throw new Error(`the row under the heading reads ${JSON.stringify(lines[at + 1])}`);
+      }
+      // The last line is the prompt: an empty token lists the candidates and types
+      // nothing onto the line, so what was there is still all that is there.
+      const prompt = lines.pop();
+      if (!prompt.endsWith('»')) throw new Error(`the last line is ${JSON.stringify(prompt)}`);
+      // Every candidate appears in the rows between the heading and the prompt —
+      // `format_columns` is column-major and lays each row out to the width the
+      // terminal gave it — so the words are matched in the list alone, where an
+      // earlier step's output cannot stand in for them.
+      const listed = lines.slice(at + 1).join(' ');
+      for (const word of ['open', 'demo', 'balance', 'screenreader', 'history']) {
+        if (!new RegExp(`\\b${word}\\b`).test(listed)) {
+          throw new Error(`${word} is not among the commands listed`);
+        }
+      }
+    });
+
+    await run('tab completes the word on the line', async () => {
+      await tab.type('dem');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // One candidate starts with `dem` — `demo` — and `complete` puts it on the line
+      // with a space after it (`format!("{only} ")`, terminal/mod.rs), so the prompt
+      // redraws over the typed token with the whole word where `dem` was.
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('demo')`, 'the completed word on the line');
+      const raw = (await tab.read()).split('\n').filter((line) => line.trim()).pop();
+      // The row holds what `complete` put there: the prompt, the whole word where `dem`
+      // was, and the space that follows it — `format!("{only} ")` — as the row shows it.
+      if (!raw.trimEnd().endsWith('» demo') || !/\bdemo\s+$/.test(raw)) {
+        throw new Error(`the row reads ${JSON.stringify(raw)}`);
+      }
+    });
+
+    await run('an ambiguous prefix opens a menu the tabs step through', async () => {
+      await tab.focus();
+      // Ctrl+U kills the completed `demo ` off the line without running it, which is
+      // what leaves the menu's own line to say something on its own.
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.type('d');
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      // Four commands start with `d` — demo, descriptions, diff, download — and they
+      // agree on nothing past it, so `complete` opens the menu: the first of them,
+      // sorted, goes on the line, and `show_options` lists all four above the prompt
+      // with no heading, because the line itself is what shows the choice.
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('» demo')`, 'the first candidate on the line');
+      const menu = /^demo\s+descriptions\s+diff\s+download$/;
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('\\n').some((line) => ${menu}.test(line.trim()))`,
+        'the menu to be drawn',
+      );
+      // The second Tab steps to the next candidate (`menu_next`); the list is printed
+      // once, so only the line changes.
+      await tab.press('Tab', { code: 'Tab', keyCode: 9 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('» descriptions')`, 'the selection to step on');
+      // Escape is `menu_cancel`: the line goes back to what was typed, and only that.
+      await tab.press('Escape', { code: 'Escape', keyCode: 27 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('» d')`, 'the line to be put back');
+      // And the line is emptied again for the commands below.
+      await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
+    });
+
+    await run('theme paints the page in the theme’s own background', async () => {
+      // `apply_theme` writes the theme's colours onto the document element as custom
+      // properties; `--term-bg` is the background, and it starts at the built-in
+      // theme's #000000 (theme.rs), which is also what the stylesheet declares.
+      const bg = "getComputedStyle(document.documentElement).getPropertyValue('--term-bg').trim()";
+      const before = await tab.eval(bg);
+      if (before !== '#000000') {
+        throw new Error(`--term-bg reads ${JSON.stringify(before)} before the command, not the built-in #000000`);
+      }
+      await tab.type('theme gruvbox');
+      await tab.enter();
+      // `theme_applied` is what a found theme says for itself, and gruvbox's own
+      // background is #282828 (assets/plugins/plugins.json), not merely something
+      // other than what was there.
+      await tab.until(`(${READ_TERMINAL}).text.includes('Theme gruvbox')`, 'the theme to be confirmed');
+      await tab.until(`${bg} === '#282828'`, '--term-bg to read gruvbox’s background');
+    });
+
+    await run('font sets the terminal’s size and puts it back', async () => {
+      await tab.type('font');
+      await tab.enter();
+      // `font` with no argument reports the size it is at, in px (dispatch.rs).
+      const report = /The font is (\d+)px, between/;
+      await tab.until(`(${READ_TERMINAL}).text.match(${report})`, 'the font size to be reported');
+      const original = Number(report.exec(await tab.read())[1]);
+      if (!(original > 0)) throw new Error('no font size in the report');
+      // The size as a browser measures it: xterm injects the option into its own rule
+      // for `.xterm-rows`, so the rows' computed font-size is the number to hold the
+      // command to — and it has to agree with the size the command just reported.
+      const rowsFont = "getComputedStyle(document.querySelector('.xterm-rows')).fontSize";
+      const measures = (size) => `${rowsFont} === '${size}px'`;
+      if (!(await tab.eval(measures(original)))) {
+        throw new Error(`the rows measure ${await tab.eval(rowsFont)}, not the reported ${original}px`);
+      }
+      // `font 30` is inside the 8–32 range `font_size` clamps to, so 30 is what both
+      // the message and the rows have to say.
+      await tab.type('font 30');
+      await tab.enter();
+      await tab.until(`(${READ_TERMINAL}).text.includes('The font is now 30px.')`, 'the new size to be announced');
+      await tab.until(measures('30'), 'the rows to measure 30px');
+      // Back to the size it was before this step, so the reload below counts banners
+      // in the window `booted` was written for: `set_font_size` puts it there and the
+      // rows measure it again.
+      await tab.type(`font ${original}`);
+      await tab.enter();
+      await tab.until(`(${READ_TERMINAL}).text.includes('The font is now ${original}px.')`, 'the original size to be announced');
+      await tab.until(measures(String(original)), 'the rows to measure the original size again');
     });
 
     await run('the report and a fresh banner are there after a reload', async () => {
