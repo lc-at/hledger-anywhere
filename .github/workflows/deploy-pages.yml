@@ -134,6 +134,14 @@ jobs:
       - name: Build
         run: trunk build --release
 
+      # The app itself, in a browser, against the build that was just made: the wasm
+      # booting to its banner, a command typed at the terminal and answered by the
+      # engine, and the scrollback coming back after a reload — and `clear` taking it
+      # away for good. Nothing else reaches that chain, so a broken boot or a lost
+      # scrollback would otherwise ship unnoticed.
+      - name: Check the app in a browser
+        run: node scripts/check-app.mjs
+
       - name: Add Pages metadata
         # Written here rather than committed, so the domain has one home and the
         # dotfile cannot be lost to a copy rule that skips hidden files.

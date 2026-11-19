@@ -350,6 +350,12 @@ node scripts/check-plugin-freshness.mjs
 # interface, three sayings of it, and they have to name the same methods.
 node scripts/check-host-contract.mjs
 
+# The app itself, booting and running in headless Chrome: the banner, a command typed at
+# the terminal, the report it draws, and the scrollback still there after a reload — and
+# gone for good after `clear`. Needs dist/ (`trunk build`), as CI runs it after the build.
+# Chrome as above.
+node scripts/check-app.mjs
+
 # The shipped engine, natively, without a browser.
 node scripts/hledger-wasm.mjs path/to/hledger.journal balance --tree
 
