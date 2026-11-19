@@ -146,6 +146,18 @@ const UPLOAD_JOURNAL = `\
 `;
 
 /**
+ * The journal the drop step throws at the page, and the only place
+ * `expenses:round18drop` and `$84.25` are written — nothing else in this
+ * session, nor anything else in this repository, holds either of them.
+ */
+const DROP_JOURNAL = `\
+; Fixture of scripts/check-app.mjs, for the drop step alone.
+2026-05-05 * Round 18
+    expenses:round18drop             $84.25
+    assets:bank:checking
+`;
+
+/**
  * Write the four files the upload step hands to the picker, and return their paths.
  *
  * One mounts, three cannot, for the three reasons `src/upload.rs` gives for
@@ -1247,6 +1259,166 @@ async function main() {
       await tab.until(
         `(${READ_TERMINAL}).text.trimEnd().endsWith('round17.journal »')`,
         'the prompt to name the uploaded journal',
+      );
+    });
+
+    // Three surfaces the upload chain leaves undriven, after the prompt that ends it
+    // and before the reload that reads the scrollback back: the registry's own
+    // listing, the accessibility tree the `screenreader` command moves, and the
+    // third way a file arrives — dropped on the page rather than picked or opened.
+    // Each is asserted by the words the code itself formats (`plugin_list`,
+    // `set_screen_reader`, `files_arrived`) or by the DOM the code itself creates,
+    // and none of them prints `hledger-anywhere`, so the banner count the reload
+    // below waits for does not move.
+
+    await run('the plugins are listed with their summaries', async () => {
+      await tab.type('plugins');
+      await tab.enter();
+      // `plugin_list` (src/terminal/messages.rs) heads the list with `count` and
+      // the word `installed`, then one row per plugin as `  {name:<14}  {summary}`
+      // — the name padded to fourteen columns, two spaces, the summary — then the
+      // repositories section and the line that says how to read them again. There
+      // is no group column here: the group is the help's (`help_entries`), and
+      // this listing prints name and summary alone.
+      const header = '3 plugins, installed';
+      await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(header)})`, 'the plugin listing to be drawn');
+      const lines = (await tab.read()).split('\n').map((line) => line.trim());
+      const row = (name, summary) => `${name.padEnd(14)}  ${summary}`;
+      const said = [
+        row('chart', "chart hledger's numbers in a window: chart [options] <type> [query]"),
+        // `edit` is one of hledger's own words (HLEDGER_COMMANDS), so `list_plugins`
+        // replaces the manifest's summary with `shadowing_note`'s: the summary, then
+        // how to reach hledger's own instead.
+        row('edit', "edit a loaded journal in a window; hledger edit still runs hledger's own"),
+        row('reconcile', 'check an account against a statement, in a window'),
+      ];
+      for (const line of said) {
+        if (!lines.includes(line)) throw new Error(`${JSON.stringify(line)} is not a line of the listing`);
+      }
+      // The repositories section, from the bundled repository `BUNDLED_REPOSITORIES`
+      // names and the flag `plugin_list` marks it with.
+      if (!lines.includes('Repositories')) throw new Error('the repositories section is not headed');
+      if (!lines.includes('/plugins/plugins.json  bundled')) {
+        throw new Error('the bundled repository is not listed as bundled');
+      }
+      if (!lines.includes('plugins reload reads them again; plugins remove <url> forgets one.')) {
+        throw new Error('the listing does not say how to read the repositories again');
+      }
+    });
+
+    await run('screenreader off takes the accessibility tree away and on brings it back', async () => {
+      const tree = "document.querySelectorAll('.xterm-accessibility-tree > div').length";
+      if (!(await tab.eval(`${tree} > 0`))) throw new Error('the accessibility tree is not there to begin with');
+      await tab.type('screenreader off');
+      await tab.enter();
+      // `set_screen_reader` (src/app.rs) moves xterm's option first — which is what
+      // disposes the AccessibilityManager and takes its rows out of the page — and
+      // only then announces, so by the time the words are on screen the tree is
+      // already gone. Both are waited for: the sentence `set_screen_reader` writes,
+      // and the empty tree that sentence is written over.
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes('The accessibility tree is now off.')`,
+        'the switch off to be announced',
+      );
+      await tab.until(`${tree} === 0`, 'the accessibility tree to be removed');
+      const off = await tab.eval(tree);
+
+      await tab.type('screenreader on');
+      await tab.enter();
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes('The accessibility tree is now on. A screen reader can now read the terminal line by line.')`,
+        'the switch on to be announced',
+      );
+      await tab.until(`${tree} > 0`, 'the accessibility tree to come back');
+      const on = await tab.eval(tree);
+
+      // The run reads the terminal to do any of this, and every step below reads it
+      // too: a mode that took the rows with it would fail here rather than later.
+      const text = await tab.read();
+      if (!text.trimEnd().endsWith('»')) {
+        throw new Error(`the last line reads ${JSON.stringify(text.trimEnd().split('\n').pop())}`);
+      }
+      console.log(`note the accessibility tree held ${on} rows on and ${off} off`);
+    });
+
+    await run('a dropped journal arrives and the page marks the drop', async () => {
+      const before = await tab.read();
+      // Nothing earlier in the session can have written either string: the fixture
+      // above is their only copy, so a report holding them can only have come from
+      // the file the drop handed over.
+      if (occurrences(before, 'expenses:round18drop')) throw new Error('the drop fixture account was already on screen');
+      if (occurrences(before, '$84.25')) throw new Error('the drop fixture amount was already on screen');
+
+      // `drop_target` (src/app.rs) binds ONE listener to `document` for dragover,
+      // dragleave and drop, and decides whether a drag carries files from
+      // `dataTransfer.types` — a DataTransfer holding a file lists `Files`, and a
+      // text selection being moved lists nothing, which is the case the handler
+      // leaves alone. The dragover is what marks the page (`body.drop-target`,
+      // assets/css/app.css), the drop unmarks it and takes the files, so both
+      // events are dispatched on `document`, the element the listener is bound to,
+      // each with its own transfer holding the fixture.
+      const marked = await tab.eval(`(() => {
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([${JSON.stringify(DROP_JOURNAL)}], 'round18.journal'));
+        document.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+        return document.body.classList.contains('drop-target');
+      })()`);
+      if (!marked) throw new Error('the dragover did not mark the page as the drop target');
+
+      const stillMarked = await tab.eval(`(() => {
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([${JSON.stringify(DROP_JOURNAL)}], 'round18.journal'));
+        document.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+        return document.body.classList.contains('drop-target');
+      })()`);
+      if (stillMarked) throw new Error('the drop left the page marked as the drop target');
+
+      // `accept_files` says `Dropped` where the upload step heard `Uploaded`: the
+      // same `files_arrived` lines, the source swapped, one row for the one file
+      // that mounted, and the sentence naming the file `choose_main` picked.
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes('Dropped 1 file.')`,
+        'the dropped file to arrive',
+        15000,
+      );
+      const text = await tab.read();
+      const lines = text.split('\n').map((line) => line.trim());
+      for (const line of ['Dropped 1 file.', 'round18.journal']) {
+        if (!lines.includes(line)) throw new Error(`${JSON.stringify(line)} is not a line on screen`);
+      }
+      if (!text.includes('Reading round18.journal. Type balance for a report, or ? for the rest.')) {
+        throw new Error('the arrival message does not name the file hledger reads');
+      }
+    });
+
+    await run('the engine reads the dropped journal', async () => {
+      const before = await tab.read();
+      // `accept_files` replaced the loaded files and `configure` re-exported
+      // `$LEDGER_FILE`, so a report holding the fixture's account can only have
+      // been drawn from the file the drop handed over.
+      if (occurrences(before, 'expenses:round18drop')) throw new Error('the drop fixture account was already on screen');
+      if (occurrences(before, '$84.25')) throw new Error('the drop fixture amount was already on screen');
+      const rules = occurrences(before, '--------------------');
+      await tab.type('balance --tree');
+      await tab.enter();
+      // A fresh rule means a report was drawn, and the row under it says which
+      // journal it was drawn from.
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('expenses:round18drop').length - 1 > 0`,
+        'the report from the dropped journal',
+      );
+      const after = await tab.read();
+      if (occurrences(after, '--------------------') <= rules) throw new Error('no fresh report rule was drawn');
+      if (!after.includes('$84.25')) throw new Error('the drop fixture amount is not in the report');
+    });
+
+    await run('the prompt names the dropped journal', async () => {
+      // `prompt_for` dims the basename of the file being read, and `announce`
+      // redraws the prompt under every report, so the last row is the dropped
+      // file's name rather than the uploaded one's.
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith('round18.journal »')`,
+        'the prompt to name the dropped journal',
       );
     });
 
