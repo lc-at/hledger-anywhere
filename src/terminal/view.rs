@@ -227,8 +227,8 @@ impl Screen {
     /// The whole scrollback, oldest first, as plain text.
     ///
     /// This is what the search reads, including the lines that have scrolled off
-    /// screen, which is the whole reason to search a terminal. The app decides
-    /// which of these rows are engine output; see `App::output_rows`.
+    /// screen, which is the whole reason to search a terminal. The app keeps its
+    /// own words apart from this so search can skip them; see `App::chatter`.
     pub fn lines(&self) -> Vec<String> {
         let Some(active) = self.buffer() else {
             return Vec::new();

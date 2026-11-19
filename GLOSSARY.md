@@ -11,3 +11,7 @@ _Avoid_: connection, link, handler
 **Host**:
 A plugin's environment as the plugin sees it: its files, the hledger engine, and the settings it may read or write.
 _Avoid_: backend, server, context
+
+**Chatter**:
+The app's own words on screen — echoed commands and messages — kept apart from engine output so search skips them.
+_Avoid_: echo, log
