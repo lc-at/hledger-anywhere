@@ -22,14 +22,50 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { accessSync, constants, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKER = process.env.SW_FILE || join(HERE, '..', 'sw.js');
-const CHROME = process.env.CHROME || `${process.env.HOME}/.agent-browser/browsers/chrome-155.0.8059.84/chrome`;
+
+// Chrome the way the window check finds it: CHROME first, then anything PATH
+// answers to a browser's name, then agent-browser's own install — which is this
+// machine's answer and no other's, so PATH comes before it and nothing pins a
+// version. No Chrome anywhere is said out loud rather than spawned into ENOENT.
+function findChrome() {
+  if (process.env.CHROME) return process.env.CHROME;
+  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome']) {
+    try {
+      const found = execFileSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
+      if (found) return found;
+    } catch {
+      // not this one
+    }
+  }
+  // agent-browser's side of the machine: its wrapper first, because the raw
+  // browser under browsers/ links against libraries only the wrapper sets up.
+  try {
+    const wrapper = join(process.env.HOME || '', '.local', 'bin', 'agent-browser-chrome');
+    accessSync(wrapper, constants.X_OK);
+    return wrapper;
+  } catch {
+    // no wrapper
+  }
+  try {
+    const browsers = readdirSync(join(process.env.HOME || '', '.agent-browser', 'browsers'))
+      .filter((entry) => entry.startsWith('chrome-'))
+      .sort();
+    const latest = browsers[browsers.length - 1];
+    if (latest) return join(process.env.HOME, '.agent-browser', 'browsers', latest, 'chrome');
+  } catch {
+    // no agent-browser either
+  }
+  throw new Error('no Chrome found: put google-chrome or chromium on PATH, or set CHROME=/path/to/chrome');
+}
+const CHROME = findChrome();
 
 let checks = 0;
 let failures = 0;
