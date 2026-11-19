@@ -50,10 +50,21 @@ pub enum Effect {
     /// is. The listing and the wording of applying one belong to the app, which
     /// asks the settings and the registry for them.
     Theme(Option<String>),
-    /// `settings [arguments]`: list what is remembered, or run that subcommand.
-    Settings(Option<String>),
-    /// `plugins [arguments]`: list the installed plugins, or run that subcommand.
-    Plugins(Option<String>),
+    /// `settings`: list what is remembered between visits.
+    SettingsShow,
+    /// `settings export`: write the record out and hand it to the browser.
+    SettingsExport,
+    /// `settings import [path]`: read a settings file from that path, or ask for
+    /// the file when no path was given.
+    SettingsImport(Option<String>),
+    /// `plugins`: list the installed plugins and where they came from.
+    PluginsList,
+    /// `plugins add <url>`: fetch that repository and take the plugins it offers.
+    PluginsAdd(String),
+    /// `plugins remove <url>`: forget that repository.
+    PluginsRemove(String),
+    /// `plugins reload`: read every remembered repository again.
+    PluginsReload,
     /// `screenreader on|off`: the accessibility tree's new state.
     ScreenReader(bool),
     /// `font <size>`: the size to set, already clamped to the usable range.
@@ -125,6 +136,10 @@ pub fn decide(view: &View<'_>, line: &str) -> Vec<Effect> {
         Command::Hledger(_) => {
             let (expanded, used) = terminal::expand_alias(line, view.aliases);
             if let Some((name, expansion)) = used {
+                // Say is never the last effect of a decision: `say` redraws no
+                // prompt while `announce` does, so a decision that ended in one
+                // would leave the terminal without a prompt to type into. The
+                // expanded line is read below and always runs after this note.
                 effects.push(Effect::Say(terminal::alias_note(&name, &expansion)));
             }
             expanded
@@ -191,13 +206,42 @@ pub fn decide(view: &View<'_>, line: &str) -> Vec<Effect> {
                 effects.push(Effect::Theme(Some(name)));
             }
         }
-        Command::Settings(None) => effects.push(Effect::Settings(None)),
+        Command::Settings(None) => effects.push(Effect::SettingsShow),
         Command::Settings(Some(arguments)) => {
-            effects.push(Effect::Settings(Some(arguments.to_string())))
+            let (head, rest) = terminal::split_first_token(arguments);
+            match head.as_str() {
+                "export" => effects.push(Effect::SettingsExport),
+                "import" => {
+                    // With no argument, ask for the file: a settings file from
+                    // another instance is somewhere on disk, and requiring an
+                    // upload first is a step that exists only because nothing
+                    // opened the picker.
+                    if rest.trim().is_empty() {
+                        effects.push(Effect::SettingsImport(None));
+                    } else if let Some(path) = one(&mut effects, &rest) {
+                        effects.push(Effect::SettingsImport(Some(path)));
+                    }
+                }
+                other => effects.push(Effect::Print(terminal::settings_usage(other))),
+            }
         }
-        Command::Plugins(None) => effects.push(Effect::Plugins(None)),
+        Command::Plugins(None) => effects.push(Effect::PluginsList),
         Command::Plugins(Some(arguments)) => {
-            effects.push(Effect::Plugins(Some(arguments.to_string())))
+            let (head, rest) = terminal::split_first_token(arguments);
+            match head.as_str() {
+                "add" => {
+                    if let Some(url) = one(&mut effects, &rest) {
+                        effects.push(Effect::PluginsAdd(url));
+                    }
+                }
+                "remove" => {
+                    if let Some(url) = one(&mut effects, &rest) {
+                        effects.push(Effect::PluginsRemove(url));
+                    }
+                }
+                "reload" => effects.push(Effect::PluginsReload),
+                other => effects.push(Effect::Print(terminal::plugin_usage(other))),
+            }
         }
         Command::ScreenReader(Some(wanted)) => {
             if let Some(wanted) = one(&mut effects, wanted) {
@@ -605,28 +649,96 @@ mod tests {
 
     #[test]
     fn settings_without_arguments_lists_what_is_remembered() {
-        assert_eq!(decide("settings"), [Effect::Settings(None)]);
+        assert_eq!(decide("settings"), [Effect::SettingsShow]);
     }
 
     #[test]
-    fn settings_with_an_argument_runs_that_subcommand() {
+    fn settings_export_writes_the_record_out() {
+        assert_eq!(decide("settings export"), [Effect::SettingsExport]);
+        // The subcommand is read; anything after it is not part of its meaning.
+        assert_eq!(decide("settings export anywhere.json"), [Effect::SettingsExport]);
+    }
+
+    #[test]
+    fn settings_import_without_a_path_asks_for_the_file() {
+        assert_eq!(decide("settings import"), [Effect::SettingsImport(None)]);
+    }
+
+    #[test]
+    fn settings_import_with_a_path_reads_that_file() {
         assert_eq!(
-            decide("settings export"),
-            [Effect::Settings(Some("export".to_string()))]
+            decide("settings import \"my settings.json\""),
+            [Effect::SettingsImport(Some("my settings.json".to_string()))]
         );
+    }
+
+    #[test]
+    fn settings_import_with_two_arguments_is_refused() {
+        let effects = decide("settings import a b");
+        let [Effect::Print(text)] = effects.as_slice() else {
+            panic!("not one print: {effects:?}");
+        };
+        assert!(text.contains("more than one argument"), "{text}");
+    }
+
+    #[test]
+    fn settings_with_a_word_that_is_not_a_subcommand_is_refused() {
+        let effects = decide("settings nonsense");
+        let [Effect::Print(text)] = effects.as_slice() else {
+            panic!("not one print: {effects:?}");
+        };
+        assert!(text.contains("is not a settings command"), "{text}");
+        assert_eq!(text, &terminal::settings_usage("nonsense"));
     }
 
     #[test]
     fn plugins_without_arguments_lists_them() {
-        assert_eq!(decide("plugins"), [Effect::Plugins(None)]);
+        assert_eq!(decide("plugins"), [Effect::PluginsList]);
     }
 
     #[test]
-    fn plugins_with_an_argument_runs_that_subcommand() {
+    fn plugins_add_with_a_url_reads_that_repository() {
         assert_eq!(
             decide("plugins add /plugins/charts.json"),
-            [Effect::Plugins(Some("add /plugins/charts.json".to_string()))]
+            [Effect::PluginsAdd("/plugins/charts.json".to_string())]
         );
+    }
+
+    #[test]
+    fn plugins_add_without_a_url_does_nothing() {
+        assert_eq!(decide("plugins add"), []);
+    }
+
+    #[test]
+    fn plugins_add_with_two_arguments_is_refused() {
+        let effects = decide("plugins add a b");
+        let [Effect::Print(text)] = effects.as_slice() else {
+            panic!("not one print: {effects:?}");
+        };
+        assert!(text.contains("more than one argument"), "{text}");
+    }
+
+    #[test]
+    fn plugins_remove_forgets_the_repository() {
+        assert_eq!(
+            decide("plugins remove /plugins/charts.json"),
+            [Effect::PluginsRemove("/plugins/charts.json".to_string())]
+        );
+    }
+
+    #[test]
+    fn plugins_reload_reads_every_repository_again() {
+        assert_eq!(decide("plugins reload"), [Effect::PluginsReload]);
+    }
+
+    #[test]
+    fn plugins_with_a_word_that_is_not_a_subcommand_is_refused() {
+        let effects = decide("plugins nonsense");
+        let [Effect::Print(text)] = effects.as_slice() else {
+            panic!("not one print: {effects:?}");
+        };
+        assert!(text.contains("is not a plugins command"), "{text}");
+        assert_eq!(text, &terminal::plugin_usage("nonsense"));
     }
 
     #[test]
@@ -828,5 +940,52 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// The invariant written where [`Effect::Say`] is produced: `say` redraws no
+    /// prompt and `announce` does, so a decision whose last effect was a say would
+    /// leave the terminal without a prompt. Every line the app can be given is
+    /// decided here, so the property is checked over the lines that reach it,
+    /// aliases first among them, since they are what says.
+    #[test]
+    fn a_decision_that_says_something_runs_an_effect_afterwards() {
+        let plain = TestView::new();
+        let mut aliased = TestView::new().with_plugin();
+        aliased.aliases.push(("bal".to_string(), "balance".to_string()));
+        aliased.aliases.push(("c".to_string(), "chart".to_string()));
+        let lines = [
+            "bal",
+            "bal --tree",
+            "c",
+            "c --daily",
+            "balance",
+            "settings",
+            "settings export",
+            "settings import",
+            "settings nonsense",
+            "plugins",
+            "plugins reload",
+            "plugins nonsense",
+            "upload",
+            "clear",
+            "?",
+            "open?",
+            "font 18",
+            "journal",
+        ];
+        let mut said = 0;
+        for view in [&plain, &aliased] {
+            for line in lines {
+                let effects = view.decide(line);
+                if effects.iter().any(|effect| matches!(effect, Effect::Say(_))) {
+                    said += 1;
+                    assert!(
+                        !matches!(effects.last(), Some(Effect::Say(_))),
+                        "{line} ends in a say: {effects:?}"
+                    );
+                }
+            }
+        }
+        assert!(said > 0, "no line said anything, so nothing was checked");
     }
 }

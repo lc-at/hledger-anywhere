@@ -938,10 +938,13 @@ impl App {
                 save_history(self.editor.borrow().history());
             }
             Effect::Theme(name) => self.select_theme(name.as_deref()),
-            Effect::Settings(None) => self.list_settings(),
-            Effect::Settings(Some(arguments)) => self.settings_command(&arguments),
-            Effect::Plugins(None) => self.list_plugins(),
-            Effect::Plugins(Some(arguments)) => self.plugins_command(&arguments),
+            Effect::SettingsShow => self.list_settings(),
+            Effect::SettingsExport => self.export_settings(),
+            Effect::SettingsImport(path) => self.import_settings(path),
+            Effect::PluginsList => self.list_plugins(),
+            Effect::PluginsAdd(url) => self.add_repository(url),
+            Effect::PluginsRemove(url) => self.forget_repository(url),
+            Effect::PluginsReload => self.reload_plugins(),
             Effect::ScreenReader(on) => self.set_screen_reader(on),
             Effect::FontSize(size) => self.set_font_size(size),
             Effect::Search(term) => self.search(&term),
@@ -954,22 +957,6 @@ impl App {
     }
 
     // -- commands -----------------------------------------------------------
-
-    /// One argument with its quoting removed, or a complaint about why not.
-    ///
-    /// The app's own commands take a single path, address or number. A path can
-    /// have a space in it, an uploaded file is named whatever it was named, so
-    /// `journal "my file.journal"` has to mean that file, and `journal a b` has to
-    /// say so rather than quietly reading `a`.
-    fn single(self: &Rc<App>, rest: &str) -> Option<String> {
-        match terminal::single_argument(rest) {
-            Ok(argument) => argument,
-            Err(complaint) => {
-                self.announce(&complaint);
-                None
-            }
-        }
-    }
 
     /// Files arrive three ways, picked, dropped, read from an account, and this
     /// is the one place that mounts them, so the states it sets (files, main
@@ -1787,100 +1774,89 @@ impl App {
         self.prompt();
     }
 
-    /// `plugins add|remove|reload`.
+    /// `plugins add <url>`: fetch that repository and take what it offers.
     ///
     /// Adding is the only one that runs anything, and it runs nothing from the
     /// repository: the manifest is read and its plugins are registered. Their module is
     /// imported the first time one of their commands is used.
-    fn plugins_command(self: &Rc<App>, arguments: &str) {
-        let (head, rest) = terminal::split_first_token(arguments);
-        match head.as_str() {
-            "add" => {
-                let Some(url) = self.single(&rest) else {
-                    return;
-                };
-                // Asked of the registry rather than the settings: a bundled repository is
-                // installed without ever being in them.
-                if self.registry.borrow().repositories().contains(&url.as_str()) {
-                    return self.announce(&format!(
-                        "{} is already installed. {} reads it again.",
-                        terminal::bold(&url),
-                        terminal::bold("plugins reload")
+    fn add_repository(self: &Rc<App>, url: String) {
+        // Asked of the registry rather than the settings: a bundled repository is
+        // installed without ever being in them.
+        if self.registry.borrow().repositories().contains(&url.as_str()) {
+            return self.announce(&format!(
+                "{} is already installed. {} reads it again.",
+                terminal::bold(&url),
+                terminal::bold("plugins reload")
+            ));
+        }
+        self.busy.set(true);
+        self.title(&format!("reading {url}"));
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            match app.install_repository(&url).await {
+                Ok(installed) => {
+                    update_settings(|settings| {
+                        if !settings.has_repository(&url) {
+                            settings.repositories.push(url.clone());
+                        }
+                    });
+                    app.say(&terminal::plugin_installed(
+                        &url,
+                        &installed.registered,
+                        &installed.refused,
                     ));
                 }
-                self.busy.set(true);
-                self.title(&format!("reading {url}"));
-                let app = Rc::clone(self);
-                spawn_local(async move {
-                    match app.install_repository(&url).await {
-                        Ok(installed) => {
-                            update_settings(|settings| {
-                                if !settings.has_repository(&url) {
-                                    settings.repositories.push(url.clone());
-                                }
-                            });
-                            app.say(&terminal::plugin_installed(
-                                &url,
-                                &installed.registered,
-                                &installed.refused,
-                            ));
-                        }
-                        Err(error) => {
-                            app.announce(&format!("{}: {error}", terminal::bold(&url)))
-                        }
-                    }
-                    app.settle();
-                });
-            }
-            "remove" => {
-                let Some(url) = self.single(&rest) else {
-                    return;
-                };
-                let removed = self.registry.borrow_mut().remove_repository(&url);
-                if removed > 0 {
-                    update_settings(|settings| {
-                        settings.repositories.retain(|known| known != &url);
-                    });
+                Err(error) => {
+                    app.announce(&format!("{}: {error}", terminal::bold(&url)))
                 }
-                self.say(&terminal::plugin_removed(&url, removed));
-                // A bundled repository comes back, and saying so beats leaving the user to
-                // discover it on the next visit.
-                if BUNDLED_REPOSITORIES.contains(&url.as_str()) {
-                    self.say(&terminal::bundled_returns(&url));
-                }
-                self.prompt();
             }
-            "reload" => {
-                let repositories = settings(|settings| settings.repositories.clone());
-                {
-                    let mut registry = self.registry.borrow_mut();
-                    for url in &repositories {
-                        registry.remove_repository(url);
-                    }
-                }
-                self.busy.set(true);
-                self.title("reading plugins");
-                let app = Rc::clone(self);
-                spawn_local(async move {
-                    // Our own record of imported modules is forgotten, so a plugin added
-                    // since is imported when it runs. The browser keeps modules by URL for
-                    // the life of the document, so code already imported does not change
-                    // here: the loader says so when a plugin turns out to be one of those.
-                    let _ = plugins::loader::reset().await;
-                    for url in &repositories {
-                        if let Err(error) = app.install_repository(url).await {
-                            app.announce(&format!("{}: {error}", terminal::bold(url)));
-                        }
-                    }
-                    app.title("");
-                    app.settle();
-                });
-            }
-            other => {
-                self.say(&terminal::plugin_usage(other));
-                self.prompt();
+            app.settle();
+        });
+    }
+
+    /// `plugins remove <url>`: forget that repository.
+    fn forget_repository(self: &Rc<App>, url: String) {
+        let removed = self.registry.borrow_mut().remove_repository(&url);
+        if removed > 0 {
+            update_settings(|settings| {
+                settings.repositories.retain(|known| known != &url);
+            });
+        }
+        self.say(&terminal::plugin_removed(&url, removed));
+        // A bundled repository comes back, and saying so beats leaving the user to
+        // discover it on the next visit.
+        if BUNDLED_REPOSITORIES.contains(&url.as_str()) {
+            self.say(&terminal::bundled_returns(&url));
+        }
+        self.prompt();
+    }
+
+    /// `plugins reload`: read every remembered repository again.
+    fn reload_plugins(self: &Rc<App>) {
+        let repositories = settings(|settings| settings.repositories.clone());
+        {
+            let mut registry = self.registry.borrow_mut();
+            for url in &repositories {
+                registry.remove_repository(url);
             }
         }
+        self.busy.set(true);
+        self.title("reading plugins");
+        let app = Rc::clone(self);
+        spawn_local(async move {
+            // Our own record of imported modules is forgotten, so a plugin added
+            // since is imported when it runs. The browser keeps modules by URL for
+            // the life of the document, so code already imported does not change
+            // here: the loader says so when a plugin turns out to be one of those.
+            let _ = plugins::loader::reset().await;
+            for url in &repositories {
+                if let Err(error) = app.install_repository(url).await {
+                    app.announce(&format!("{}: {error}", terminal::bold(url)));
+                }
+            }
+            app.title("");
+            app.settle();
+        });
     }
 
     /// `settings`: what is remembered, and how to carry it somewhere else.
@@ -1919,28 +1895,6 @@ impl App {
         ];
         self.say(&terminal::settings_list(&rows));
         self.prompt();
-    }
-
-    /// `settings export|import`.
-    fn settings_command(self: &Rc<App>, arguments: &str) {
-        let (head, rest) = terminal::split_first_token(arguments);
-        match head.as_str() {
-            "export" => self.export_settings(),
-            "import" => {
-                // With no argument, ask for the file: a settings file from another instance
-                // is somewhere on disk, and requiring an upload first is a step that exists
-                // only because nothing opened the picker.
-                if rest.trim().is_empty() {
-                    self.import_settings(None);
-                } else if let Some(path) = self.single(&rest) {
-                    self.import_settings(Some(path));
-                }
-            }
-            other => {
-                self.say(&terminal::settings_usage(other));
-                self.prompt();
-            }
-        }
     }
 
     /// `settings export`: write the record out and hand it to the browser.
