@@ -22,7 +22,7 @@ import { beside, bridge, colorsOf, shell } from './window-kit.js';
 export default {
   async run(args, host) {
     const asked = String(args == null ? '' : args).trim();
-    const files = typeof host.files === 'function' ? host.files() : [];
+    const files = host.files();
     const chosen = asked
       ? files.find((file) => file.path === asked)
       : (files.find((file) => file.main) || files[0]);
@@ -46,7 +46,7 @@ export default {
     }
     view.write(shell(colors, chosen.path, 'Opening…'));
 
-    const contents = typeof host.read === 'function' ? host.read(chosen.path) : null;
+    const contents = host.read(chosen.path);
     if (contents == null) {
       view.write(shell(colors, chosen.path, 'The file could not be read.'));
       host.say(`${host.name}: ${chosen.path} could not be read.`);

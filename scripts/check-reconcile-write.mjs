@@ -26,6 +26,7 @@ import { promisify } from 'node:util';
 
 import reconcile from '../assets/plugins/reconcile.js';
 import { moveAccount, neighbour, ordered, parsePosting, readPrint, snapshot, summarize, textOf } from '../assets/plugins/reconcile-data.js';
+import { makeHost } from './host.mjs';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
 const run = promisify(execFile);
@@ -84,33 +85,36 @@ function realHost({ dir, file, files: many = null, writable = true }) {
   };
   for (const name of names) load(name);
   const shadow = mkdtempSync(join(tmpdir(), 'hla-write-engine-'));
-  const host = {
+  // The host itself is the shared one in scripts/host.mjs; what is below is this check's
+  // world: files on disk with their stamps, and the shipped engine. The counters and the
+  // arming live on the host, because that is what a check reaches for.
+  const host = makeHost({
     name: 'reconcile',
     colors: () => ({ background: '#000', foreground: '#fff', dim: '#888', accent: '#f90', softer: '#111', soft: '#222' }),
     say: (text) => log.said.push(text),
-    setting: () => null,
-    remember: () => {},
-    files: () => names.map((name, at) => ({ path: name, writable, main: at === 0 })),
     window: () => ({ write: (html) => { host.page = html; }, close() {} }),
-    // Synchronous, like the app's: the plan is worked out in one turn, so `read` has to
-    // answer with the text itself rather than a promise of it.
-    read(name) {
-      return names.includes(name) ? memory[name] : null;
-    },
-    async save(name, text) {
-      if (!names.includes(name)) return { error: `${name} is not this journal` };
-      if (stat(name) !== stats[name]) return { error: `${name} changed on disk since it was opened; run \`open\` again before saving` };
-      await writeFile(join(dir, name), text);
-      load(name);
-      log.saved.push(name);
-      if (host.failNextCheck) host.armed = true;
-      return { ok: true };
-    },
-    async refresh() {
-      host.refreshes += 1;
-      const changed = names.filter((name) => { try { return stat(name) !== stats[name]; } catch { return false; } });
-      for (const name of changed) load(name);
-      return { changed, missing: [] };
+    backend: {
+      files: () => names.map((name, at) => ({ path: name, writable, main: at === 0 })),
+      // Synchronous, like the app's: the plan is worked out in one turn, so `read` has to
+      // answer with the text itself rather than a promise of it.
+      read(name) {
+        return names.includes(name) ? memory[name] : null;
+      },
+      async save(name, text) {
+        if (!names.includes(name)) return { error: `${name} is not this journal` };
+        if (stat(name) !== stats[name]) return { error: `${name} changed on disk since it was opened; run \`open\` again before saving` };
+        await writeFile(join(dir, name), text);
+        load(name);
+        log.saved.push(name);
+        if (host.failNextCheck) host.armed = true;
+        return { ok: true };
+      },
+      async refresh() {
+        host.refreshes += 1;
+        const changed = names.filter((name) => { try { return stat(name) !== stats[name]; } catch { return false; } });
+        for (const name of changed) load(name);
+        return { changed, missing: [] };
+      },
     },
     async hledger(command) {
       // A check that has to fail after a write, because only that exercises putting the files
@@ -128,7 +132,7 @@ function realHost({ dir, file, files: many = null, writable = true }) {
       host.runs += 1;
       return engine(join(shadow, names[0]), command);
     },
-  };
+  });
   host.failNextCheck = false;
   host.armed = false;
   host.runs = 0;

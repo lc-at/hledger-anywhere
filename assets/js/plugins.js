@@ -100,9 +100,7 @@
         stale.delete(url);
         // The import above returned what this page already had. Saying nothing would leave a
         // reload looking like it had brought in new code when it could not have.
-        if (host && typeof host.say === 'function') {
-          host.say(`${name}: that plugin was already loaded in this page, so it still runs the code it was loaded with. Reload the page to run new plugin code.`);
-        }
+        host.say(`${name}: that plugin was already loaded in this page, so it still runs the code it was loaded with. Reload the page to run new plugin code.`);
       }
       const plugin = module && module.default ? module.default : module;
       if (!plugin || typeof plugin.run !== 'function') {

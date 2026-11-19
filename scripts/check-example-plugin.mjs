@@ -50,6 +50,7 @@ import Reconcile, { fileFor, findQueries, fingerprint, parseLine, rankCandidates
 import { assertionText, carry, checkpoints, snapshot, fillCommodity, fillCommodityIn, markConflicts, moveAccount, neighbour, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, textOf, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
+import { makeHost } from './host.mjs';
 
 import { page as editPage } from '../assets/plugins/edit-window.js';
 import { alsoLine } from '../assets/plugins/chart-window.js';
@@ -405,30 +406,38 @@ check('an amount is written as a person writes it', format(money('-$1234.56')) =
  * A host that records what the plugin did, in the order it did it.
  *
  * The plugin writes a page and registers a bridge; both are per run, and the bridge is what a
- * window asks through, so a stub keeps them.
+ * window asks through, so a stub keeps them. The rest is the shared host: what varies is the
+ * query's answer, the files it is drawn from, and where a window's html goes. A journal is
+ * loaded, which is what every chart below is drawn from.
  */
-function stub(overrides = {}) {
+function stub({ hledger = async () => MONTHLY_CSV, files = [{ path: 'journal.journal', writable: true, main: true }],
+  colors = () => COLORS, window: open } = {}) {
   const log = { said: [], pages: [], asked: [], events: [] };
-  const host = {
+  const host = makeHost({
     name: 'chart',
-    colors: () => COLORS,
-    setting: () => null,
-    // A journal is loaded, which is what every chart below is drawn from.
-    files: () => [{ path: 'journal.journal', writable: true, main: true }],
+    colors,
     say: (text) => log.said.push(text),
+    setting: () => null,
     remember: (key, value) => log.said.push(`remember ${key}=${value}`),
-    window: (title) => {
+    window: open || ((title) => {
       log.events.push('window');
       log.title = title;
       return { write: (html) => log.pages.push(html), close() {} };
+    }),
+    backend: {
+      files: () => files,
+      // Chart asks for the list and hledger for the numbers, and writes nothing: a file's
+      // text is not a case this host has.
+      read: () => null,
+      save: async (path) => ({ error: `${path} is not a file chart writes` }),
+      refresh: async () => ({ changed: [], missing: [] }),
     },
-    hledger: async (command) => {
+    hledger: (command) => {
       log.events.push('hledger');
       log.asked.push(command);
-      return MONTHLY_CSV;
+      return hledger(command);
     },
-    ...overrides,
-  };
+  });
   return { host, log, last: () => log.pages[log.pages.length - 1] || '' };
 }
 
@@ -436,7 +445,7 @@ function stub(overrides = {}) {
   {
     // With nothing loaded the window is not opened at all: a window whose only content is
     // hledger's complaint about there being no file is worse than the complaint.
-    const { host, log } = stub({ files: () => [] });
+    const { host, log } = stub({ files: [] });
     await Chart.run('line expenses', host);
     check('with nothing loaded, chart says so in the terminal and opens no window',
       log.said[0] === 'chart: nothing is loaded. Run open or upload first.' && log.events.length === 0,
@@ -557,9 +566,11 @@ function stub(overrides = {}) {
 }
 
 {
-  const { host, last } = stub({ colors: undefined });
+  // The theme is read on each call rather than baked in, so a window opened now is drawn in
+  // the terminal as it is now; here the host answers the app's built-in theme.
+  const { host, last } = stub({ colors: () => FALLBACK_COLORS });
   await Chart.run('line expenses', host);
-  check('a host without colors() still gets a readable page', last().includes('#000000') && last().includes('<svg class="chart"'), '');
+  check('a host on the built-in theme still gets a readable page', last().includes('#000000') && last().includes('<svg class="chart"'), '');
 }
 
 // ------------------------------------------------------------------ a real journal's shapes
@@ -1272,7 +1283,15 @@ const TREE_MONTHS = [
   await import(new URL('../assets/js/plugins.js', import.meta.url).href);
   const loader = globalThis.window.hledgerPlugins;
   const said = [];
-  const host = { say: (text) => said.push(text), colors: () => ({}), files: () => [], setting: () => null, remember: () => {}, window: () => ({ write() {}, close() {} }) };
+  const host = makeHost({
+    name: 'demo',
+    colors: () => ({}),
+    say: (text) => said.push(text),
+    window: () => ({ write() {}, close() {} }),
+    // Nothing is loaded and nothing can be: the plugin below only says something.
+    backend: { files: () => [], read: () => null, save: async (path) => ({ error: `${path} is not loaded` }), refresh: async () => ({ changed: [], missing: [] }) },
+    hledger: async () => { throw new Error('the demo plugin does not ask hledger'); },
+  });
   check('the plugin loader is loadable outside a browser', Boolean(loader && loader.run && loader.reset), String(typeof loader));
   if (loader) {
     await loader.run(manifestUrl, './demo-plugin.js', 'demo', '', host);
@@ -1308,7 +1327,7 @@ const TREE_MONTHS = [
  * stood in for by what the fixture prints, plus an assertion check done the way hledger does it,
  * over every posting up to the assertion's date.
  */
-function reconcileHost({ writable = true, failBefore = false, failSave = false, settings = {},
+function reconcileHost({ writable = true, failSave = false, settings = {},
   journal = RECONCILE_JOURNAL, print = RECONCILE_PRINT,
   accounts = 'Assets:Bank:Checking\nAssets:Savings\nEquity:Opening\nExpenses:Fees\nExpenses:Food\nIncome:Salary\n' } = {}) {
   const log = { said: [], pages: [], saved: [], asked: [], remembered: {}, outside: [] };
@@ -1319,22 +1338,24 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false, 
     const asserted = [...text.matchAll(/^(\d{4}-\d{2}-\d{2}) \* Reconciled with statement\n {4}Assets:Bank:Checking {4}0\.00 IDR = ([\d.]+) IDR$/gm)];
     return asserted.every(([, date, amount]) => Math.round(Number(amount) * 100) === balance(date));
   };
-  const host = {
+  const host = makeHost({
     name: 'reconcile',
     colors: () => COLORS,
     say: (text) => log.said.push(text),
-    files: () => [{ path: 'fixture.journal', writable, main: true }],
     setting: (key) => (key in log.remembered ? log.remembered[key] : settings[key] ?? null),
     remember: (key, value) => { log.remembered[key] = value; },
-    read: (path) => files[path] ?? null,
-    // What another program changed since the last look: a check puts a path here.
-    refresh: async () => ({ changed: log.outside.splice(0), missing: [] }),
     window: () => ({ write: (html) => log.pages.push(html), close() {} }),
-    async save(path, text) {
-      if (failSave) return { error: 'the file changed on disk' };
-      files[path] = text;
-      log.saved.push(path);
-      return { ok: true };
+    backend: {
+      files: () => [{ path: 'fixture.journal', writable, main: true }],
+      read: (path) => files[path] ?? null,
+      async save(path, text) {
+        if (failSave) return { error: 'the file changed on disk' };
+        files[path] = text;
+        log.saved.push(path);
+        return { ok: true };
+      },
+      // What another program changed since the last look: a check puts a path here.
+      refresh: async () => ({ changed: log.outside.splice(0), missing: [] }),
     },
     async hledger(command) {
       log.asked.push(command);
@@ -1356,10 +1377,9 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false, 
           }),
         })));
       }
-      void failBefore;
       throw new Error(`unexpected ${command}`);
     },
-  };
+  });
   return { host, log, files };
 }
 
@@ -1510,18 +1530,22 @@ function reconcileHost({ writable = true, failBefore = false, failSave = false, 
 /** A host with loaded files, recording what the edit plugin did with them. */
 function editHost({ files, contents = {}, save, window: open } = {}) {
   const log = { said: [], pages: [], saved: [] };
-  const host = {
+  const host = makeHost({
     name: 'edit',
     colors: () => COLORS,
     say: (text) => log.said.push(text),
-    files: () => files,
-    read: (path) => (path in contents ? contents[path] : null),
-    save: save || (async (path, text) => { log.saved.push([path, text]); return { ok: true }; }),
     window: open || ((title) => {
       log.title = title;
       return { write: (html) => log.pages.push(html), close() {} };
     }),
-  };
+    backend: {
+      files: () => files,
+      read: (path) => (path in contents ? contents[path] : null),
+      save: save || (async (path, text) => { log.saved.push([path, text]); return { ok: true }; }),
+      refresh: async () => ({ changed: [], missing: [] }),
+    },
+    hledger: async () => { throw new Error('the edit plugin does not ask hledger'); },
+  });
   return { host, log, last: () => log.pages[log.pages.length - 1] || '' };
 }
 
@@ -1605,7 +1629,7 @@ check('light and dark are told apart by the same measure as the app',
 check('a colour mixed into another goes the right way and the right distance',
   mix('#000000', '#ffffff', 50) === '#808080' && mix('#000000', '#ffffff', 0) === '#000000' && mix('#102030', '#102030', 30) === '#102030',
   mix('#000000', '#ffffff', 50));
-check('a host without colors gets the built-in theme', colorsOf({}) === FALLBACK_COLORS && colorsOf({ colors: () => COLORS }) === COLORS, '');
+check('the colours a window is drawn in are the host\'s, read on each call', colorsOf({ colors: () => COLORS }) === COLORS, '');
 check('the waiting page is the theme, with its title escaped',
   shell(COLORS, '<x>', 'Reading hledger…').includes('&lt;x&gt;') && shell(COLORS, 't', 'm').includes(COLORS.background), '');
 check('a file beside the plugins is an absolute URL', /^file:\/\/.*\/assets\/plugins\/vendor\/d3\/d3\.min\.js$/.test(beside('vendor/d3/d3.min.js')), beside('vendor/d3/d3.min.js'));

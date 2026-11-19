@@ -96,7 +96,7 @@ function accountQuery(account, inclusive) {
  * written down. What is then cut out of that text is `textOf`'s business, in reconcile-data.js.
  */
 function fileText(host, file, cache) {
-  if (!cache.has(file)) cache.set(file, typeof host.read === 'function' ? host.read(file) : null);
+  if (!cache.has(file)) cache.set(file, host.read(file));
   return cache.get(file);
 }
 
@@ -114,7 +114,7 @@ async function readAccount(host, account, commodity, inclusive = null) {
   const query = accountQuery(account, subaccounts);
   const json = await host.hledger(`print ${quote(query)} -O json`);
   const data = readPrint(JSON.parse(json || '[]'), account, { inclusive: subaccounts, wanted: commodity });
-  const paths = (typeof host.files === 'function' ? host.files() : []).map((file) => file.path);
+  const paths = host.files().map((file) => file.path);
   if (data) {
     // Each row carries its transaction's text, as written, for the window's editor to start
     // from and for a change to find its transaction by.
@@ -130,7 +130,7 @@ async function readAccount(host, account, commodity, inclusive = null) {
 
 /** Whether the files the rows are in can be written. */
 function writableFiles(host, data, extra = []) {
-  const files = typeof host.files === 'function' ? host.files() : [];
+  const files = host.files();
   const used = new Set([...data.rows.map((row) => row.where.file), ...extra]);
   const main = (files.find((file) => file.main) || files[0] || {}).path;
   if (!used.size && main) used.add(main);
@@ -281,7 +281,7 @@ export default {
       return;
     }
     let { data } = read;
-    const remembered = typeof host.setting === 'function' ? host.setting('markStyle') : null;
+    const remembered = host.setting('markStyle');
     const markStyle = remembered === 'transaction' || remembered === 'posting' ? remembered : inferStyle(data.rows);
     const reread = async () => (await readAccount(host, account, data.commodity, data.inclusive)).data || { ...data, rows: [], start: data.start };
 
@@ -303,7 +303,6 @@ export default {
      * be read, which is the outside edit's problem and not something to write on top of.
      */
     const sync = async () => {
-      if (typeof host.refresh !== 'function') return { changed: false };
       const report = (await host.refresh()) || {};
       const changed = (report.changed || []).length > 0;
       if (changed) data = await reread();
@@ -432,7 +431,7 @@ export default {
           // The file itself, as edited in the window: written only over the text the editor
           // started from, so an edit made in another program since is never written over.
           const path = String(request.path || '');
-          const now = typeof host.read === 'function' ? host.read(path) : null;
+          const now = host.read(path);
           if (now == null) return { refused: `${path} cannot be read here, so it cannot be written.` };
           if (now !== request.before) return { refused: `${path} changed outside this window since this editor opened, so it was not written. What you typed is still here; Reload from disk takes the file as it is now.`, conflict: true };
           // A bare number typed into one of this account's transactions is its commodity, here
@@ -467,7 +466,7 @@ export default {
       const tell = (stage) => { try { if (typeof progress === 'function') progress(stage); } catch { /* a closed window */ } };
       if (result.missing.length) return { error: `Not written: ${[...new Set(result.missing.map((entry) => entry.why))].join('; ')}.`, data };
       if (!result.files.length) return { ok: true, message: 'Nothing to change', data, undo: history.length };
-      const files = typeof host.files === 'function' ? host.files() : [];
+      const files = host.files();
       const locked = result.files.filter((file) => !(files.find((entry) => entry.path === file.path) || {}).writable);
       if (locked.length) return { error: `${locked.map((file) => file.path).join(', ')} cannot be written: it did not come from an opened folder. Run open in the terminal, then reconcile again.`, data };
       tell('writing');
@@ -553,12 +552,12 @@ export default {
         });
       },
       setLines(on) {
-        if (typeof host.remember === 'function') host.remember('lineByLine', on ? 'on' : 'off');
+        host.remember('lineByLine', on ? 'on' : 'off');
         return Boolean(on);
       },
       setStyle(style) {
         const wanted = style === 'transaction' ? 'transaction' : 'posting';
-        if (typeof host.remember === 'function') host.remember('markStyle', wanted);
+        host.remember('markStyle', wanted);
         return wanted;
       },
       /**
@@ -617,7 +616,7 @@ export default {
       },
       /** A loaded file's text, for the window's view of the whole file. */
       source(path) {
-        const text = typeof host.read === 'function' ? host.read(String(path)) : null;
+        const text = host.read(String(path));
         return text == null ? null : String(text);
       },
       /**
@@ -636,7 +635,7 @@ export default {
           } catch (error) {
             return { candidates: [], error: why(error) };
           }
-          const paths = (typeof host.files === 'function' ? host.files() : []).map((file) => file.path);
+          const paths = host.files().map((file) => file.path);
           const cache = new Map();
           const candidates = rankCandidates(found, { account: data.account, inclusive: data.inclusive, amount: ask.amount, date: ask.date, words: ask.words, style }).map((candidate) => {
             const file = fileFor(candidate.file, paths);
@@ -698,7 +697,7 @@ export default {
       statementBalance: line.balance,
       fingerprint: fingerprint(data),
       style: markStyle,
-      lines: (typeof host.setting === 'function' ? host.setting('lineByLine') : null) === 'on',
+      lines: host.setting('lineByLine') === 'on',
       module: beside('reconcile-window.js'),
       // The editor for the file itself, loaded only when a transaction is first opened.
       ace: beside('vendor/ace/ace.js'),

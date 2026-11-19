@@ -95,6 +95,7 @@ const body = (request) => new Promise((resolve) => {
 function livePage({ name, theme, writable, args, colors }) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>live</title></head><body><p>starting the plugin</p>
 <script type="module">
+import { makeHost } from '/host.mjs';
 const space = ${JSON.stringify(name)};
 const writable = ${JSON.stringify(writable)};
 const post = async (path, value) => (await fetch(path + '?space=' + space, { method: 'POST', body: JSON.stringify(value) })).json();
@@ -103,27 +104,29 @@ const memory = {};
 const stamps = {};
 for (const [path, entry] of Object.entries(disk)) { memory[path] = entry.text; stamps[path] = entry.stamp; }
 window.__said = [];
-const host = {
+// The shared host (scripts/host.mjs), with this server behind it: the files in this check's
+// own directory, and the shipped engine answering through /live/hledger.
+const host = makeHost({
   name: 'reconcile',
   colors: () => (${JSON.stringify(colors)}),
   say: (text) => window.__said.push(text),
-  setting: () => null,
-  remember() {},
-  files: () => Object.keys(memory).map((path, at) => ({ path, writable, main: at === 0 })),
-  read: (path) => (path in memory ? memory[path] : null),
-  async save(path, text) {
-    const answer = await post('/live/save', { path, text, stamp: stamps[path] });
-    if (answer.ok) { memory[path] = text; stamps[path] = answer.stamp; }
-    return answer;
-  },
-  async refresh() {
-    if (!writable) return { changed: [], missing: [] };
-    const now = await (await fetch('/live/disk?space=' + space)).json();
-    const changed = [];
-    for (const [path, entry] of Object.entries(now)) {
-      if (entry.stamp !== stamps[path]) { memory[path] = entry.text; stamps[path] = entry.stamp; changed.push(path); }
-    }
-    return { changed, missing: [] };
+  backend: {
+    files: () => Object.keys(memory).map((path, at) => ({ path, writable, main: at === 0 })),
+    read: (path) => (path in memory ? memory[path] : null),
+    async save(path, text) {
+      const answer = await post('/live/save', { path, text, stamp: stamps[path] });
+      if (answer.ok) { memory[path] = text; stamps[path] = answer.stamp; }
+      return answer;
+    },
+    async refresh() {
+      if (!writable) return { changed: [], missing: [] };
+      const now = await (await fetch('/live/disk?space=' + space)).json();
+      const changed = [];
+      for (const [path, entry] of Object.entries(now)) {
+        if (entry.stamp !== stamps[path]) { memory[path] = entry.text; stamps[path] = entry.stamp; changed.push(path); }
+      }
+      return { changed, missing: [] };
+    },
   },
   async hledger(command) {
     const answer = await post('/live/hledger', { command, files: memory });
@@ -133,7 +136,7 @@ const host = {
   // The plugin's window is this page: what it writes replaces it, and its opener is the page
   // that runs the plugin, as in the app.
   window: () => ({ write(html) { document.open(); document.write(html); document.close(); }, close() {} }),
-};
+});
 Object.defineProperty(window, 'opener', { configurable: true, value: window });
 const { default: reconcile } = await import('/plugins/reconcile.js');
 await reconcile.run(${JSON.stringify(args)}, host);

@@ -7,7 +7,7 @@
  * written. Pure apart from `bridge`, which registers on the page that opened the window.
  */
 
-/** The app's built-in theme, for a host that cannot say which theme is in use. */
+/** The app's built-in theme, for a window whose page was written without colours of its own. */
 export const FALLBACK_COLORS = {
   background: '#000000',
   foreground: '#d8d8d8',
@@ -16,9 +16,9 @@ export const FALLBACK_COLORS = {
   dim: '#8a8a8a',
 };
 
-/** The colours of the theme in use, or the built-in ones. */
+/** The colours of the theme in use, read on each call so a window matches the terminal now. */
 export function colorsOf(host) {
-  return typeof host.colors === 'function' ? host.colors() : FALLBACK_COLORS;
+  return host.colors();
 }
 
 /** Text made safe to put inside HTML, an attribute included. */

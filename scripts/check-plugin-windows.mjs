@@ -82,6 +82,8 @@ const RECONCILE_DATA_MARKED = withText(readReconcile(RECONCILE_PRINT_MARKED, 'As
 const RECONCILE_DATA_GENERIC = withText(readReconcile(GENERIC_PRINT, 'assets:bank'), GENERIC_JOURNAL);
 
 const PLUGINS = fileURLToPath(new URL('../assets/plugins/', import.meta.url));
+/** The shared host, served to the pages below so they build theirs the way the node checks do. */
+const HOST = fileURLToPath(new URL('./host.mjs', import.meta.url));
 const MEASURED = ['reconcile.js', 'reconcile-data.js', 'reconcile-window.js', 'chart.js', 'chart-args.js', 'chart-d3.js', 'chart-more.js', 'chart-play.js', 'chart-ui.js', 'chart-window.js', 'chart-data.js', 'edit.js', 'edit-window.js', 'window-kit.js'];
 /** The least each measured file's code may be executed, as a share of its source. */
 const FLOOR = 0.9;
@@ -275,45 +277,48 @@ const RECONCILE_DATA_MANY = withText(readReconcile(syntheticPrint(SYNTHETIC_COUN
  * `space` — the files on disk, the engine answering through this check's server — with the
  * window this check draws written over it once the bridge is up.
  *
- * The host is the app's shape, wrapped here so a check can make it refuse a write or stop
- * answering mid-one, the way `realHost` does in check-reconcile-write.mjs. What the window asks
- * for is recorded on the bridge itself, at the seam, so the check can read back the requests the
- * window really made without going through the DOM for them.
+ * The host is the shared one every check builds (scripts/host.mjs), with this check's world
+ * behind it: the files on disk in `space`, and this server standing in for the engine, so a
+ * check can still make the host refuse a write or stop answering mid-one, the way `realHost`
+ * does in check-reconcile-write.mjs. What the window asks for is recorded on the bridge
+ * itself, at the seam, so the check can read back the requests the window really made without
+ * going through the DOM for them.
  */
 function reconcileRunner({ space, args, writable, colors, drawn }) {
   const post = `async (path, value) => (await fetch(path + '?space=${space}', { method: 'POST', body: JSON.stringify(value) })).json()`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>reconcile</title></head><body>
 <script type="module">
+import { makeHost } from '/host.mjs';
 const post = ${post};
 window.__said = [];
 const disk = await (await fetch('/live/disk?space=${space}')).json();
 const memory = {};
 const stamps = {};
 for (const [path, entry] of Object.entries(disk)) { memory[path] = entry.text; stamps[path] = entry.stamp; }
-const host = {
+const host = makeHost({
   name: 'reconcile',
   colors: () => (${JSON.stringify(colors)}),
   say: (text) => { window.__said.push(text); },
-  setting: () => null,
-  remember() {},
-  files: () => Object.keys(memory).map((path, at) => ({ path, writable: ${Boolean(writable)}, main: at === 0 })),
-  read: (path) => (path in memory ? memory[path] : null),
-  async save(path, text) {
-    // A check that needs the app to stop answering sets this; only a host that throws reaches
-    // the window as a bridge that did not answer.
-    if (window.__throw) throw new Error(window.__throw);
-    const answer = await post('/live/save', { path, text, stamp: stamps[path] });
-    if (answer.ok) { memory[path] = text; stamps[path] = answer.stamp; }
-    return answer;
-  },
-  async refresh() {
-    if (!${Boolean(writable)}) return { changed: [], missing: [] };
-    const now = await (await fetch('/live/disk?space=${space}')).json();
-    const changed = [];
-    for (const [path, entry] of Object.entries(now)) {
-      if (entry.stamp !== stamps[path]) { memory[path] = entry.text; stamps[path] = entry.stamp; changed.push(path); }
-    }
-    return { changed, missing: [] };
+  backend: {
+    files: () => Object.keys(memory).map((path, at) => ({ path, writable: ${Boolean(writable)}, main: at === 0 })),
+    read: (path) => (path in memory ? memory[path] : null),
+    async save(path, text) {
+      // A check that needs the app to stop answering sets this; only a host that throws reaches
+      // the window as a bridge that did not answer.
+      if (window.__throw) throw new Error(window.__throw);
+      const answer = await post('/live/save', { path, text, stamp: stamps[path] });
+      if (answer.ok) { memory[path] = text; stamps[path] = answer.stamp; }
+      return answer;
+    },
+    async refresh() {
+      if (!${Boolean(writable)}) return { changed: [], missing: [] };
+      const now = await (await fetch('/live/disk?space=${space}')).json();
+      const changed = [];
+      for (const [path, entry] of Object.entries(now)) {
+        if (entry.stamp !== stamps[path]) { memory[path] = entry.text; stamps[path] = entry.stamp; changed.push(path); }
+      }
+      return { changed, missing: [] };
+    },
   },
   async hledger(command) {
     const answer = await post('/live/hledger', { command, files: memory });
@@ -322,7 +327,7 @@ const host = {
   },
   // The window is the one written below: what the plugin writes for it goes nowhere here.
   window: () => ({ write() {}, close() {} }),
-};
+});
 const { default: reconcile } = await import('/plugins/reconcile.js');
 await reconcile.run(${JSON.stringify(args)}, host);
 // The bridge the plugin published, kept as it is and recorded on: every request the window makes
@@ -440,6 +445,11 @@ function serve() {
       response.end(windowFor(url.searchParams.get('case'), url.searchParams.get('theme'), {
         library: url.searchParams.get('library') !== 'no',
       }));
+      return;
+    }
+    if (url.pathname === '/host.mjs') {
+      response.writeHead(200, { 'content-type': types['.js'] });
+      response.end(await readFile(HOST));
       return;
     }
     if (url.pathname.startsWith('/plugins/')) {
