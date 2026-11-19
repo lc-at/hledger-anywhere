@@ -351,8 +351,9 @@ node scripts/check-plugin-freshness.mjs
 node scripts/check-host-contract.mjs
 
 # The app itself, booting and running in headless Chrome: the banner, a command typed at
-# the terminal, the report it draws, and the scrollback still there after a reload — and
-# gone for good after `clear`. Needs dist/ (`trunk build`), as CI runs it after the build.
+# the terminal, the report it draws, the app's own commands answered, and the scrollback
+# still there after a reload — and gone for good after `clear`. Needs dist/ (`trunk
+# build`), as CI runs it after the build.
 # Chrome as above.
 node scripts/check-app.mjs
 

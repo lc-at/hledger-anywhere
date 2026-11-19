@@ -218,7 +218,9 @@ class Tab {
     await tab.send('Runtime.enable');
     // Tall rather than a person's window: the whole scrollback has to be visible for the
     // rows to be read, and a report scrolled off the top would fail for want of a scrollbar.
-    await tab.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 1600, deviceScaleFactor: 1, mobile: false });
+    // The app's own commands pile up quickly — a help overview alone is most of a hundred
+    // rows — so the height is what the stored copy needs rather than a person's window.
+    await tab.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 3200, deviceScaleFactor: 1, mobile: false });
     return tab;
   }
 
@@ -426,6 +428,64 @@ async function main() {
       await tab.type('balance --tree');
       await tab.enter();
       await tab.until(`(${READ_TERMINAL}).text.includes('income:salary')`, 'the report to be drawn');
+    });
+
+    // The app's own commands after the engine's: what it says for itself, the alias it
+    // keeps, the history it recalls, the help a bare `?` prints and the settings written
+    // out. The decisions behind all of that are `cargo test`'s; what only a browser can
+    // see is whether `apply` put them on the screen, so each step reads the terminal
+    // rather than the state behind it.
+
+    await run('the alias is defined and said so', async () => {
+      await tab.type('alias bal=balance');
+      await tab.enter();
+      await tab.until(`(${READ_TERMINAL}).text.includes('bal now runs balance')`, 'the alias to be accepted');
+    });
+
+    await run('the alias runs the command it names', async () => {
+      await tab.type('bal');
+      await tab.enter();
+      // The note is the expansion saying itself out loud; the row is the engine answering
+      // under the name that was typed. `income:salary` is already on screen from the
+      // report above, so the alias's own report is the second copy of the line.
+      await tab.until(`(${READ_TERMINAL}).text.includes('[bal runs balance]')`, 'the alias note');
+      await tab.until(`(${READ_TERMINAL}).text.split('income:salary').length - 1 >= 2`, 'the report from the alias');
+    });
+
+    await run('up arrow recalls the alias command', async () => {
+      await tab.focus();
+      await tab.press('ArrowUp', { code: 'ArrowUp', keyCode: 38 });
+      // The echo is what proves the recall reached the line editor: the last row is the
+      // prompt, and it only ends with the command once ↑ has put the line back on it.
+      await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('bal')`, 'the recalled line to be echoed');
+    });
+
+    await run('the recalled line runs and reports again', async () => {
+      await tab.enter();
+      // Both are here twice now: the note would still be on screen from the run above if
+      // the recall had only echoed the line, so the count is what says it ran again.
+      await tab.until(`(${READ_TERMINAL}).text.split('[bal runs balance]').length - 1 >= 2`, 'the alias note from the recalled line');
+      await tab.until(`(${READ_TERMINAL}).text.split('income:salary').length - 1 >= 3`, 'the report to be drawn again');
+    });
+
+    await run('a bare ? prints the overview', async () => {
+      await tab.type('?');
+      await tab.enter();
+      // Three stable pieces of the overview rather than the page: the keys section says
+      // how the line editor behaves, the demo row is a command the overview lists, and
+      // neither is a heading a later edit could rename.
+      await tab.until(`(${READ_TERMINAL}).text.includes('Enter runs a command.')`, 'the overview to be drawn');
+      const text = await tab.read();
+      if (!text.includes('Up and Down recall history.')) throw new Error('the keys section is not on screen');
+      if (!text.includes('load the sample journal')) throw new Error('the command list is not on screen');
+    });
+
+    await run('settings export writes the settings file', async () => {
+      await tab.type('settings export');
+      await tab.enter();
+      // The byte count in the message varies with what is set, so the file name is the
+      // part worth holding still.
+      await tab.until(`(${READ_TERMINAL}).text.includes('hledger-anywhere-settings.json')`, 'the export to be written');
     });
 
     await run('the report and a fresh banner are there after a reload', async () => {
