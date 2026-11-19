@@ -27,7 +27,7 @@
 
 import { createServer } from 'node:http';
 import { accessSync, constants, readdirSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -132,6 +132,36 @@ async function serve(dir) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   return { server, port: server.address().port };
 }
+
+/**
+ * The journal the upload step mounts, and the only place `expenses:round17test`
+ * and `$42.75` are written — nothing else in this session, nor anything else in
+ * this repository, holds either of them.
+ */
+const UPLOAD_JOURNAL = `\
+; Fixture of scripts/check-app.mjs, for the upload step alone.
+2026-05-04 * Round 17
+    expenses:round17test              $42.75
+    assets:bank:checking
+`;
+
+/**
+ * Write the four files the upload step hands to the picker, and return their paths.
+ *
+ * One mounts, three cannot, for the three reasons `src/upload.rs` gives for
+ * refusing: a file of no bytes (`admit_size`), a file with a NUL byte in it
+ * (`admit_text`), and a file one kilobyte over `MAX_FILE_BYTES`, whose reason is
+ * the size formatted to one decimal place — 5 MB plus 1 KB reads as 5.0.
+ */
+async function uploadFixtures(dir) {
+  await writeFile(join(dir, 'round17.journal'), UPLOAD_JOURNAL);
+  await writeFile(join(dir, 'empty.journal'), '');
+  await writeFile(join(dir, 'binary.journal'), Buffer.from('not\0journal'));
+  await writeFile(join(dir, 'huge.journal'), 'a'.repeat(5 * 1024 * 1024 + 1024));
+  return ['round17.journal', 'empty.journal', 'binary.journal', 'huge.journal']
+    .map((name) => join(dir, name));
+}
+
 
 async function launch(chrome, profile) {
   const child = spawn(chrome, [
@@ -380,6 +410,7 @@ async function main() {
 
   const chrome = findChrome();
   const profile = await mkdtemp(join(tmpdir(), 'hla-app-'));
+  const fixtures = await mkdtemp(join(tmpdir(), 'hla-upload-'));
   const { server, port } = await serve(DIST);
   const base = `http://127.0.0.1:${port}`;
   let launched = null;
@@ -1087,6 +1118,138 @@ async function main() {
       await tab.until(measures(String(original)), 'the rows to measure the original size again');
     });
 
+    // The upload chain, after the font and before the reload: `upload` opens the
+    // picker inside the key handler (app.rs, `Effect::Upload`), the browser hands
+    // over four files, and `src/upload.rs` mounts the one it can and says why the
+    // other three are skipped. The upload replaces what was loaded, which is what
+    // the README promises, and nothing the reload and clear steps below depend on
+    // the demo journals still being loaded: they read scrollback text, and every
+    // report they look for was drawn before this step, so their assertions stay
+    // where they are.
+
+    await run('upload mounts one file and says why it skips three', async () => {
+      const paths = await uploadFixtures(fixtures);
+
+      // A file picker is a modal dialog, so headless cannot show one and wait for
+      // a person: `Page.setInterceptFileChooserDialog` turns the click's dialog
+      // into `Page.fileChooserOpened`, and the backendNodeId that event carries is
+      // the input the four paths go back to with `DOM.setFileInputFiles`.
+      let chooser = null;
+      const watching = launched.cdp.on((message) => {
+        if (message.sessionId === tab.sessionId && message.method === 'Page.fileChooserOpened') {
+          chooser = message.params || {};
+        }
+      });
+      let handed = 'the intercepted file chooser';
+      try {
+        let intercepted = true;
+        try {
+          await tab.send('Page.setInterceptFileChooserDialog', { enabled: true });
+        } catch {
+          intercepted = false;
+        }
+        await tab.type('upload');
+        await tab.enter();
+        const end = Date.now() + 15000;
+        while (intercepted && !chooser && Date.now() < end) await sleep(60);
+        if (chooser && chooser.backendNodeId) {
+          await tab.send('DOM.setFileInputFiles', { files: paths, backendNodeId: chooser.backendNodeId });
+        } else {
+          // No chooser event: the input `open_picker` made is still on the page, so
+          // the same four files are built onto it and the `change` the picker waits
+          // on is dispatched by hand. `upload.rs` still reads, skips and mounts every
+          // file; only the dialog's own plumbing goes unexercised, and that is why
+          // this run says so.
+          handed = 'an in-page change event, because no chooser opened';
+          const failed = await tab.eval(`(() => {
+            const input = document.getElementById('hledger-anywhere-upload-input');
+            if (!input) return 'the upload input is not on the page';
+            const transfer = new DataTransfer();
+            transfer.items.add(new File([${JSON.stringify(UPLOAD_JOURNAL)}], 'round17.journal'));
+            transfer.items.add(new File([], 'empty.journal'));
+            transfer.items.add(new File([new Uint8Array([0x6e, 0x6f, 0x74, 0x00, 0x6a, 0x6f, 0x75, 0x72, 0x6e, 0x61, 0x6c])], 'binary.journal'));
+            transfer.items.add(new File(['a'.repeat(5 * 1024 * 1024 + 1024)], 'huge.journal'));
+            input.files = transfer.files;
+            input.dispatchEvent(new Event('change'));
+            return '';
+          })()`);
+          if (failed) throw new Error(failed);
+        }
+      } finally {
+        watching();
+      }
+
+      // The picker settles on `change`. Whether `DOM.setFileInputFiles` fired one
+      // itself is what this wait answers: the input still being in the page means
+      // the promise never settled, and dispatching the event then is the event the
+      // browser would have sent with files of its own.
+      const arrived = `(${READ_TERMINAL}).text.includes('Uploaded 1 file.')`;
+      try {
+        await tab.until(arrived, 'the uploaded files to arrive', 15000);
+      } catch {
+        const waiting = await tab.eval("Boolean(document.getElementById('hledger-anywhere-upload-input'))");
+        if (!waiting) throw new Error('the selection was read, but the arrival message never printed');
+        handed += '; a change event was dispatched for it';
+        await tab.eval("document.getElementById('hledger-anywhere-upload-input').dispatchEvent(new Event('change'))");
+        await tab.until(arrived, 'the uploaded files to arrive after the change event');
+      }
+      if (handed !== 'the intercepted file chooser') console.log(`note the files were handed over by ${handed}`);
+
+      // Every line is `files_arrived` (src/terminal/messages.rs) as it renders:
+      // `source` and the count from `count`, one row per loaded file, one row per
+      // skip carrying the reason upload.rs itself formats — `admit_size`'s
+      // "empty file", `admit_text`'s NUL verdict, and the per-file limit to one
+      // decimal place — and the sentence naming the file `choose_main` picked.
+      const text = await tab.read();
+      const lines = text.split('\n').map((line) => line.trim());
+      const said = [
+        'Uploaded 1 file.',
+        'round17.journal',
+        'skipped empty.journal: empty file',
+        'skipped binary.journal: looks like a binary file',
+        'skipped huge.journal: 5.0 MB is over the per-file limit',
+      ];
+      for (const line of said) {
+        if (!lines.includes(line)) throw new Error(`${JSON.stringify(line)} is not a line on screen`);
+      }
+      if (!text.includes('Reading round17.journal. Type balance for a report, or ? for the rest.')) {
+        throw new Error('the arrival message does not name the file hledger reads');
+      }
+    });
+
+    await run('the engine reads the uploaded journal', async () => {
+      const before = await tab.read();
+      // Nothing earlier in the session can have written either string: the fixture
+      // above is their only copy, so a report holding them can only have been
+      // drawn from the file the picker mounted.
+      if (occurrences(before, 'expenses:round17test')) throw new Error('the fixture account was already on screen');
+      if (occurrences(before, '$42.75')) throw new Error('the fixture amount was already on screen');
+      const rules = occurrences(before, '--------------------');
+      await tab.type('balance --tree');
+      await tab.enter();
+      // A fresh rule means a report was drawn, and the rows under it say which
+      // journal it was drawn from: `accept_files` replaced the loaded files and
+      // `configure` re-exported `$LEDGER_FILE`, so the engine can only reach this
+      // account if both moved to the uploaded file.
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('expenses:round17test').length - 1 > 0`,
+        'the report from the uploaded journal',
+      );
+      const after = await tab.read();
+      if (occurrences(after, '--------------------') <= rules) throw new Error('no fresh report rule was drawn');
+      if (!after.includes('$42.75')) throw new Error('the fixture amount is not in the report');
+    });
+
+    await run('the prompt names the uploaded journal', async () => {
+      // `prompt_for` dims the basename of the file being read, and `announce`
+      // redraws the prompt under the arrival message and under every report since,
+      // so the last row is the uploaded file's name rather than the demo's.
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith('round17.journal »')`,
+        'the prompt to name the uploaded journal',
+      );
+    });
+
     await run('the report and a fresh banner are there after a reload', async () => {
       // `booted` waits for the banners in the stored copy plus this visit's own, so what is
       // left to prove is the order: the report came back from the replay, and this visit's
@@ -1120,6 +1283,7 @@ async function main() {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         await rm(profile, { recursive: true, force: true });
+        await rm(fixtures, { recursive: true, force: true });
         break;
       } catch {
         await sleep(200);
