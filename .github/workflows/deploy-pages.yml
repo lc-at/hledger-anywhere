@@ -100,6 +100,13 @@ jobs:
       - name: Check the plugin windows in a browser
         run: node scripts/check-plugin-windows.mjs
 
+      # The reconcile write path: every change the window makes, written to a real journal
+      # and read back, with the refusals and the rollback beside them. No browser — the
+      # engine and the file do the talking, and a write that leaves the journal wrong fails
+      # here before the build ships it.
+      - name: Check the reconcile write path
+        run: node scripts/check-reconcile-write.mjs
+
       - name: Engine smoke test
         # The shipped engine, driven the way the app drives it: no -f, with the
         # journal exported as $LEDGER_FILE. Nothing here needs a browser, so a

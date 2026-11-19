@@ -338,6 +338,10 @@ node scripts/check-example-plugin.mjs
 # failing under 90%. Chrome is found on PATH or named with CHROME=/path/to/chrome.
 node scripts/check-plugin-windows.mjs
 
+# The reconcile write path: every change the window makes, written to a real journal and
+# read back, with the refusals and the rollback. No browser needed.
+node scripts/check-reconcile-write.mjs
+
 # The shipped engine, natively, without a browser.
 node scripts/hledger-wasm.mjs path/to/hledger.journal balance --tree
 
