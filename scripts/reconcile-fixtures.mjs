@@ -1,12 +1,9 @@
-// A journal for the reconcile checks, and what hledger 1.52 prints for it with
-// print 'acct:^Assets:Bank:Checking$' -O json, cut to the fields the plugin reads. Regenerate the
-// JSON with that command if the journal changes, or the line numbers in it will be wrong.
+// A journal for the reconcile checks, and what hledger prints for it. The print is generated
+// when this module is loaded: the shipped engine runs the journal and the JSON is cut from its
+// answer, so editing the journal cannot leave the print's line numbers behind.
 //
 // GENERIC_JOURNAL is separate and deliberately unlike a real person's book: it exists to carry
 // every kind of posting the window has to handle, so nothing about it is specific to one journal.
-// Regenerate its JSON with:
-//   node scripts/hledger-wasm.mjs <journal> print 'acct:^assets:bank$' -O json
-// (the journal written to a file named generic.journal, so the paths below read sensibly).
 //
 // Its transactions are UNMARKED on purpose. A reconcile window is opened on postings that
 // have not been reconciled yet, so that is the state these checks start from; a window that
@@ -14,9 +11,92 @@
 // difference. The rule that a marked transaction clears its postings is checked separately,
 // against its own small pieces of JSON, in check-example-plugin.mjs.
 
+import { execFile } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+const ENGINE = join(dirname(fileURLToPath(import.meta.url)), 'hledger-wasm.mjs');
+
+/** An amount as the plugin reads it: the commodity, the quantity and hledger's style for it. */
+const AMOUNT = {
+  acommodity: true,
+  aquantity: { decimalMantissa: true, decimalPlaces: true },
+  astyle: { ascommodityside: true, ascommodityspaced: true, asdecimalmark: true, asprecision: true },
+};
+
+/** A field kept only when hledger printed a value for it: a posting with no cost prints `"acost":null`. */
+const whenPresent = (shape) => ({ kept: shape });
+
+/**
+ * hledger's print cut to `shape` and nothing else: the shape's keys are the fields kept, in the
+ * order they are kept in; `true` keeps a value exactly as printed; an object or a one-entry
+ * array cuts inside it; `{ kept: shape }` drops a field hledger printed as null.
+ */
+const cut = (value, shape) => {
+  if (shape && typeof shape === 'object' && !Array.isArray(shape) && 'kept' in shape) {
+    if (value == null) return undefined;
+    shape = shape.kept;
+  }
+  if (value == null || shape === true) return value;
+  if (Array.isArray(shape)) return Array.isArray(value) ? value.map((entry) => cut(entry, shape[0])) : value;
+  if (typeof shape !== 'object' || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out = {};
+  for (const key of Object.keys(shape)) {
+    if (!(key in value)) continue;
+    const piece = cut(value[key], shape[key]);
+    if (piece !== undefined) out[key] = piece;
+  }
+  return out;
+};
+
+// The two prints were cut by hand at different times and the cuts are not quite the same one,
+// so each is written out as it was: the generic print kept the posting's `ptype` and the whole
+// balance assertion, the reconcile print kept only the assertion's amount, and a cost is in the
+// generic print only where hledger printed one. The bytes of both stay what the checks read.
+const CUT = {
+  tindex: true, tdate: true, tdescription: true, tstatus: true,
+  tsourcepos: [{ sourceName: true, sourceLine: true }],
+  tpostings: [{ paccount: true, pstatus: true, pdate: true, ptags: true, pamount: [AMOUNT], pbalanceassertion: { baamount: AMOUNT } }],
+};
+const GENERIC_CUT = {
+  tindex: true, tdate: true, tdescription: true, tstatus: true,
+  tsourcepos: [{ sourceName: true, sourceLine: true }],
+  tpostings: [{
+    paccount: true, ptype: true, pstatus: true, pdate: true, ptags: true,
+    pamount: [{ ...AMOUNT, acost: whenPresent({ contents: { acommodity: true, aquantity: { decimalMantissa: true, decimalPlaces: true } } }) }],
+    pbalanceassertion: true,
+  }],
+};
+
+/**
+ * What hledger prints for `journal`, cut to `shape`, run through the shipped engine: the journal
+ * is written to a file of `name` (which is the name its `tsourcepos` then carries) with the
+ * newline a file ends with, printed with `query`, and cut. If the engine is not there, the
+ * failure says how to get it.
+ */
+const printed = async (journal, name, query, shape) => {
+  const dir = mkdtempSync(join(tmpdir(), 'hla-fixture-'));
+  try {
+    writeFileSync(join(dir, name), journal.endsWith('\n') ? journal : `${journal}\n`);
+    const { stdout } = await run(process.execPath, [ENGINE, join(dir, name), 'print', query, '-O', 'json'], { maxBuffer: 64 * 1024 * 1024 });
+    return cut(JSON.parse(stdout), [shape]);
+  } catch (error) {
+    const said = String((error && error.stderr) || (error && error.message) || error);
+    const missing = said.split('\n').find((line) => /cannot read the engine/.test(line));
+    if (missing) throw new Error(`the reconcile fixtures cannot be printed: ${missing.trim()}. Fetch it with scripts/fetch-hledger-wasm.sh`);
+    throw error;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 export const RECONCILE_JOURNAL = "commodity 1,000.00 IDR\n\n2026-08-31 Opening balance\n    Assets:Bank:Checking    1000000.00 IDR = 1000000.00 IDR\n    Equity:Opening\n\n2026-09-01 Coffee\n    Expenses:Food    21000 IDR\n    Assets:Bank:Checking\n\n2026-09-02 Salary\n    Assets:Bank:Checking    5000000.00 IDR\n    Income:Salary\n\n2026-09-03 Pending transfer\n    Assets:Savings    300000 IDR\n  ! Assets:Bank:Checking\n\n2026-09-05 Split\n    Expenses:Food    9000 IDR  ; lunch\n    ; a comment line\n    Assets:Bank:Checking    -4000 IDR\n    Assets:Bank:Checking\n\n2026-10-02 After the statement\n    Expenses:Fees    2500 IDR\n    Assets:Bank:Checking\n";
 
-export const RECONCILE_PRINT = [{"tindex":1,"tdate":"2026-08-31","tdescription":"Opening balance","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/fixture.journal","sourceLine":3},{"sourceName":"/fixture.journal","sourceLine":6}],"tpostings":[{"paccount":"Assets:Bank:Checking","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":100000000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":{"baamount":{"acommodity":"IDR","aquantity":{"decimalMantissa":100000000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}}},{"paccount":"Equity:Opening","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-100000000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":2,"tdate":"2026-09-01","tdescription":"Coffee","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/fixture.journal","sourceLine":7},{"sourceName":"/fixture.journal","sourceLine":10}],"tpostings":[{"paccount":"Expenses:Food","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":21000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null},{"paccount":"Assets:Bank:Checking","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-21000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null}]},{"tindex":3,"tdate":"2026-09-02","tdescription":"Salary","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/fixture.journal","sourceLine":11},{"sourceName":"/fixture.journal","sourceLine":14}],"tpostings":[{"paccount":"Assets:Bank:Checking","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":500000000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"Income:Salary","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-500000000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":4,"tdate":"2026-09-03","tdescription":"Pending transfer","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/fixture.journal","sourceLine":15},{"sourceName":"/fixture.journal","sourceLine":18}],"tpostings":[{"paccount":"Assets:Savings","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":300000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null},{"paccount":"Assets:Bank:Checking","pstatus":"Pending","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-300000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null}]},{"tindex":5,"tdate":"2026-09-05","tdescription":"Split","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/fixture.journal","sourceLine":19},{"sourceName":"/fixture.journal","sourceLine":24}],"tpostings":[{"paccount":"Expenses:Food","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":9000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null},{"paccount":"Assets:Bank:Checking","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-4000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null},{"paccount":"Assets:Bank:Checking","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-5000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null}]},{"tindex":6,"tdate":"2026-10-02","tdescription":"After the statement","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/fixture.journal","sourceLine":25},{"sourceName":"/fixture.journal","sourceLine":28}],"tpostings":[{"paccount":"Expenses:Fees","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":2500,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null},{"paccount":"Assets:Bank:Checking","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-2500,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0}}],"pbalanceassertion":null}]}];
+export const RECONCILE_PRINT = await printed(RECONCILE_JOURNAL, 'fixture.journal', 'acct:^Assets:Bank:Checking$', CUT);
 
 export const GENERIC_JOURNAL = `; A journal built to exercise everything the reconcile window has to handle.
 ; Invented data: accounts, payees and amounts are all made up.
@@ -68,4 +148,4 @@ commodity 1,000.00 USD
     expenses:software                           25.00 USD
     assets:bank`;
 
-export const GENERIC_PRINT = [{"tindex":1,"tdate":"2026-01-01","tdescription":"Opening balance","tstatus":"Cleared","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":7},{"sourceName":"/generic.journal","sourceLine":10}],"tpostings":[{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":500000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":{"baamount":{"acommodity":"IDR","acost":null,"acostbasis":null,"aquantity":{"decimalMantissa":500000,"decimalPlaces":2,"floatingPoint":5000},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asdigitgroups":[",",[3]],"asprecision":2,"asrounding":"NoRounding"}},"bainclusive":false,"baposition":{"sourceColumn":61,"sourceLine":8,"sourceName":"/generic.journal"},"batotal":false}},{"paccount":"equity:opening","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-500000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":2,"tdate":"2026-01-05","tdescription":"Northwind Studio payroll","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":11},{"sourceName":"/generic.journal","sourceLine":16}],"tpostings":[{"paccount":"income:salary","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-1200000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"expenses:fees","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":20000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":1170000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":10000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":3,"tdate":"2026-01-07","tdescription":"Cash set aside in the pocket","tstatus":"Cleared","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":17},{"sourceName":"/generic.journal","sourceLine":21}],"tpostings":[{"paccount":"expenses:pocket","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":200000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:cash","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-200000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:bank","ptype":"VirtualPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":50000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":4,"tdate":"2026-01-09","tdescription":"Money set aside for the holiday","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":22},{"sourceName":"/generic.journal","sourceLine":25}],"tpostings":[{"paccount":"budget:holiday","ptype":"BalancedVirtualPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":300000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:bank","ptype":"BalancedVirtualPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-300000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":5,"tdate":"2026-01-11","tdescription":"Acme Studio invoice, a description long enough to wrap in a narrow window and still read as one transaction","tstatus":"Cleared","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":26},{"sourceName":"/generic.journal","sourceLine":30}],"tpostings":[{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":150000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"income:consulting","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-150000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":6,"tdate":"2026-01-13","tdescription":"Buying dollars for a trip","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":31},{"sourceName":"/generic.journal","sourceLine":34}],"tpostings":[{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"USD","aquantity":{"decimalMantissa":100,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":0},"acost":{"contents":{"acommodity":"IDR","aquantity":{"decimalMantissa":110000,"decimalPlaces":2}}}}],"pbalanceassertion":null},{"paccount":"expenses:travel","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-110000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":7,"tdate":"2026-01-15","tdescription":"Selling dollars back, as a total","tstatus":"Pending","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":35},{"sourceName":"/generic.journal","sourceLine":38}],"tpostings":[{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"USD","aquantity":{"decimalMantissa":5000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2},"acost":{"contents":{"acommodity":"IDR","aquantity":{"decimalMantissa":55000,"decimalPlaces":0}}}}],"pbalanceassertion":null},{"paccount":"income:refunds","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-55000,"decimalPlaces":0},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":8,"tdate":"2026-01-17","tdescription":"A cheque that has not cleared yet","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":39},{"sourceName":"/generic.journal","sourceLine":42}],"tpostings":[{"paccount":"expenses:fees","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":1000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Cleared","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-1000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":9,"tdate":"2026-01-19","tdescription":"Groceries, the amount left out for hledger to work out","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":43},{"sourceName":"/generic.journal","sourceLine":46}],"tpostings":[{"paccount":"expenses:groceries","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":15000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Pending","pdate":null,"ptags":[],"pamount":[{"acommodity":"IDR","aquantity":{"decimalMantissa":-15000,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]},{"tindex":10,"tdate":"2026-01-21","tdescription":"Paid in dollars","tstatus":"Unmarked","tsourcepos":[{"sourceName":"/generic.journal","sourceLine":47},{"sourceName":"/generic.journal","sourceLine":50}],"tpostings":[{"paccount":"expenses:software","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"USD","aquantity":{"decimalMantissa":2500,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null},{"paccount":"assets:bank","ptype":"RegularPosting","pstatus":"Unmarked","pdate":null,"ptags":[],"pamount":[{"acommodity":"USD","aquantity":{"decimalMantissa":-2500,"decimalPlaces":2},"astyle":{"ascommodityside":"R","ascommodityspaced":true,"asdecimalmark":".","asprecision":2}}],"pbalanceassertion":null}]}];
+export const GENERIC_PRINT = await printed(GENERIC_JOURNAL, 'generic.journal', 'acct:^assets:bank$', GENERIC_CUT);
