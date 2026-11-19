@@ -537,12 +537,15 @@ async function main() {
       await rm(join(dir, 'wasm', 'hledger.wasm'));
 
       // Wait for the cut to be real rather than assuming the commands took: a reload
-      // issued too early would be answered by the network and prove nothing. This URL has
-      // never been fetched, so no cache anywhere holds it: a 404 means the network still
-      // answers, a failure means only the worker's own cache is left to answer anything.
+      // issued too early would be answered by the network and prove nothing. A fresh URL
+      // on every attempt, because the probe above records every fetch the worker handles
+      // under its own URL — a repeated one would answer the offline attempt from the
+      // probe's cache with a 200 and hide a cut that had landed. A fresh URL has never
+      // been fetched: a 404 means the network still answers, a failure means only the
+      // worker's own cache is left to answer anything.
       let cutOff = 'still up';
       for (let i = 0; i < 50 && !cutOff.startsWith('failed'); i += 1) {
-        cutOff = await page.evaluate(`fetch('${base}/never-requested.txt', { cache: 'no-cache' })
+        cutOff = await page.evaluate(`fetch('${base}/never-requested-${i}.txt', { cache: 'no-cache' })
           .then((r) => 'served: http ' + r.status)
           .catch((e) => 'failed: ' + e.message)`);
         if (!cutOff.startsWith('failed')) await sleep(100);
