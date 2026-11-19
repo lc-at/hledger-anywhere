@@ -488,6 +488,61 @@ async function main() {
       await tab.until(`(${READ_TERMINAL}).text.includes('hledger-anywhere-settings.json')`, 'the export to be written');
     });
 
+    // Search is the one app command whose work happens on the screen itself: `find`
+    // decides, and only a run like this one can show that App::find then read the rows,
+    // counted the hits and left the app's own words out of them. The words asserted are
+    // the ones it formats — `match {index} of {total} · {term}` and
+    // `No match for {term}.` — rather than anything paraphrased here.
+
+    // The total is read off the screen rather than guessed: it is the report rows
+    // holding `income:salary`, and `n` a step below is asserted against this same
+    // number, because the counter line the search just printed is chatter and so does
+    // not add to what the next search counts.
+    let salaryMatches = 0;
+
+    await run('find lands on a match and says which one', async () => {
+      await tab.type('find salary');
+      await tab.enter();
+      // The first search starts at the top, so the index can only be 1; the total
+      // belongs to whatever is on screen and is read from the line itself.
+      const counter = /match 1 of (\d+) · salary/;
+      await tab.until(`(${READ_TERMINAL}).text.match(${counter})`, 'the match counter to be announced');
+      const text = await tab.read();
+      salaryMatches = Number(counter.exec(text)[1]);
+      if (salaryMatches < 2) throw new Error(`only ${salaryMatches} match: n has nowhere to step to`);
+      if (!text.includes('income:salary')) throw new Error('the report row the search landed on is not on screen');
+    });
+
+    await run('n steps to the next match', async () => {
+      await tab.type('n');
+      await tab.enter();
+      // `n` is a bare word, classified as the repeat rather than run as a command, and
+      // it walks forward from the last hit — same total, index one on. Wrapping would
+      // announce 1 again, so the 2 is what says it really moved.
+      const stepped = new RegExp(`match 2 of ${salaryMatches} · salary`);
+      await tab.until(`(${READ_TERMINAL}).text.match(${stepped})`, 'the counter to step on');
+    });
+
+    await run("the app's own words are left out of the search", async () => {
+      const word = 'some-unique-word-xyz';
+      // Nothing above prints this word, engine or app: it is typed from here on, and
+      // the screen is read first so that a stray earlier mention cannot be what the
+      // search ends up finding.
+      if ((await tab.read()).includes(word)) throw new Error(`${word} was already on screen`);
+      await tab.type(`unalias ${word}`);
+      await tab.enter();
+      // The echo of the typed line and `No alias called {word}.` — both words the app
+      // says about itself, both visibly on screen, neither engine output.
+      await tab.until(`(${READ_TERMINAL}).text.includes('No alias called ${word}')`, 'the complaint about the alias');
+      const text = await tab.read();
+      if (!text.includes(word)) throw new Error('the word is not on screen at all');
+      await tab.type(`find ${word}`);
+      await tab.enter();
+      // Every row holding the word matches a chatter line exactly, so all of them are
+      // dropped before the search looks, and what is left can only be the refusal.
+      await tab.until(`(${READ_TERMINAL}).text.includes('No match for ${word}.')`, 'the no-match message');
+    });
+
     await run('the report and a fresh banner are there after a reload', async () => {
       // `booted` waits for the banners in the stored copy plus this visit's own, so what is
       // left to prove is the order: the report came back from the replay, and this visit's
