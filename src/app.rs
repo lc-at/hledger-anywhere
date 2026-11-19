@@ -85,6 +85,9 @@ const TERMINAL_ID: &str = "terminal";
 /// `localStorage` key for the command history, versioned like the store's keys.
 const HISTORY_KEY: &str = "hledger-anywhere.terminal.history.v1";
 
+/// `localStorage` key for what was on screen, so a reload can put it back.
+const SCROLLBACK_KEY: &str = "hledger-anywhere.scrollback.v1";
+
 /// How many history entries are kept.
 const MAX_HISTORY: usize = 1000;
 
@@ -113,6 +116,10 @@ pub fn start() {
     // the boot task, once the cache has said whether there is a journal to resume.
     app.restore_theme();
 
+    // The previous visit's screen first, so this visit's banner and greeting
+    // print below it rather than over it.
+    replay_scrollback(&app.screen);
+
     let input = Rc::clone(&app);
     app.screen.on_data(move |data| input.on_input(data));
 
@@ -123,6 +130,11 @@ pub fn start() {
     app.drop_target();
 
     register_service_worker();
+
+    // What is on screen now is saved when the page goes away, and only then:
+    // every keystroke redraws the prompt, and a storage write per redraw would
+    // cost more than the screen is worth.
+    save_scrollback_on_exit(&app.screen);
 
     // Plugins are installed from the settings, so this is where they arrive.
     app.load_repositories();
@@ -2784,6 +2796,53 @@ async fn boot(app: Rc<App>) {
 /// The browser's `localStorage`, or `None` when it is unavailable.
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
+}
+
+/// Put the last visit's scrollback back, before this visit prints anything.
+///
+/// No stored text is a first visit and a no-op. The capture is raw, exactly as
+/// it was written, so it goes back through the same newline normalisation
+/// everything else uses; see [`terminal::to_terminal_text`].
+fn replay_scrollback(screen: &Screen) {
+    let Some(stored) = storage().and_then(|storage| storage.get_item(SCROLLBACK_KEY).ok().flatten())
+    else {
+        return;
+    };
+    if stored.is_empty() {
+        return;
+    }
+    screen.replay(&terminal::to_terminal_text(&stored));
+    // The stored text ends wherever the cursor was, usually in the middle of a
+    // prompt line, and the banner needs a line of its own below it.
+    if !stored.ends_with('\n') {
+        screen.write("\r\n");
+    }
+}
+
+/// Keep what is on screen for the next visit, when this one ends.
+///
+/// One write, on `beforeunload`: the closure is handed to the browser and
+/// deliberately never dropped, the same way the terminal's input handler is
+/// kept (see `Screen::on_data`). An empty capture removes the key, which is
+/// what `clear` asked for.
+fn save_scrollback_on_exit(screen: &Rc<Screen>) {
+    let screen = Rc::clone(screen);
+    let closure = Closure::<dyn FnMut()>::new(move || {
+        let Some(storage) = storage() else {
+            return;
+        };
+        let captured = screen.captured();
+        if captured.is_empty() {
+            let _ = storage.remove_item(SCROLLBACK_KEY);
+        } else {
+            let _ = storage.set_item(SCROLLBACK_KEY, &captured);
+        }
+    });
+    if let Some(window) = web_sys::window() {
+        let _ = window
+            .add_event_listener_with_callback("beforeunload", closure.as_ref().unchecked_ref());
+    }
+    closure.forget();
 }
 
 /// Where the one settings record is kept.

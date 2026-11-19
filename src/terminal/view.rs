@@ -12,12 +12,22 @@
 //! is read the same way for the same reason, xterm's scrollback API is deep and
 //! mostly untyped, and searching it is the app's job, not an addon's.
 
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+
 use js_sys::{Array, Function, Object, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::HtmlElement;
 
 use crate::theme::Theme;
+
+/// The most captured text kept for the next visit, in bytes.
+///
+/// `localStorage` is about 5 MB, shared with the settings, the history and the
+/// session's files, and xterm's own scrollback is 50_000 rows: the capture is
+/// the persistent tail of the screen, not an archive of the visit.
+const MAX_CAPTURE_BYTES: usize = 512 * 1024;
 
 #[wasm_bindgen]
 extern "C" {
@@ -61,6 +71,14 @@ pub struct Screen {
     /// The fit addon, if it loaded. Without it the terminal still works; it just
     /// keeps whatever size it was created at.
     fit: Option<JsValue>,
+    /// Everything written, in the chunks it was given, raw ANSI included, so a
+    /// reload can put the screen back with its colours intact.
+    captured: RefCell<VecDeque<String>>,
+    /// The capture's size in bytes, kept so trimming costs only what it drops.
+    captured_bytes: Cell<usize>,
+    /// True while a replay is going in: replayed text must not be captured
+    /// again, or every reload would store the last reload's copy on top.
+    replaying: Cell<bool>,
 }
 
 impl Screen {
@@ -80,7 +98,13 @@ impl Screen {
             terminal.load_addon(addon);
         }
         terminal.open(element);
-        let screen = Screen { terminal, fit };
+        let screen = Screen {
+            terminal,
+            fit,
+            captured: RefCell::new(VecDeque::new()),
+            captured_bytes: Cell::new(0),
+            replaying: Cell::new(false),
+        };
         screen.fit();
         screen.focus();
         Ok(screen)
@@ -89,10 +113,48 @@ impl Screen {
     /// Write text. The caller normalises newlines; see
     /// [`to_terminal_text`](super::to_terminal_text).
     pub fn write(&self, text: &str) {
+        if !self.replaying.get() {
+            self.capture(text);
+        }
         self.terminal.write(text);
     }
 
+    /// Put the previous visit's scrollback back, without capturing it again.
+    pub fn replay(&self, text: &str) {
+        self.replaying.set(true);
+        self.write(text);
+        self.replaying.set(false);
+    }
+
+    /// Everything written since the mount or the last `clear`, in order.
+    pub fn captured(&self) -> String {
+        self.captured.borrow_mut().make_contiguous().join("")
+    }
+
+    /// Keep a chunk of what was written, dropping the oldest until it fits.
+    ///
+    /// The trim runs chunk by chunk, so a write costs what it appends and
+    /// nothing else; only crossing the cap walks back over old chunks.
+    fn capture(&self, text: &str) {
+        let mut captured = self.captured.borrow_mut();
+        captured.push_back(text.to_string());
+        let mut bytes = self.captured_bytes.get() + text.len();
+        while bytes > MAX_CAPTURE_BYTES {
+            let Some(oldest) = captured.pop_front() else {
+                break;
+            };
+            bytes -= oldest.len();
+        }
+        self.captured_bytes.set(bytes);
+    }
+
+    /// Clear the screen, and the capture with it.
+    ///
+    /// `clear` means the scrollback is gone, so the stored copy goes too: the
+    /// next save stores only what was written after this.
     pub fn clear(&self) {
+        self.captured.borrow_mut().clear();
+        self.captured_bytes.set(0);
         self.terminal.clear();
     }
 

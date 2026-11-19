@@ -383,8 +383,9 @@ to that tag's release. To publish a new engine, build it, update `size` and `sha
 - **Output over 2 MB is truncated**, with a note saying to use `-o out.csv` and then
   `download out.csv`, which writes the whole thing.
 - **Uploads replace rather than accumulate**, capped at 5 MB per file and 50 MB total.
-- **The scrollback belongs to the session**: a reload restores the files and history, not
-  what was on screen.
+- **The scrollback comes back after a reload**: what was on screen is captured as it is
+  written (colours and all), kept to the last 512 KB, restored above the fresh banner, and
+  dropped for good by `clear`.
 - **The width reaches hledger only because the engine was built that way**: anything
   running it elsewhere gets hledger's 80-column default.
 
