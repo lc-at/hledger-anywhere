@@ -344,6 +344,11 @@ class Tab {
     for (const character of line) {
       if (character === ' ') await this.press(' ', { code: 'Space', keyCode: 32, text: ' ' });
       else if (character === '-') await this.press('-', { code: 'Minus', keyCode: 189, text: '-' });
+      // Punctuation takes the code and key code a keyboard sends for it. xterm
+      // translates the event itself and keeps a printable character only when the
+      // key code is one it recognises: a '.' claiming its own code point (46) is
+      // below that, and the keystroke never reaches the line.
+      else if (character === '.') await this.press('.', { code: 'Period', keyCode: 190, text: '.' });
       else await this.press(character, { code: `Key${character.toUpperCase()}`, keyCode: character.toUpperCase().charCodeAt(0), text: character });
     }
     await sleep(120);
@@ -541,6 +546,97 @@ async function main() {
       // Every row holding the word matches a chatter line exactly, so all of them are
       // dropped before the search looks, and what is left can only be the refusal.
       await tab.until(`(${READ_TERMINAL}).text.includes('No match for ${word}.')`, 'the no-match message');
+    });
+
+    // How often a string is on screen, for reports that grow one copy per run.
+    const occurrences = (text, needle) => text.split(needle).length - 1;
+
+    // The journal chain, after the settings file and before the search: `-f` is never
+    // needed because the app chooses the main file and exports it as `$LEDGER_FILE`, and
+    // `demo` proved only the default choice. These steps move the choice to the other
+    // loaded file and back, and the report drawn under each is what says the new choice
+    // reached the engine rather than only the screen. The search below counts whatever
+    // is on screen when it runs, so it sees these reports too without being changed.
+
+    await run('journal lists the loaded files with the main one marked', async () => {
+      await tab.type('journal');
+      await tab.enter();
+      // The listing is `file_list`: a header naming how many files are loaded, one row
+      // per file with `*` on the one hledger reads, and the sentence explaining the
+      // mark. The count is not pinned here — `settings export` above added a file to
+      // the same list — so the rows are what carry the assertion.
+      await tab.until(`(${READ_TERMINAL}).text.match(/\\d+ files? loaded:/)`, 'the list of files');
+      const lines = (await tab.read()).split('\n').map((line) => line.trim());
+      if (!lines.some((line) => /^\d+ files? loaded:$/.test(line))) {
+        throw new Error('the listing header is not on screen');
+      }
+      // `choose_main` scored the file whose `include` names the other, so the mark
+      // belongs on hledger.journal and nowhere else.
+      if (!lines.includes('* hledger.journal')) throw new Error('the main file is not marked in the listing');
+      if (!lines.includes('demo-prices.journal')) throw new Error('the other loaded file is not listed');
+      if (!lines.join(' ').includes('is the file hledger reads')) {
+        throw new Error('the listing does not say what the mark means');
+      }
+    });
+
+    await run('journal moves the main file to the one named', async () => {
+      await tab.type('journal demo-prices.journal');
+      await tab.enter();
+      // `set_journal` says which file it is now reading, and the prompt redraws under
+      // that message with the new name rather than the old one.
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes('Now reading demo-prices.journal. Type balance for a report.')`,
+        'the switch to be announced',
+      );
+      await tab.until(
+        `(${READ_TERMINAL}).text.trimEnd().endsWith('demo-prices.journal »')`,
+        'the prompt to name the file being read',
+      );
+    });
+
+    await run('the engine reads the file the window chose', async () => {
+      const before = await tab.read();
+      const salary = occurrences(before, 'income:salary');
+      const rules = occurrences(before, '--------------------');
+      await tab.type('balance --tree');
+      await tab.enter();
+      // A fresh rule means a report was drawn: hledger's total rule is twenty dashes
+      // whatever the report holds, so the count only moves when one arrives.
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('--------------------').length - 1 > ${rules}`,
+        'the report under the other file',
+      );
+      const after = await tab.read();
+      // `income:salary` is written in hledger.journal and nowhere else: demo-prices.journal
+      // is two price directives with no postings, so a report drawn from it has no such
+      // row. One more of them than before would mean the engine still had the old
+      // `$LEDGER_FILE` and read hledger.journal while the window said otherwise.
+      const grown = occurrences(after, 'income:salary');
+      if (grown !== salary) {
+        throw new Error(`${grown - salary} more income:salary row(s) than before the switch: the engine still read hledger.journal`);
+      }
+    });
+
+    await run('the report returns when the main file does', async () => {
+      await tab.type('journal hledger.journal');
+      await tab.enter();
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes('Now reading hledger.journal. Type balance for a report.')`,
+        'the switch back to be announced',
+      );
+      const before = occurrences(await tab.read(), 'income:salary');
+      await tab.type('balance --tree');
+      await tab.enter();
+      await tab.until(
+        `(${READ_TERMINAL}).text.split('income:salary').length - 1 > ${before}`,
+        'the salary row to come back',
+      );
+      const after = occurrences(await tab.read(), 'income:salary');
+      // One report, one row for the account: `--tree` does not split it further, so the
+      // count says the report really was drawn rather than something else adding a row.
+      if (after !== before + 1) {
+        throw new Error(`the report added ${after - before} salary rows, expected exactly one`);
+      }
     });
 
     await run('the report and a fresh banner are there after a reload', async () => {
