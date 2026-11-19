@@ -25,54 +25,21 @@
 //   SW_FILE=/tmp/sw-old.js CHROME=<path> node scripts/check-plugin-freshness.mjs
 //
 // SW_FILE points at a different worker to compare against, which is how the change in sw.js
-// is shown to be the thing that makes the difference rather than luck.
+// is shown to be the thing that makes the difference rather than luck. CHROME is honoured
+// when it is set; otherwise Chrome is found the way scripts/browser.mjs finds it.
 
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { accessSync, constants, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+
+import { findChrome, launch, Protocol, Tab } from './browser.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKER = process.env.SW_FILE || join(HERE, '..', 'sw.js');
 
-// Chrome the way the window check finds it: CHROME first, then anything PATH
-// answers to a browser's name, then agent-browser's own install — which is this
-// machine's answer and no other's, so PATH comes before it and nothing pins a
-// version. No Chrome anywhere is said out loud rather than spawned into ENOENT.
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome']) {
-    try {
-      const found = execFileSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
-      if (found) return found;
-    } catch {
-      // not this one
-    }
-  }
-  // agent-browser's side of the machine: its wrapper first, because the raw
-  // browser under browsers/ links against libraries only the wrapper sets up.
-  try {
-    const wrapper = join(process.env.HOME || '', '.local', 'bin', 'agent-browser-chrome');
-    accessSync(wrapper, constants.X_OK);
-    return wrapper;
-  } catch {
-    // no wrapper
-  }
-  try {
-    const browsers = readdirSync(join(process.env.HOME || '', '.agent-browser', 'browsers'))
-      .filter((entry) => entry.startsWith('chrome-'))
-      .sort();
-    const latest = browsers[browsers.length - 1];
-    if (latest) return join(process.env.HOME, '.agent-browser', 'browsers', latest, 'chrome');
-  } catch {
-    // no agent-browser either
-  }
-  throw new Error('no Chrome found: put google-chrome or chromium on PATH, or set CHROME=/path/to/chrome');
-}
 const CHROME = findChrome();
 
 let checks = 0;
@@ -178,83 +145,27 @@ async function serve(dir) {
 /** A page on a DevTools endpoint: navigate, evaluate, reload, close. */
 async function openPage(url) {
   const profile = await mkdtemp(join(tmpdir(), 'hla-fresh-'));
-  const chrome = spawn(CHROME, [
-    '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-popup-blocking',
-    '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
-    '--window-size=900,700', 'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  let port = null;
-  let stderr = '';
-  chrome.stderr.on('data', (chunk) => {
-    stderr += chunk;
-    const match = /DevTools listening on (?:ws:\/\/)?127\.0\.0\.1:(\d+)/.exec(stderr);
-    if (match && !port) port = Number(match[1]);
+  // Pop-ups have to be let through: the window a plugin opens is one of the three ways a
+  // plugin module is reached, and a blocked pop-up would fail every check that opens one.
+  const { child: chrome, cdp, port } = await launch(CHROME, {
+    windowSize: '900,700', extraArgs: ['--disable-popup-blocking'], profile,
   });
-  for (let i = 0; i < 60 && !port; i += 1) await sleep(100);
-  if (!port) {
-    chrome.kill('SIGKILL');
-    throw new Error(`chrome did not start on a debugging port: ${stderr.slice(-300)}`);
-  }
-  const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-  const target = list.find((entry) => entry.type === 'page');
-  const socket = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve) => socket.addEventListener('open', resolve));
-  let id = 0;
-  const waiters = new Map();
-  socket.addEventListener('message', (event) => {
-    const message = JSON.parse(event.data);
-    if (message.id && waiters.has(message.id)) {
-      waiters.get(message.id)(message.result ?? message.error);
-      waiters.delete(message.id);
-    }
-  });
-  const send = (method, params = {}) => new Promise((resolve) => {
-    const next = ++id;
-    waiters.set(next, resolve);
-    socket.send(JSON.stringify({ id: next, method, params }));
-  });
-  await send('Page.enable');
-  const evaluate = async (expression) => {
-    const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || 'evaluation failed');
-    return result.result?.value;
-  };
-  const navigate = async (to) => {
-    await send('Page.navigate', { url: to });
-    for (let i = 0; i < 60; i += 1) {
-      await sleep(100);
-      const state = await evaluate('document.readyState');
-      if (state === 'complete') return;
-    }
-    throw new Error('the page never finished loading');
-  };
-  let workerSocket = null;
-  let workerSend = null;
+  const tab = await Tab.open(cdp);
+  let workerCdp = null;
   const emulateOffline = async (offline) => {
     const conditions = { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 };
-    await send('Network.enable');
-    await send('Network.emulateNetworkConditions', conditions);
-    if (!workerSend) {
+    await tab.send('Network.enable');
+    await tab.send('Network.emulateNetworkConditions', conditions);
+    if (!workerCdp) {
       const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
       const worker = targets.find((entry) => entry.type === 'service_worker');
       if (!worker) throw new Error('the worker has no DevTools target to emulate');
-      workerSocket = new WebSocket(worker.webSocketDebuggerUrl);
-      await new Promise((resolve) => workerSocket.addEventListener('open', resolve));
-      let workerId = 0;
-      const workerWaiters = new Map();
-      workerSocket.addEventListener('message', (event) => {
-        const message = JSON.parse(event.data);
-        if (message.id && workerWaiters.has(message.id)) {
-          workerWaiters.get(message.id)(message.result ?? message.error);
-          workerWaiters.delete(message.id);
-        }
+      workerCdp = new Protocol(new WebSocket(worker.webSocketDebuggerUrl));
+      await new Promise((resolve, reject) => {
+        workerCdp.socket.onopen = resolve;
+        workerCdp.socket.onerror = reject;
       });
-      workerSend = (method, params = {}) => new Promise((resolve) => {
-        const next = ++workerId;
-        workerWaiters.set(next, resolve);
-        workerSocket.send(JSON.stringify({ id: next, method, params }));
-      });
-      await workerSend('Network.enable');
+      await workerCdp.send('Network.enable');
     }
     // The worker's fetches read the browser's HTTP cache too, and a fresh entry answers a
     // `no-cache` fetch even with the network gone — Chrome serves it rather than failing —
@@ -262,35 +173,31 @@ async function openPage(url) {
     // the worker's own fallback would never be the thing under test. Disabled on this
     // target, the worker's cache is the only thing that can answer, which is the promise
     // its header makes for the second visit.
-    await workerSend('Network.setCacheDisabled', { cacheDisabled: offline });
-    await workerSend('Network.emulateNetworkConditions', conditions);
+    await workerCdp.send('Network.setCacheDisabled', { cacheDisabled: offline });
+    await workerCdp.send('Network.emulateNetworkConditions', conditions);
   };
   return {
-    evaluate,
-    navigate,
+    evaluate: (expression) => tab.eval(expression),
+    navigate: (to) => tab.navigate(to),
     // The offline scenario's network cut, on both targets at once: the worker runs its
     // fetches in its own target, and emulation set on the page does not reach them — the
     // page reports itself offline while the worker keeps talking to the network, which is
     // exactly the traffic being tested.
     emulateOffline,
     reload: async () => {
-      const before = await evaluate('window.__boot || 0');
-      await send('Page.reload', { ignoreCache: false });
-      for (let i = 0; i < 60; i += 1) {
-        await sleep(100);
-        if (await evaluate('document.readyState') === 'complete') break;
-      }
-      const after = await evaluate('window.__boot || 0');
-      // readyState is already 'complete' in a page that never went away, so the boot marker is
-      // what proves the reload happened rather than being assumed.
+      const before = await tab.eval('window.__boot || 0');
+      await tab.reload();
+      const after = await tab.eval('window.__boot || 0');
+      // The load event says a page was drawn; the boot marker says it is a fresh one, since
+      // only the document itself sets `window.__boot` on the way up.
       if (!(after > before)) throw new Error(`the page did not reload (boot ${before} -> ${after})`);
     },
     async close() {
       try {
-        socket.close();
+        cdp.socket.close();
       } catch { /* already gone */ }
       try {
-        if (workerSocket) workerSocket.close();
+        if (workerCdp) workerCdp.socket.close();
       } catch { /* already gone */ }
       chrome.kill('SIGKILL');
       for (let attempt = 0; attempt < 5; attempt += 1) {

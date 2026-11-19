@@ -23,6 +23,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { until } from './browser.mjs';
+
 const run = promisify(execFile);
 const ENGINE = fileURLToPath(new URL('./hledger-wasm.mjs', import.meta.url));
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -223,7 +225,12 @@ export async function liveChecks(tab, check) {
     await tab.eval("(() => { const b = document.querySelector('[data-toggle-hidden]'); if (b && /show/.test(b.textContent)) b.click(); })()");
   };
   const rowsSaid = () => tab.eval("[...document.querySelectorAll('#rows tr[data-id]')].map((tr) => tr.querySelector('td:nth-child(2)').firstChild && tr.cells[1].innerText.split('\\n')[0].replace(/\\s*edit$/, '').trim())");
-  const settled = (entry, saves) => tab.until(`!document.getElementById('status').classList.contains('busy') && ${saves} <= ${entry.saves}`, 20000);
+  // `entry.saves` is this process's count, not the page's, so it cannot go into an expression
+  // the page is asked again and again: interpolated once, the answer was frozen before the
+  // write it was waiting for had happened. The count is read here, on every poll.
+  const settled = (entry, saves) => until(`the file to hold ${saves} ${saves === 1 ? 'write' : 'writes'}`, async () => (
+    !(await tab.eval("document.getElementById('status').classList.contains('busy')")) && saves <= entry.saves
+  ), { timeoutMs: 20000 });
   const rowIndex = (name) => tab.eval(`[...document.querySelectorAll('#rows tr[data-id]')].findIndex((tr) => tr.cells[1].innerText.includes(${JSON.stringify(name)}))`);
   const focusRow = async (name) => {
     const index = await rowIndex(name);
@@ -445,7 +452,7 @@ export async function liveChecks(tab, check) {
       await tab.eval("document.getElementById('find-amount').value"));
     await tab.eval("(() => { document.getElementById('find-amount').value = '15'; document.getElementById('find-date').value = '2026-01-08'; document.getElementById('find-go').click() })()");
     await tab.until("document.querySelectorAll('#found li').length > 0 || /Nothing|Give/.test(document.getElementById('find-said').textContent)", 15000);
-    await tab.until("document.querySelector('#find-file .hl')", 5000);
+    await tab.until("Boolean(document.querySelector('#find-file .hl'))", 5000);
     const result = await tab.eval(`(() => ({
       first: document.querySelector('#found li') ? document.querySelector('#found li').innerText : '',
       buttons: document.querySelectorAll('#found li:first-child button[data-move]').length,
@@ -532,7 +539,7 @@ export async function liveChecks(tab, check) {
     await tab.eval("(() => { document.getElementById('balance').value = '1,388.00'; document.getElementById('balance').dispatchEvent(new Event('input')) })()");
     await tab.until("!document.getElementById('finish').disabled", 5000);
     await tab.eval("document.getElementById('finish').click()");
-    await tab.until("document.getElementById('apply')", 10000);
+    await tab.until("Boolean(document.getElementById('apply'))", 10000);
     const preview = await text('preview');
     check('live: Finish shows the assertion before writing it, and the file is untouched', /Reconciled with statement/.test(preview) && /= 1388\.00 IDR/.test(preview) && !disk(entry).includes('Reconciled'), preview);
     entry.delay = 600;
@@ -573,7 +580,7 @@ export async function liveChecks(tab, check) {
     const balance = /cleared to 2026-01-31 ([\d,.]+) IDR/.exec(sums);
     await tab.eval(`(() => { document.getElementById('balance').value = ${JSON.stringify(balance ? balance[1] : '0')}; document.getElementById('balance').dispatchEvent(new Event('input')) })()`);
     await tab.eval("document.getElementById('finish').click()");
-    await tab.until("document.getElementById('apply') || /Nothing|not ticked/.test(document.getElementById('preview').textContent)", 10000);
+    await tab.until("Boolean(document.getElementById('apply')) || /Nothing|not ticked/.test(document.getElementById('preview').textContent)", 10000);
     await shot('18-finish-preview-mark-conflicts');
     check('live: Finish lists the transactions whose marks disagree', /transactions? with marks that disagree/.test(await text('preview')) && /Cinema/.test(await text('preview')), await text('preview'));
     await tab.eval("document.getElementById('cancel').click()");

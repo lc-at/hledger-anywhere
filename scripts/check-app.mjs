@@ -22,16 +22,18 @@
 //
 // Usage:
 //   node scripts/check-app.mjs
-// Chrome is found on PATH (google-chrome, chromium) or named with CHROME=/path/to/chrome.
+// Chrome is found the way scripts/browser.mjs finds it: CHROME first, then PATH, then
+// agent-browser's install.
 // dist/ has to exist: `trunk build` writes it, and CI runs this after the Build step.
 
 import { createServer } from 'node:http';
-import { accessSync, constants, readdirSync } from 'node:fs';
+import { accessSync, constants } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+
+import { findChrome, launch, Tab as BaseTab } from './browser.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, '..', 'dist');
@@ -51,38 +53,6 @@ const check = (ok, label, detail = '') => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const short = (error) => String((error && error.message) || error).split('\n')[0];
-
-// Chrome the way the window check finds it: CHROME first, then anything PATH answers to a
-// browser's name, then agent-browser's own install, which is this machine's answer. No
-// Chrome anywhere is said out loud rather than spawned into ENOENT.
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome']) {
-    try {
-      const found = execFileSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
-      if (found) return found;
-    } catch {
-      // not this one
-    }
-  }
-  try {
-    const wrapper = join(process.env.HOME || '', '.local', 'bin', 'agent-browser-chrome');
-    accessSync(wrapper, constants.X_OK);
-    return wrapper;
-  } catch {
-    // no wrapper
-  }
-  try {
-    const browsers = readdirSync(join(process.env.HOME || '', '.agent-browser', 'browsers'))
-      .filter((entry) => entry.startsWith('chrome-'))
-      .sort();
-    const latest = browsers[browsers.length - 1];
-    if (latest) return join(process.env.HOME, '.agent-browser', 'browsers', latest, 'chrome');
-  } catch {
-    // no agent-browser either
-  }
-  throw new Error('no Chrome found: put google-chrome or chromium on PATH, or set CHROME=/path/to/chrome');
-}
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -190,65 +160,6 @@ async function uploadFixtures(dir) {
 }
 
 
-async function launch(chrome, profile) {
-  const child = spawn(chrome, [
-    '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-    '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`, '--window-size=1200,1600', 'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-  const url = await new Promise((resolve, reject) => {
-    let seen = '';
-    const timer = setTimeout(() => reject(new Error(`Chrome did not start:\n${seen}`)), 30000);
-    child.stderr.on('data', (chunk) => {
-      seen += chunk;
-      const found = /DevTools listening on (ws:\/\/\S+)/.exec(seen);
-      if (found) {
-        clearTimeout(timer);
-        resolve(found[1]);
-      }
-    });
-    child.on('exit', (code) => reject(new Error(`Chrome exited with ${code}:\n${seen}`)));
-  });
-  const socket = new WebSocket(url);
-  await new Promise((resolve, reject) => {
-    socket.onopen = resolve;
-    socket.onerror = reject;
-  });
-  return { child, cdp: new Protocol(socket) };
-}
-
-/** The DevTools protocol over one socket, with sessions flattened into it. */
-class Protocol {
-  constructor(socket) {
-    this.socket = socket;
-    this.id = 0;
-    this.pending = new Map();
-    this.listeners = new Set();
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      const waiting = message.id && this.pending.get(message.id);
-      if (waiting) {
-        this.pending.delete(message.id);
-        if (message.error) waiting.reject(new Error(`${waiting.method}: ${message.error.message}`));
-        else waiting.resolve(message.result);
-        return;
-      }
-      for (const listener of this.listeners) listener(message);
-    };
-  }
-
-  send(method, params = {}, sessionId) {
-    const id = (this.id += 1);
-    this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject, method }));
-  }
-
-  on(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-}
-
 /**
  * The terminal as text, plus which xterm put it in the DOM.
  *
@@ -265,71 +176,11 @@ const READ_TERMINAL = `(() => {
   return { via: 'nothing', text: '' };
 })()`;
 
-/** One tab: navigate, evaluate, and make the input events a person would. */
-class Tab {
-  static async open(cdp) {
-    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
-    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-    const tab = new Tab(cdp, sessionId);
-    await tab.send('Page.enable');
-    await tab.send('Runtime.enable');
-    // Tall rather than a person's window: the whole scrollback has to be visible for the
-    // rows to be read, and a report scrolled off the top would fail for want of a scrollbar.
-    // The app's own commands pile up quickly — a help overview alone is most of a hundred
-    // rows — so the height is what the stored copy needs rather than a person's window.
-    // xterm puts only the rows on screen into the DOM, so this is also the ceiling the
-    // run's output has to fit under: 3200 was 198 rows and the scrollback outgrew it,
-    // taking the first banner out of the read window and failing the reload below.
-    await tab.send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 4800, deviceScaleFactor: 1, mobile: false });
-    return tab;
-  }
-
-  constructor(cdp, sessionId) {
-    this.cdp = cdp;
-    this.sessionId = sessionId;
+/** One tab: the terminal read back as text, and the input events a person would make. */
+class Tab extends BaseTab {
+  constructor(cdp, sessionId, options) {
+    super(cdp, sessionId, options);
     this.via = null;
-  }
-
-  send(method, params) {
-    return this.cdp.send(method, params, this.sessionId);
-  }
-
-  async eval(expression) {
-    const wrapped = `(async () => { const value = await (${expression}); return value instanceof Node || value === window || typeof value === 'function' ? undefined : value; })()`;
-    const result = await this.send('Runtime.evaluate', { expression: wrapped, returnByValue: true, awaitPromise: true });
-    if (result.exceptionDetails) throw new Error(`${expression}: ${result.exceptionDetails.text}`);
-    return result.result.value;
-  }
-
-  /** Poll an expression until it is truthy, and say what was being waited for. */
-  async until(expression, what, timeout = 30000) {
-    const end = Date.now() + timeout;
-    for (;;) {
-      const value = await this.eval(expression);
-      if (value) return value;
-      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-      await sleep(60);
-    }
-  }
-
-  /** A load or a reload, ended by the event rather than by a readyState already complete. */
-  async navigate(url, how = 'Page.navigate') {
-    const fired = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        stop();
-        reject(new Error('the page never finished loading'));
-      }, 30000);
-      const stop = this.cdp.on((message) => {
-        if (message.sessionId === this.sessionId && message.method === 'Page.loadEventFired') {
-          clearTimeout(timer);
-          stop();
-          resolve();
-        }
-      });
-    });
-    fired.catch(() => {});
-    await this.send(how, how === 'Page.navigate' ? { url } : { ignoreCache: false });
-    await fired;
   }
 
   /**
@@ -460,8 +311,15 @@ async function main() {
   };
 
   try {
-    launched = await launch(chrome, profile);
-    const tab = await Tab.open(launched.cdp);
+    launched = await launch(chrome, { windowSize: '1200,1600', profile });
+    // Tall rather than a person's window: the whole scrollback has to be visible for the
+    // rows to be read, and a report scrolled off the top would fail for want of a scrollbar.
+    // The app's own commands pile up quickly — a help overview alone is most of a hundred
+    // rows — so the height is what the stored copy needs rather than a person's window.
+    // xterm puts only the rows on screen into the DOM, so this is also the ceiling the
+    // run's output has to fit under: 3200 was 198 rows and the scrollback outgrew it,
+    // taking the first banner out of the read window and failing the reload below.
+    const tab = await Tab.open(launched.cdp, { width: 1200, height: 4800 });
 
     await run('the app boots to its banner', async () => {
       await tab.navigate(`${base}/`);
@@ -474,7 +332,7 @@ async function main() {
     // its rows in the DOM when asked to, and this is the record the settings command uses.
     if (!stopped) {
       await tab.eval(`localStorage.setItem(${JSON.stringify(SETTINGS_KEY)}, '{"screen_reader":true}')`);
-      await tab.navigate('', 'Page.reload');
+      await tab.reload();
       await run('the terminal is readable as rows', async () => {
         await tab.booted();
         const text = await tab.read();
@@ -1585,7 +1443,7 @@ async function main() {
       // `booted` waits for the banners in the stored copy plus this visit's own, so what is
       // left to prove is the order: the report came back from the replay, and this visit's
       // banner is printed under it rather than instead of it.
-      await tab.navigate('', 'Page.reload');
+      await tab.reload();
       await tab.booted();
       const text = await tab.read();
       if (!text.includes('income:salary')) throw new Error('the report did not come back');
@@ -1600,7 +1458,7 @@ async function main() {
     });
 
     await run('the cleared report stays gone after a reload', async () => {
-      await tab.navigate('', 'Page.reload');
+      await tab.reload();
       await tab.booted();
       const text = await tab.read();
       if (text.includes('income:salary')) throw new Error('the cleared report came back');

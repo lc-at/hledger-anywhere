@@ -17,13 +17,14 @@
 // must be mostly executed, so code that no check reaches shows up as a failing number.
 //
 // Run with: node scripts/check-plugin-windows.mjs
-// Chrome is found on PATH (google-chrome, chromium) or named with CHROME=/path/to/chrome.
+// Chrome is found the way scripts/browser.mjs finds it: CHROME first, then PATH, then
+// agent-browser's install.
 // Node 22 or later, for its built-in WebSocket.
 //
 // On a machine with no fonts of its own, a bundled fontconfig is used if one is around; a
 // Chrome that cannot find its shared libraries needs LD_LIBRARY_PATH pointing at them.
 
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import inspector from 'node:inspector/promises';
 import { createServer } from 'node:http';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -32,6 +33,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { findChrome, launch, Tab as BaseTab } from './browser.mjs';
 import { BUDGET_CSV, COLORS, DARK, FLOWS_CSV, FLOWS_MONTHS_CSV, MONTHLY_CSV, RANKING_CSV, REGISTER_CSV, TREE_CSV, TREE_MONTHS_CSV, dailyCsv } from './chart-fixtures.mjs';
 
 // This process writes every page, so its own coverage counts: it is measured from before the
@@ -469,18 +471,6 @@ function serve() {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome']) {
-    try {
-      return execFileSync('sh', ['-c', `command -v ${name}`], { encoding: 'utf8' }).trim();
-    } catch {
-      // not this one
-    }
-  }
-  return null;
-}
-
 /**
  * Fonts for a machine that has none of its own.
  *
@@ -516,75 +506,15 @@ function fontEnvironment() {
   return {};
 }
 
-async function launch(chrome, profile) {
-  const child = spawn(chrome, [
-    '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
-    '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0',
-    `--user-data-dir=${profile}`, '--window-size=1100,900', 'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...fontEnvironment() } });
-  const url = await new Promise((resolve, reject) => {
-    let seen = '';
-    const timer = setTimeout(() => reject(new Error(`Chrome did not start:\n${seen}`)), 30000);
-    child.stderr.on('data', (chunk) => {
-      seen += chunk;
-      const found = /DevTools listening on (ws:\/\/\S+)/.exec(seen);
-      if (found) {
-        clearTimeout(timer);
-        resolve(found[1]);
-      }
-    });
-    child.on('exit', (code) => reject(new Error(`Chrome exited with ${code}:\n${seen}`)));
-  });
-  const socket = new WebSocket(url);
-  await new Promise((resolve, reject) => {
-    socket.onopen = resolve;
-    socket.onerror = reject;
-  });
-  return { child, cdp: new Protocol(socket) };
-}
-
-/** The DevTools protocol over one socket, with sessions flattened into it. */
-class Protocol {
-  constructor(socket) {
-    this.socket = socket;
-    this.id = 0;
-    this.pending = new Map();
-    this.listeners = new Set();
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      const waiting = message.id && this.pending.get(message.id);
-      if (waiting) {
-        this.pending.delete(message.id);
-        if (message.error) waiting.reject(new Error(`${waiting.method}: ${message.error.message}`));
-        else waiting.resolve(message.result);
-        return;
-      }
-      for (const listener of this.listeners) listener(message);
-    };
-  }
-
-  send(method, params = {}, sessionId) {
-    const id = (this.id += 1);
-    this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-    return new Promise((resolve, reject) => this.pending.set(id, { resolve, reject, method }));
-  }
-
-  on(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-}
-
-/** One tab: navigate, evaluate, and make the input events a person would. */
-class Tab {
-  static async open(cdp, base) {
-    const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
-    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
-    const tab = new Tab(cdp, sessionId, base);
-    tab.errors = [];
-    tab.dialogs = [];
-    cdp.on((message) => {
-      if (message.sessionId !== sessionId) return;
+/** One tab: the input events a person would make, on this check's own pages. */
+class Tab extends BaseTab {
+  /**
+   * This check's tab, on top of the shared one: its dialogs are answered rather than left to
+   * hang a headless browser, its exceptions are remembered for the check, and coverage is
+   * started before anything is drawn.
+   */
+  static async open(cdp, options) {
+    const onEvent = (tab, message) => {
       // The editor asks before a page with unsaved changes is left. A headless browser would
       // wait on that question forever, so it is answered, and remembered for the check.
       if (message.method === 'Page.javascriptDialogOpening') {
@@ -595,72 +525,37 @@ class Tab {
         const details = message.params.exceptionDetails;
         tab.errors.push((details.exception && details.exception.description) || details.text);
       }
-    });
-    await tab.send('Page.enable');
-    await tab.send('Runtime.enable');
+    };
+    const tab = await super.open(cdp, { ...options, onEvent });
     await tab.send('Profiler.enable');
     await tab.send('Profiler.startPreciseCoverage', { callCount: true, detailed: true });
     await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: OPENER });
-    await tab.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 900, deviceScaleFactor: 1, mobile: false });
     return tab;
   }
 
-  constructor(cdp, sessionId, base) {
-    this.cdp = cdp;
-    this.sessionId = sessionId;
-    this.base = base;
-  }
-
-  send(method, params) {
-    return this.cdp.send(method, params, this.sessionId);
+  constructor(cdp, sessionId, options = {}) {
+    super(cdp, sessionId, options);
+    this.base = options.base;
+    this.errors = [];
+    this.dialogs = [];
   }
 
   /** Open a chart window; `name` is a case, or `edit` for the editor with `extra` as its query. */
   async show(name, theme = 'light', extra = '') {
     await coverage.collect(this);
     this.errors = [];
-    // A load that never comes is a failure with a name, not a check that hangs.
-    const loaded = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        stop();
-        reject(new Error(`${name} did not finish loading`));
-      }, 15000);
-      const stop = this.cdp.on((message) => {
-        if (message.sessionId === this.sessionId && message.method === 'Page.loadEventFired') {
-          clearTimeout(timer);
-          stop();
-          resolve();
-        }
-      });
-    });
-    loaded.catch(() => {});
     if (process.env.VERBOSE) console.error(`showing ${name} ${theme}${extra}`);
     const path = name === 'edit' ? `/edit?theme=${theme}${extra}` : name === 'reconcile' ? `/reconcile?theme=${theme}${extra}` : name === 'live' ? `/live?theme=${theme}${extra}` : `/window?case=${name}&theme=${theme}${extra}`;
-    await this.send('Page.navigate', { url: `${this.base}${path}` });
-    await loaded;
+    // A load that never comes is a failure with a name, not a check that hangs.
+    await this.navigate(`${this.base}${path}`, { timeoutMs: 15000, label: `${name} did not finish loading` });
+    // An element is waited for by what it carries: an element itself cannot travel back over
+    // the protocol, so a wait that asks for one is never answered. The editor and the live
+    // window also take seconds to build themselves — Ace loads, the journal is read through
+    // the engine — so the wait gives a page that is still working the time to finish.
     await this.until(name === 'edit'
-      ? "document.querySelector('.ace_content') || !document.getElementById('warn').hidden"
+      ? "(() => { const ace = document.querySelector('.ace_content'); return Boolean(ace && ace.innerText.length) || !document.getElementById('warn').hidden; })()"
       : name === 'reconcile' || name === 'live' ? "document.getElementById('rows') && document.querySelectorAll('#rows tr').length > 0"
-      : "document.querySelectorAll('#chart *').length > 0 || !document.getElementById('warn').hidden");
-  }
-
-  async eval(expression) {
-    // An expression is a value or an effect; an effect such as defineProperty returns the
-    // window, which cannot be sent back by value, so anything that is not plain data is dropped.
-    const wrapped = `(async () => { const value = await (${expression}); return value instanceof Node || value === window || typeof value === 'function' ? undefined : value; })()`;
-    const result = await this.send('Runtime.evaluate', { expression: wrapped, returnByValue: true, awaitPromise: true });
-    if (result.exceptionDetails) throw new Error(`${expression}: ${result.exceptionDetails.text}`);
-    return result.result.value;
-  }
-
-  async until(expression, timeout = 5000) {
-    const end = Date.now() + timeout;
-    for (;;) {
-      const value = await this.eval(expression);
-      if (value) return value;
-      if (Date.now() > end) return value;
-      await sleep(40);
-    }
+      : "document.querySelectorAll('#chart *').length > 0 || !document.getElementById('warn').hidden", 30000);
   }
 
   async mouse(type, x, y, extra = {}) {
@@ -701,8 +596,7 @@ class Tab {
       const box = node.getBoundingClientRect();
       if (!box.width || !box.height) return null;
       return [box.left + box.width / 2, box.top + box.height / 2];
-    })()`);
-    if (!box) throw new Error(`nothing with a size matches ${selector}`);
+    })()`, `an element with a size matching ${selector}`);
     return box;
   }
 
@@ -1127,7 +1021,7 @@ async function playing(tab) {
   check('a click on a mark opens that account, and the animation stops', (await tab.eval('document.querySelector(".period")')) === null
     && (await tab.eval("document.getElementById('timeline').hidden")), '');
   await tab.key('Escape', { keyCode: 27 });
-  await tab.until("document.querySelector('.period')");
+  await tab.until("Boolean(document.querySelector('.period'))");
   check('Escape comes back to the animation', (await tab.eval("document.getElementById('heading').textContent")) === 'treemap: expenses (animated)', '');
 
   await tab.show('race');
@@ -1176,11 +1070,13 @@ async function goingBack(tab) {
   check('and so does Escape, from the treemap', (await heading()) === 'treemap: expenses', await heading());
   // Two deep: back goes one step at a time, naming each.
   await open();
-  const before = await heading();
   const [left, top, width, height] = await tab.eval("(() => { const b = document.getElementById('chart').getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; })()");
   await tab.mouse('mouseMoved', left + width - 30, top + height / 2);
   await tab.click(left + width - 30, top + height / 2);
-  await tab.until(`document.getElementById('heading').textContent !== ${JSON.stringify(before)}`);
+  // The drill can land on the line already on screen — the nearest mark at that point is the
+  // same account — so a changed heading is not what says a second chart opened. The link back
+  // is: it names the one being left, and only a second chart has one to name.
+  await tab.until("(document.getElementById('back').hidden ? '' : document.getElementById('back').textContent).startsWith('← back to line ')");
   check('two charts deep, back names the one before', (await back()).startsWith('← back to line '), await back());
   await tab.eval('history.back()');
   await tab.until("document.getElementById('heading').textContent.startsWith('line ')");
@@ -2639,20 +2535,22 @@ async function theEditor(tab) {
 
 // ------------------------------------------------------------------ the run
 
-const chrome = findChrome();
-if (!chrome) {
-  console.log('FAIL no Chrome found: put google-chrome or chromium on PATH, or set CHROME=/path/to/chrome');
+let chrome;
+try {
+  chrome = findChrome();
+} catch (error) {
+  console.log(`FAIL ${error.message}`);
   process.exit(1);
 }
 const server = await serve();
 const base = `http://127.0.0.1:${server.address().port}`;
 const profile = mkdtempSync(join(tmpdir(), 'window-check-'));
 const downloads = mkdtempSync(join(tmpdir(), 'chart-saved-'));
-const { child, cdp } = await launch(chrome, profile);
+const { child, cdp } = await launch(chrome, { windowSize: '1100,900', env: fontEnvironment(), profile });
 let failure = null;
 try {
   await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
-  const tab = await Tab.open(cdp, base);
+  const tab = await Tab.open(cdp, { base, width: 1100, height: 900, timeoutMs: 5000 });
   // Said once, here, rather than as a click that misses its target later.
   const lineHeight = await tab.eval(`(() => {
     const probe = document.createElement('span');
