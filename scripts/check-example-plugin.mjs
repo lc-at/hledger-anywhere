@@ -47,7 +47,7 @@ import { HOLD, MOVE, ease, periodOf, positionAt, timeline } from '../assets/plug
 import { cardColour, cascade, groupsOf, leafTotal, nestTree, readTreeSeries, treeAt } from '../assets/plugins/chart-d3.js';
 import Edit from '../assets/plugins/edit.js';
 import Reconcile, { fileFor, findQueries, fingerprint, parseLine, rankCandidates, resolveAccount, resolveTarget } from '../assets/plugins/reconcile.js';
-import { assertionText, carry, checkpoints, snapshot, fillCommodity, fillCommodityIn, markConflicts, moveAccount, neighbour, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
+import { assertionText, carry, checkpoints, snapshot, fillCommodity, fillCommodityIn, markConflicts, moveAccount, neighbour, placement, setMarks, formatHeader, formatPosting, hints, inferStyle, journalAmount, markTransaction, moveRefusal, ordered, parseHeader, parsePosting, parseInput, plan, readAmount, readPrint, readTransaction, readable, remark, summarize, template, textOf, toMinor, visibleRows } from '../assets/plugins/reconcile-data.js';
 import { matching, page as reconcilePage, partHint } from '../assets/plugins/reconcile-window.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
@@ -2046,7 +2046,7 @@ check('every bundled plugin documents itself for `<command>?`',
 {
   // Changes written as they are made, through the plugin, against the stood-in hledger.
   const data = readPrint(RECONCILE_PRINT, 'Assets:Bank:Checking');
-  for (const row of data.rows) row.text = RECONCILE_JOURNAL.split('\n').slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
+  for (const row of data.rows) row.text = textOf(row, RECONCILE_JOURNAL);
   check('a row is found again by its text, nearest where it was, and not when its text changed',
     resolveTarget(data.rows, snapshot(data.rows[1])) === data.rows[1]
     && resolveTarget(data.rows.map((row) => ({ ...row, where: { ...row.where, first: row.where.first + 3 } })), snapshot(data.rows[1])).id === data.rows[1].id

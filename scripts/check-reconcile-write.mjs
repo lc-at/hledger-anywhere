@@ -25,7 +25,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import reconcile from '../assets/plugins/reconcile.js';
-import { moveAccount, neighbour, ordered, parsePosting, readPrint, snapshot, summarize } from '../assets/plugins/reconcile-data.js';
+import { moveAccount, neighbour, ordered, parsePosting, readPrint, snapshot, summarize, textOf } from '../assets/plugins/reconcile-data.js';
 import { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } from './reconcile-fixtures.mjs';
 
 const run = promisify(execFile);
@@ -580,11 +580,8 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
       // The window puts each row's journal text on it from the file, and nothing else does:
       // without it every edit, move and insert reads row.text as undefined, takes its branch
       // as a no-op, and the round writes nothing while reporting that it was accepted.
-      const source = readFileSync(join(copy, file), 'utf8').split('\n');
-      for (const row of data.rows) {
-        row.text = source.slice(row.where.first - 1, Math.max(row.where.last - 1, row.where.first))
-          .join('\n').replace(/\s+$/, '');
-      }
+      const source = readFileSync(join(copy, file), 'utf8');
+      for (const row of data.rows) row.text = textOf(row, source);
       if (!data || !data.rows.length) {
         notes.push(`${account}: no rows to reconcile, skipped`);
         continue;
@@ -674,8 +671,8 @@ async function realJournalRun(source, { seed = 7, rounds = 2, accounts: wanted =
       const live = {};
       const reread = async () => {
         const fresh = readPrint(JSON.parse(await host.hledger(`print ${JSON.stringify('acct:^' + literal(account) + '$')} -O json`)), account);
-        const lines = readFileSync(join(copy, file), 'utf8').split('\n');
-        for (const row of fresh.rows) row.text = row.where.file.replace(/^\/+/, '') === file ? lines.slice(row.where.first - 1, Math.max(row.where.last - 1, row.where.first)).join('\n').replace(/\s+$/, '') : null;
+        const text = readFileSync(join(copy, file), 'utf8');
+        for (const row of fresh.rows) row.text = row.where.file.replace(/^\/+/, '') === file ? textOf(row, text) : null;
         for (const row of fresh.rows) row.where.file = row.where.file.replace(/^\/+/, '');
         live.data = fresh;
       };

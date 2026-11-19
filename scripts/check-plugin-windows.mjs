@@ -44,7 +44,7 @@ const { page } = await import('../assets/plugins/chart-window.js');
 const { build, parseReport } = await import('../assets/plugins/chart.js');
 const { page: editPage } = await import('../assets/plugins/edit-window.js');
 const { page: reconcilePage } = await import('../assets/plugins/reconcile-window.js');
-const { readPrint: readReconcile } = await import('../assets/plugins/reconcile-data.js');
+const { readPrint: readReconcile, textOf } = await import('../assets/plugins/reconcile-data.js');
 const { GENERIC_JOURNAL, GENERIC_PRINT, RECONCILE_JOURNAL, RECONCILE_PRINT } = await import('./reconcile-fixtures.mjs');
 const { cleanUp, liveChecks, liveRoute, space } = await import('./reconcile-live.mjs');
 
@@ -56,13 +56,11 @@ const FIXTURE_JOURNAL = `${RECONCILE_JOURNAL}\n${FOUND_TEXT}\n`;
 /**
  * Each row carries its transaction's text, as the plugin gives it: the editor starts from it,
  * and a change finds its transaction by it, so the journal the window is drawn from and the
- * journal the plugin reads have to be the same words.
+ * journal the plugin reads have to be the same words. Sliced here by the plugin's own `textOf`,
+ * so what the window is given is what the plugin would give it.
  */
 function withText(data, journal) {
-  const lines = journal.split('\n');
-  for (const row of data.rows) {
-    row.text = lines.slice(row.where.first - 1, row.where.last - 1).join('\n').replace(/\s+$/, '');
-  }
+  for (const row of data.rows) row.text = textOf(row, journal);
   return data;
 }
 

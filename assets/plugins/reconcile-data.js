@@ -257,6 +257,27 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
   return { account, inclusive, commodity, style, others, start, rows };
 }
 
+// Cutting a row's text splits the file it comes from, and one read cuts every row's text from
+// the same one or two files: splitting a large journal per row would cost more than every run
+// of hledger the window makes. So the last few texts are kept split; past four the whole cache
+// is dropped rather than evicted one by one, which is simpler and covers every read there is.
+const split = new Map();
+
+/**
+ * A row's transaction text, as written: the lines hledger said the transaction is on, out of
+ * the file's whole text, with the whitespace after its last line gone. This is what the window's
+ * editor starts a change from and what a change finds its transaction by, so it belongs with the
+ * row's identity — `where.first` and `where.last` — rather than being sliced anywhere else.
+ */
+export function textOf(row, fileText) {
+  if (!split.has(fileText)) {
+    if (split.size >= 4) split.clear();
+    split.set(fileText, fileText.split('\n'));
+  }
+  const lines = split.get(fileText);
+  return lines.slice(row.where.first - 1, Math.max(row.where.last - 1, row.where.first)).join('\n').replace(/\s+$/, '');
+}
+
 // ---------------------------------------------------------------- the arithmetic
 
 /**

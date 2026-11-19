@@ -19,7 +19,7 @@
  */
 
 import { page } from './reconcile-window.js';
-import { carry, fillCommodityIn, inferStyle, markConflicts, moveAccount, moveRefusal, neighbour, ordered, parseHeader, parsePosting, plan, readPrint, readTransaction, readable, styleOf, summarize, toMinor, quantityOf } from './reconcile-data.js';
+import { carry, fillCommodityIn, inferStyle, markConflicts, moveAccount, moveRefusal, neighbour, ordered, parseHeader, parsePosting, plan, readPrint, readTransaction, readable, styleOf, summarize, textOf, toMinor, quantityOf } from './reconcile-data.js';
 import { quote, tokenize } from './chart-args.js';
 import { beside, bridge, colorsOf, shell } from './window-kit.js';
 
@@ -89,17 +89,15 @@ function accountQuery(account, inclusive) {
   return inclusive ? `acct:^${literal(account)}(:|$)` : `acct:^${literal(account)}$`;
 }
 
-/** Each transaction's text, as written, from the files the app has. */
-function textOf(host, file, first, last, cache) {
-  if (!cache.has(file)) {
-    // Not awaited, and it cannot be: the plan is worked out synchronously, so `read` has to
-    // answer with the text itself. The app does; docs/plugins.md says so where the host API is
-    // written down.
-    const text = typeof host.read === 'function' ? host.read(file) : null;
-    cache.set(file, text == null ? null : text.split('\n'));
-  }
-  const lines = cache.get(file);
-  return lines ? lines.slice(first - 1, Math.max(last - 1, first)).join('\n').replace(/\s+$/, '') : null;
+/**
+ * A loaded file's text as the app has it, or null when it is not a file the app has, read once
+ * per file. Not awaited, and it cannot be: the plan is worked out synchronously, so `read` has to
+ * answer with the text itself. The app does; docs/plugins.md says so where the host API is
+ * written down. What is then cut out of that text is `textOf`'s business, in reconcile-data.js.
+ */
+function fileText(host, file, cache) {
+  if (!cache.has(file)) cache.set(file, typeof host.read === 'function' ? host.read(file) : null);
+  return cache.get(file);
 }
 
 /**
@@ -123,7 +121,8 @@ async function readAccount(host, account, commodity, inclusive = null) {
     const cache = new Map();
     for (const row of data.rows) {
       row.where.file = fileFor(row.where.file, paths);
-      row.text = textOf(host, row.where.file, row.where.first, row.where.last, cache);
+      const text = fileText(host, row.where.file, cache);
+      row.text = text == null ? null : textOf(row, text);
     }
   }
   return { data, query };
@@ -641,7 +640,8 @@ export default {
           const cache = new Map();
           const candidates = rankCandidates(found, { account: data.account, inclusive: data.inclusive, amount: ask.amount, date: ask.date, words: ask.words, style }).map((candidate) => {
             const file = fileFor(candidate.file, paths);
-            const text = textOf(host, file, candidate.first, candidate.last, cache);
+            const source = fileText(host, file, cache);
+            const text = source == null ? null : textOf({ where: candidate }, source);
             // Each posting's line in the text, so "move this one" names a line, not a guess.
             const lines = String(text || '').split('\n');
             const at = [];
