@@ -28,7 +28,7 @@
 
 import { createServer } from 'node:http';
 import { accessSync, constants } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -161,6 +161,28 @@ const REPORT_CSV = `\
 `;
 
 /**
+ * The journal the open step's fallback mounts, and the only place
+ * `expenses:round24open` and `$63.50` are written — nothing else in this session,
+ * nor anything else in this repository, holds either of them.
+ */
+const OPEN_JOURNAL = `\
+; Fixture of scripts/check-app.mjs, for the open step alone.
+2026-05-06 * Round 24
+    expenses:round24open            $63.50
+    assets:bank:checking
+`;
+
+/**
+ * What sits under `prices/` in the folder the open step hands over, and the only
+ * copy of its text. Its path — not its contents — is what this file is for: it
+ * only reaches the terminal if the directory pick kept the paths inside it.
+ */
+const OPEN_PRICES = `\
+; Fixture of scripts/check-app.mjs, for the open step alone.
+2026-05-06 price x  $1.00
+`;
+
+/**
  * Write the four files the upload step hands to the picker, and return their paths.
  *
  * One mounts, three cannot, for the three reasons `src/upload.rs` gives for
@@ -175,6 +197,23 @@ async function uploadFixtures(dir) {
   await writeFile(join(dir, 'huge.journal'), 'a'.repeat(5 * 1024 * 1024 + 1024));
   return ['round17.journal', 'empty.journal', 'binary.journal', 'huge.journal']
     .map((name) => join(dir, name));
+}
+
+/**
+ * Write the folder the open step's fallback mounts — a journal at its root, a file
+ * under `prices/` — and return the directory to hand the picker.
+ *
+ * The directory itself is what gets handed over, because that is what a person picks:
+ * the browser turns it into the `webkitRelativePath`s a real pick carries
+ * (`journal/hledger.journal` and `journal/prices/x.journal`), and `strip_common_root`
+ * (src/journal.rs) drops the shared `journal/` on the way in.
+ */
+async function openFixtures(dir) {
+  const folder = join(dir, 'journal');
+  await mkdir(join(folder, 'prices'), { recursive: true });
+  await writeFile(join(folder, 'hledger.journal'), OPEN_JOURNAL);
+  await writeFile(join(folder, 'prices', 'x.journal'), OPEN_PRICES);
+  return folder;
 }
 
 
@@ -1539,6 +1578,187 @@ async function writeAndDownload({ tab, launched, downloads }) {
 }
 
 /**
+ * Take `open` down its fallback — the folder picker with no File System Access API —
+ * and read from the folder it mounts read-only.
+ *
+ * Needs: the folder `openFixtures` wrote inside `fixtures`, `launched`'s CDP session
+ * to intercept the directory chooser with (the same wiring the upload step uses), and
+ * `expenses:round24open` and `$63.50` not yet on screen — the first read confirms that
+ * rather than assuming it. `open` replaces the loaded files exactly as `upload` did, so
+ * nothing after this scenario needs the ones it takes away.
+ * Leaves: `hledger.journal` and `prices/x.journal` mounted with the prompt naming the
+ * first, the fixture's account and amount on screen from a fresh report, and `reopen`'s
+ * refusal under them. The page's `showDirectoryPicker` is deleted and left deleted: no
+ * later step opens a picker (`clear` and the reloads do not), and every reload the
+ * reload scenario performs mounts a fresh page where the method is back — so the
+ * deletion needs no putting back. Nothing here prints `hledger-anywhere`, so the banner
+ * count that scenario waits for does not move; the font and the theme are untouched.
+ */
+async function openAFolderReadOnly({ tab, launched, fixtures }) {
+  // The branch `fs_access::available()` is for: without the File System Access API no
+  // directory handle can be kept, so `App::open` says the folder loads read-only and
+  // hands the same job to `upload::Mode::Directory` — the fallback the help promises
+  // ("A browser without the File System Access API falls back to a read-only folder
+  // picker") and the one no other check drives. What only a real browser run can show
+  // is the whole chain: the method's absence read as absence, the dialog opened from
+  // inside the Enter handler, a directory handed back through it with its paths inside
+  // it intact, and the engine reading the journal that arrived.
+
+  await run('the folder api is taken away and open mounts the folder read-only', async () => {
+    const folder = await openFixtures(fixtures);
+
+    // `fs_access::available()` (src/fs_access.rs) is a secure context — this page is
+    // served over localhost, so that half is already true — plus `Reflect.has(window,
+    // 'showDirectoryPicker')`, which the method answers as its own property here. The
+    // delete is the whole trigger, and both halves are checked so a build that never
+    // had the method fails under this label rather than passing for the wrong reason.
+    const api = await tab.eval(`(() => {
+      const before = Reflect.has(window, 'showDirectoryPicker');
+      delete window.showDirectoryPicker;
+      return { before, after: Reflect.has(window, 'showDirectoryPicker') };
+    })()`);
+    if (!api.before) throw new Error('showDirectoryPicker was not on the window to take away');
+    if (api.after) throw new Error('showDirectoryPicker is still on the window after the delete');
+
+    // The upload step's interception, unchanged in shape: headless cannot show the
+    // directory dialog either, so the click's `Page.fileChooserOpened` is where the
+    // fallback's own `<input type=file webkitdirectory>` gets caught.
+    let chooser = null;
+    const watching = launched.cdp.on((message) => {
+      if (message.sessionId === tab.sessionId && message.method === 'Page.fileChooserOpened') {
+        chooser = message.params || {};
+      }
+    });
+    let handed = 'the intercepted file chooser';
+    try {
+      let intercepted = true;
+      try {
+        await tab.send('Page.setInterceptFileChooserDialog', { enabled: true });
+      } catch {
+        intercepted = false;
+      }
+      await tab.type('open');
+      await tab.enter();
+      // The sentence `App::open` prints before it opens the dialog: it is what says
+      // the delete above was read as an absent API rather than the dialog merely
+      // failing to open.
+      await tab.until(
+        `(${READ_TERMINAL}).text.includes('This browser cannot open a folder for editing, so open loads it read-only.')`,
+        'the fallback to be announced',
+      );
+      const end = Date.now() + 15000;
+      while (intercepted && !chooser && Date.now() < end) await sleep(60);
+      if (chooser && chooser.backendNodeId) {
+        // The directory itself, not the files in it: `DOM.setFileInputFiles` expands
+        // it into the `webkitRelativePath`s a real pick carries — `journal/
+        // hledger.journal` and `journal/prices/x.journal` here — which is what
+        // `Mode::Directory` reads and `strip_common_root` (src/journal.rs) shortens.
+        await tab.send('DOM.setFileInputFiles', { files: [folder], backendNodeId: chooser.backendNodeId });
+      } else {
+        // No chooser event: the input `open_picker` made is still on the page, so
+        // the same two files are built onto it with those paths and the `change`
+        // the picker waits on is dispatched by hand.
+        handed = 'an in-page change event, because no chooser opened';
+        const failed = await tab.eval(`(() => {
+          const input = document.getElementById('hledger-anywhere-upload-input');
+          if (!input) return 'the upload input is not on the page';
+          const transfer = new DataTransfer();
+          const pairings = ${JSON.stringify([
+            ['journal/hledger.journal', OPEN_JOURNAL],
+            ['journal/prices/x.journal', OPEN_PRICES],
+          ])};
+          for (const [path, contents] of pairings) {
+            const file = new File([contents], path.slice(path.lastIndexOf('/') + 1));
+            Object.defineProperty(file, 'webkitRelativePath', { value: path });
+            transfer.items.add(file);
+          }
+          input.files = transfer.files;
+          input.dispatchEvent(new Event('change'));
+          return '';
+        })()`);
+        if (failed) throw new Error(failed);
+      }
+    } finally {
+      watching();
+    }
+
+    // The same settle as the upload step: whether the files went in with the browser's
+    // own `change` or the one dispatched above, the input still being on the page says
+    // the selection has not been read yet.
+    const arrived = `(${READ_TERMINAL}).text.includes('Uploaded 2 files.')`;
+    try {
+      await tab.until(arrived, 'the opened files to arrive', 15000);
+    } catch {
+      const waiting = await tab.eval("Boolean(document.getElementById('hledger-anywhere-upload-input'))");
+      if (!waiting) throw new Error('the selection was read, but the arrival message never printed');
+      handed += '; a change event was dispatched for it';
+      await tab.eval("document.getElementById('hledger-anywhere-upload-input').dispatchEvent(new Event('change'))");
+      await tab.until(arrived, 'the opened files to arrive after the change event');
+    }
+    if (handed !== 'the intercepted file chooser') console.log(`note the files were handed over by ${handed}`);
+
+    // Every line `files_arrived` (src/terminal/messages.rs) writes for this mount: the
+    // source is `accept_files`' `"Uploaded"` even down this branch, the paths are the
+    // folder's own contents with `journal/` stripped off — `prices/x.journal` is the
+    // row that says the subfolder survived — and the last line names the file
+    // `choose_main` picked, by its conventional name rather than the subfolder's.
+    const text = await tab.read();
+    const lines = text.split('\n').map((line) => line.trim());
+    for (const line of ['Uploaded 2 files.', 'hledger.journal', 'prices/x.journal']) {
+      if (!lines.includes(line)) throw new Error(`${JSON.stringify(line)} is not a line on screen`);
+    }
+    if (!text.includes('Reading hledger.journal. Type balance for a report, or ? for the rest.')) {
+      throw new Error('the arrival message does not name the file hledger reads');
+    }
+  });
+
+  await run('the engine reads the journal in the opened folder', async () => {
+    const before = await tab.read();
+    // Nothing earlier in the session can have written either string: the fixture
+    // above is their only copy, so a report holding them can only have been drawn
+    // from the folder the picker mounted.
+    if (occurrences(before, 'expenses:round24open')) throw new Error('the open fixture account was already on screen');
+    if (occurrences(before, '$63.50')) throw new Error('the open fixture amount was already on screen');
+    const rules = occurrences(before, '--------------------');
+    await tab.type('balance --tree');
+    await tab.enter();
+    // A fresh rule means a report was drawn, and the rows under it say which
+    // journal it was drawn from: `accept_files` replaced the loaded files and
+    // `configure` re-exported `$LEDGER_FILE`, so the engine can only reach this
+    // account if both moved to the file from the folder.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('expenses:round24open').length - 1 > 0`,
+      'the report from the opened journal',
+    );
+    const after = await tab.read();
+    if (occurrences(after, '--------------------') <= rules) throw new Error('no fresh report rule was drawn');
+    if (!after.includes('$63.50')) throw new Error('the open fixture amount is not in the report');
+  });
+
+  await run('the prompt names the opened journal', async () => {
+    // `prompt_for` dims the basename of the file being read, and `announce` redraws
+    // the prompt under the arrival message and under every report since — so the last
+    // row is the folder's own journal rather than the dropped one it replaced.
+    await tab.until(
+      `(${READ_TERMINAL}).text.trimEnd().endsWith('hledger.journal »')`,
+      'the prompt to name the opened journal',
+    );
+  });
+
+  await run('reopen says there is no remembered folder', async () => {
+    await tab.type('reopen');
+    await tab.enter();
+    // The fallback never kept a handle — only the File System Access path remembers
+    // one — and a fresh profile starts with none stored, so `reopen` answers from its
+    // first branch (app.rs) without asking the browser for anything.
+    await tab.until(
+      `(${READ_TERMINAL}).text.includes('There is no remembered folder to reopen. open chooses one, and remembers it for next time.')`,
+      'reopen to say it has nothing to reopen',
+    );
+  });
+}
+
+/**
  * Reload until the stored scrollback proves itself, then clear it and prove that too.
  *
  * Needs: a banner count that has not moved since boot (no scenario above prints
@@ -1675,6 +1895,7 @@ async function main() {
     await pluginsAndScreenreader(session);
     await dropAJournal(session);
     await writeAndDownload(session);
+    await openAFolderReadOnly(session);
     await reloadAndClear(session);
 
     if (!stopped) console.log(`note the terminal was read from ${tab.via}`);
