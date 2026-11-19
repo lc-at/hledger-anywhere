@@ -118,6 +118,13 @@ promise, is reported as the plugin failing.
 | `host.save(path, contents)` | Writes a file back to the folder an `open` granted. Resolves with `{ok: true}` or `{error: "..."}`, and never rejects. Refuses if the file changed on disk since it was opened. |
 | `host.refresh()` | Reads the `open`ed folder again, for files another program (an editor, say) changed. Resolves with `{changed: [...], missing: [...]}`, the paths taken in afresh and the paths that could no longer be read, plus `error` if the browser refused something, and never rejects. A changed file is what `host.read` returns from then on, hledger reads it, and `host.save` writes over it without refusing. A missing file is left as it was. With no folder open it changes nothing and both lists are empty. |
 
+Every row above is on every host, and is written down in three places that have to agree:
+`App::host` in `src/app.rs` sets nine of them, `assets/js/plugins.js` adds `host.name` and
+`host.window` in JavaScript, because a window has to be opened by the browser before the
+plugin awaits, and `scripts/host.mjs` builds the same host for the checks that run a plugin
+without an app. `node scripts/check-host-contract.mjs` reads all three and fails when they do
+not name the same methods.
+
 `host.hledger` accepts anything the command line accepts, and is bound by the same rules:
 `add` and `import` are refused, and `-o` may not write over a loaded file. A command that
 fails rejects rather than resolving with an empty string, so a plugin cannot mistake
