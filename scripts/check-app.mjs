@@ -158,6 +158,21 @@ const DROP_JOURNAL = `\
 `;
 
 /**
+ * What `balance -O csv` writes for DROP_JOURNAL, byte for byte, and the only
+ * thing the file downloaded below is allowed to hold: four rows, 98 bytes,
+ * from the shipped engine itself —
+ * `HLEDGER_NO_FILE_ARG=1 node scripts/hledger-wasm.mjs drop.journal balance -O csv`.
+ * The report does not depend on the terminal width, so the browser's own
+ * `COLUMNS` cannot move it.
+ */
+const REPORT_CSV = `\
+"account","balance"
+"assets:bank:checking","$-84.25"
+"expenses:round18drop","$84.25"
+"Total:","0"
+`;
+
+/**
  * Write the four files the upload step hands to the picker, and return their paths.
  *
  * One mounts, three cannot, for the three reasons `src/upload.rs` gives for
@@ -423,6 +438,9 @@ async function main() {
   const chrome = findChrome();
   const profile = await mkdtemp(join(tmpdir(), 'hla-app-'));
   const fixtures = await mkdtemp(join(tmpdir(), 'hla-upload-'));
+  // Where the browser puts what `download` hands it: a directory of this run's
+  // own, named to `Browser.setDownloadBehavior` before the download starts.
+  const downloads = await mkdtemp(join(tmpdir(), 'hla-dl-'));
   const { server, port } = await serve(DIST);
   const base = `http://127.0.0.1:${port}`;
   let launched = null;
@@ -1422,6 +1440,147 @@ async function main() {
       );
     });
 
+    // The last chain the README's 2 MB workaround needs, after the drop steps
+    // and before the reload: a report the screen would have to cut is written
+    // into the engine's own filesystem with `-o`, `download` reads it back and
+    // hands it to the browser, and real bytes land on disk — plus the refusal
+    // for a name nothing wrote. None of the three prints `hledger-anywhere`, so
+    // the banner count the reload below waits for does not move.
+
+    // The browser's download events, listened for before anything asks for a
+    // download: `downloadWillBegin` says which file was offered, `downloadProgress`
+    // with `state: completed` says the browser finished it. Both stay registered
+    // through the refusal below, which asserts that no second download started.
+    let downloadBegun = null;
+    let downloadCompleted = false;
+    let downloadStarts = 0;
+    const watchingDownloads = launched.cdp.on((message) => {
+      if (message.method === 'Browser.downloadWillBegin') {
+        downloadStarts += 1;
+        downloadBegun = message.params || {};
+      }
+      if (message.method === 'Browser.downloadProgress'
+          && (message.params || {}).state === 'completed') {
+        downloadCompleted = true;
+      }
+    });
+
+    // What `-o` announced, as a number: the note counts the bytes it wrote, and
+    // the same count has to be on the file the download below leaves behind.
+    let writtenBytes = 0;
+
+    await run('a report written with -o is announced with its name and size', async () => {
+      await tab.type('balance -O csv -o round19.csv');
+      await tab.enter();
+      // `finish` → `record_writes` (src/app.rs) is the whole of this run's
+      // output: hledger's stdout is empty because the report went to the file,
+      // so what is on screen is `wrote_note` (src/terminal/messages.rs) and
+      // nothing else — `[wrote {path} ({size}). Take a copy with download {path}
+      // while this visit lasts]`, the size in `bytes_label`'s own words.
+      const note = /\[wrote round19\.csv \((\d+) bytes\)\. Take a copy with download round19\.csv while this visit lasts\]/;
+      await tab.until(`(${READ_TERMINAL}).text.match(${note})`, 'the write to be announced');
+      writtenBytes = Number(note.exec(await tab.read())[1]);
+      // The note counts what the run wrote; the report above is what has to come
+      // back out of it, and the two numbers are the same or this chain is a lie.
+      if (writtenBytes !== Buffer.byteLength(REPORT_CSV)) {
+        throw new Error(`the note says ${writtenBytes} bytes, the report is ${Buffer.byteLength(REPORT_CSV)}`);
+      }
+    });
+
+    await run('download saves the whole report to disk', async () => {
+      // Somewhere for it to land, named before the click that starts it, with
+      // events on so "it finished" is the browser's own word rather than a
+      // deadline. `Browser.setDownloadBehavior` is the level that still has it;
+      // `Page.setDownloadBehavior` was taken away.
+      await launched.cdp.send('Browser.setDownloadBehavior', {
+        behavior: 'allow',
+        downloadPath: downloads,
+        eventsEnabled: true,
+      });
+
+      downloadBegun = null;
+      downloadCompleted = false;
+      const before = downloadStarts;
+
+      await tab.type('download round19.csv');
+      await tab.enter();
+      // `App::download` → `save_to_disk` (src/app.rs): the file out of `written`
+      // as a blob URL behind an anchor click, and this is what it says first —
+      // `Saving {path} ({size} bytes). Check your downloads.`
+      const saving = `Saving round19.csv (${writtenBytes} bytes). Check your downloads.`;
+      await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(saving)})`, 'the save to be announced');
+
+      // The announcement is the click, not the bytes: what is waited for is the
+      // browser saying the download completed AND a file of the size the note
+      // promised being readable in the directory it was given.
+      const end = Date.now() + 30000;
+      let bytes = null;
+      for (;;) {
+        if (downloadStarts > before && downloadCompleted) {
+          try {
+            bytes = await readFile(join(downloads, 'round19.csv'));
+          } catch {
+            bytes = null; // still on its way
+          }
+          if (bytes) break;
+        }
+        if (Date.now() > end) {
+          throw new Error(
+            `no file after 30 s: begun=${JSON.stringify(downloadBegun)} completed=${downloadCompleted} bytes=${bytes && bytes.length}`,
+          );
+        }
+        await sleep(60);
+      }
+
+      // The name the browser was offered, which is the name the anchor set
+      // (`save_to_disk` keeps only the last path segment).
+      if (!downloadBegun || downloadBegun.suggestedFilename !== 'round19.csv') {
+        throw new Error(`the download began as ${JSON.stringify(downloadBegun && downloadBegun.suggestedFilename)}`);
+      }
+      // The bytes: the CSV the engine writes for the dropped journal, header
+      // first and the drop's own row under it, whole — the report `-o` put in
+      // the mount is the report that reaches the disk.
+      if (bytes.length !== writtenBytes) {
+        throw new Error(`the file holds ${bytes.length} bytes, the note said ${writtenBytes}`);
+      }
+      const saved = bytes.toString('utf8');
+      if (!saved.startsWith('"account","balance"\n')) throw new Error(`the header reads ${JSON.stringify(saved.split('\n')[0])}`);
+      if (!saved.includes('"expenses:round18drop","$84.25"')) throw new Error('the drop fixture row is not in the file');
+      if (saved !== REPORT_CSV) throw new Error(`the file reads ${JSON.stringify(saved)}`);
+      console.log(`note the download landed as ${bytes.length} bytes in ${downloads}`);
+    });
+
+    await run('a file that was never written is refused by name', async () => {
+      await tab.type('download no-such-file.csv');
+      await tab.enter();
+      // `App::download` (src/app.rs) with nothing of that name in `written`: the
+      // refusal names the file, then `download_list` (src/terminal/messages.rs)
+      // lists what there is instead — this session has written one file, so it
+      // is the list of names rather than the empty "nothing has been written
+      // yet" sentence.
+      const refusal = 'Nothing called no-such-file.csv was written.';
+      await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(refusal)})`, 'the refusal to be announced');
+      const lines = (await tab.read()).split('\n').map((line) => line.trim());
+      // Each of them a line of its own, as `download_list` writes them: the
+      // header, the one file this session did write, and the sentence saying
+      // how to save one.
+      const said = [
+        'Nothing called no-such-file.csv was written.',
+        'Written by commands this session:',
+        'round19.csv',
+        'Save one with download <path>.',
+      ];
+      for (const line of said) {
+        if (!lines.includes(line)) throw new Error(`${JSON.stringify(line)} is not a line of the refusal`);
+      }
+      // A refusal is not a download: nothing was handed to the browser for the
+      // name that does not exist.
+      if (downloadStarts !== 1) {
+        throw new Error(`${downloadStarts} downloads began, expected only the one for round19.csv`);
+      }
+      watchingDownloads();
+    });
+
     await run('the report and a fresh banner are there after a reload', async () => {
       // `booted` waits for the banners in the stored copy plus this visit's own, so what is
       // left to prove is the order: the report came back from the replay, and this visit's
@@ -1456,6 +1615,7 @@ async function main() {
       try {
         await rm(profile, { recursive: true, force: true });
         await rm(fixtures, { recursive: true, force: true });
+        await rm(downloads, { recursive: true, force: true });
         break;
       } catch {
         await sleep(200);
