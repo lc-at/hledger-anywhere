@@ -24,6 +24,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::{FileSystemDirectoryHandle, HtmlElement};
 
+use crate::dispatch::{self, Effect};
 use crate::hledger::{self, EngineError, HledgerOutput, HledgerRequest, JournalFile};
 use crate::fs_access::{self, Opened, Reread};
 use crate::journal;
@@ -32,7 +33,7 @@ use crate::plugins::{self, Registry};
 use crate::settings::{Alias, Settings};
 use crate::theme::Theme;
 use crate::store::{Session, Store};
-use crate::terminal::{self, Command, Completion, Editor};
+use crate::terminal::{self, Completion, Editor};
 use crate::terminal::view::Screen;
 use crate::upload::{self, Picked};
 
@@ -868,154 +869,75 @@ impl App {
         // echoing it here showed every command twice.
         self.screen.write("\r\n");
 
-        // Aliases are expanded only for commands that are hledger's: an alias
-        // called `upload` would otherwise shadow the app's own command, and the
-        // words the app owns are the one part of the vocabulary it must keep.
-        let line = match terminal::classify(&line) {
-            Command::Hledger(_) => {
-                let aliases = self.aliases.borrow().clone();
-                let (expanded, used) = terminal::expand_alias(&line, &aliases);
-                if let Some((name, expansion)) = used {
-                    let note = terminal::alias_note(&name, &expansion);
-                    self.say(&note);
-                }
-                expanded
-            }
-            _ => line,
-        };
+        for effect in self.decide(&line) {
+            self.apply(effect);
+        }
+    }
 
-        match terminal::classify(&line) {
-            Command::Clear => {
+    /// What the typed line asks for, read from the state it can see.
+    ///
+    /// The reading itself lives in [`dispatch`], where there is no browser, so
+    /// every command's decision is tested by `cargo test` on the host, which
+    /// never compiles this file. The guards are taken here and dropped when this
+    /// returns, before the first effect is applied: an effect that mutates the
+    /// same cell must not meet a borrow held for the decision.
+    fn decide(&self, line: &str) -> Vec<Effect> {
+        let editor = self.editor.borrow();
+        let aliases = self.aliases.borrow();
+        let registry = self.registry.borrow();
+        let files = self.files.borrow();
+        let written = self.written.borrow();
+        let main = self.main.borrow();
+        let view = dispatch::View {
+            aliases: &aliases,
+            history: editor.history(),
+            columns: self.columns(),
+            writable: self.writable.borrow().is_some(),
+            files: &files,
+            main: main.as_deref(),
+            written: &written,
+            font: self.font.get(),
+            screen_reader: self.screen_reader.get(),
+            registry: &registry,
+        };
+        dispatch::decide(&view, line)
+    }
+
+    /// Carry out one effect of a decision, in the order it was decided.
+    ///
+    /// This is where the browser comes back in: the screen, the cells, the engine
+    /// and the pickers are performed here, and nowhere before it.
+    fn apply(self: &Rc<App>, effect: Effect) {
+        match effect {
+            Effect::Print(text) => self.announce(&text),
+            Effect::Say(text) => self.say(&text),
+            Effect::Clear => {
                 self.screen.clear();
                 self.prompt();
             }
-            Command::Help(None) => {
-                // Scoped: the help entries borrow the registry, and the text is what
-                // is kept, so the borrow ends before the line is printed.
-                let text = {
-                    let registry = self.registry.borrow();
-                    format!(
-                        "{}\n{}\n",
-                        crate::help::overview(&registry.help_entries(), self.columns()),
-                        crate::hledger_info::describe()
-                    )
-                };
-                self.announce(&text);
-            }
-            Command::Help(Some(word)) => self.show_help(word),
-            Command::Upload => self.upload(upload::Mode::Files),
-            Command::Open => self.open(),
-            Command::Reopen => self.reopen(),
-            Command::Demo => self.load_demo(),
-            Command::Alias(None) => {
-                let listing = terminal::alias_list(&self.aliases.borrow());
-                self.announce(&listing);
-            }
-            Command::Alias(Some(text)) => self.set_alias(text),
-            Command::History(Some("clear" | "-c")) => {
+            Effect::Upload => self.upload(upload::Mode::Files),
+            Effect::Open => self.open(),
+            Effect::Reopen => self.reopen(),
+            Effect::Demo => self.load_demo(),
+            Effect::SetAlias(text) => self.set_alias(&text),
+            Effect::RemoveAlias(name) => self.remove_alias(&name),
+            Effect::ClearHistory => {
                 self.editor.borrow_mut().clear_history();
                 save_history(self.editor.borrow().history());
-                self.announce("The history is cleared: nothing is left for ↑ or Ctrl+R to recall.");
             }
-            Command::History(filter) => {
-                let listing = terminal::history_listing(self.editor.borrow().history(), filter);
-                self.announce(&listing);
-            }
-            Command::Unalias(Some(name)) => {
-                if let Some(name) = self.single(name) {
-                    self.remove_alias(&name);
-                }
-            }
-            Command::Unalias(None) => {
-                self.announce(&format!(
-                    "Which one? {}, or {} to list them.",
-                    terminal::bold("unalias <name>"),
-                    terminal::bold("alias")
-                ));
-            }
-            Command::Font(None) => self.announce(&format!(
-                "The font is {}px, between {} and {}. {} changes it, and so do \
-                 Ctrl+=, Ctrl+- and Ctrl+0.",
-                self.font.get(),
-                terminal::MIN_FONT,
-                terminal::MAX_FONT,
-                terminal::bold("font 18")
-            )),
-            Command::ScreenReader(None) => self.announce(&format!(
-                "The accessibility tree is {}. {} turns it {}; the setting is \
-                 remembered between visits.",
-                if self.screen_reader.get() { "on" } else { "off" },
-                terminal::bold("screenreader"),
-                if self.screen_reader.get() { "off" } else { "on" }
-            )),
-            Command::Theme(None) => self.select_theme(None),
-            Command::Theme(Some(name)) => {
-                if let Some(name) = self.single(name) {
-                    self.select_theme(Some(&name));
-                }
-            }
-            Command::Settings(None) => self.list_settings(),
-            Command::Settings(Some(arguments)) => self.settings_command(arguments),
-            Command::Plugins(None) => self.list_plugins(),
-            Command::Plugins(Some(arguments)) => self.plugins_command(arguments),
-            Command::ScreenReader(Some(wanted)) => {
-                if let Some(wanted) = self.single(wanted) {
-                    match terminal::parse_switch(&wanted) {
-                        Ok(on) => self.set_screen_reader(on),
-                        Err(complaint) => self.announce(&complaint),
-                    }
-                }
-            }
-            Command::Font(Some(size)) => {
-                if let Some(size) = self.single(size) {
-                    match terminal::font_size(&size) {
-                        Ok(size) => {
-                            self.set_font_size(size);
-                            self.announce(&format!("The font is now {}px.", self.font.get()));
-                        }
-                        Err(complaint) => self.announce(&complaint),
-                    }
-                }
-            }
-            Command::Search(term) => self.search(term.unwrap_or("")),
-            Command::SearchAgain(backwards) => self.search_again(backwards),
-            Command::Download(Some(path)) => {
-                if let Some(path) = self.single(path) {
-                    self.download(&path);
-                }
-            }
-            Command::Download(None) => {
-                let names: Vec<String> =
-                    self.written.borrow().iter().map(|file| file.path.clone()).collect();
-                let text = terminal::download_list(&names);
-                self.announce(&text);
-            }
-            Command::Journal(None) => {
-                let text = terminal::file_list(&self.paths(), self.main.borrow().as_deref());
-                self.announce(&text);
-            }
-            Command::Journal(Some(path)) => {
-                if let Some(path) = self.single(path) {
-                    self.set_journal(&path);
-                }
-            }
-            Command::Hledger(command) => {
-                // hledger's own writers are refused before anything runs: this session
-                // is read-only, and a command that changed a journal would change what
-                // every report after it reads.
-                if let Some(refusal) = terminal::read_only_refusal(command, self.writable.borrow().is_some()) {
-                    self.announce(&refusal);
-                    return;
-                }
-
-                // A plugin gets first refusal on the word. The core does not know
-                // their names, which is what makes them plugins.
-                let owner = self.registry.borrow().owner(command).cloned();
-                match owner {
-                    Some(plugin) => self.run_plugin(plugin, command),
-                    None => self.run_with(command),
-                }
-            }
+            Effect::Theme(name) => self.select_theme(name.as_deref()),
+            Effect::Settings(None) => self.list_settings(),
+            Effect::Settings(Some(arguments)) => self.settings_command(&arguments),
+            Effect::Plugins(None) => self.list_plugins(),
+            Effect::Plugins(Some(arguments)) => self.plugins_command(&arguments),
+            Effect::ScreenReader(on) => self.set_screen_reader(on),
+            Effect::FontSize(size) => self.set_font_size(size),
+            Effect::Search(term) => self.search(&term),
+            Effect::SearchAgain(backwards) => self.search_again(backwards),
+            Effect::Download(path) => self.download(&path),
+            Effect::SetJournal(path) => self.set_journal(&path),
+            Effect::RunHledger(command) => self.run_with(&command),
+            Effect::RunPlugin { plugin, line } => self.run_plugin(*plugin, &line),
         }
     }
 
@@ -2642,29 +2564,6 @@ impl App {
         }
     }
 
-    /// `word?`: one command's help.
-    ///
-    /// The app answers for its own commands and for the plugins' words, since it is the
-    /// manifest that described them. Anything else is handed to hledger with `--help`,
-    /// which knows its own commands far better than a copy of its manual would; a word
-    /// neither knows is answered with the closest names rather than a bare refusal.
-    fn show_help(self: &Rc<App>, word: &str) {
-        if let Some(entry) = crate::help::find(word) {
-            return self.announce(&crate::help::page(entry, self.columns()));
-        }
-
-        let plugin = self.registry.borrow().find(word).cloned();
-        if let Some(plugin) = plugin {
-            return self.announce(&crate::help::plugin_page(&plugin, self.columns()));
-        }
-
-        if terminal::HLEDGER_COMMANDS.contains(&word) {
-            return self.run_with(&format!("{word} --help"));
-        }
-
-        let closest = terminal::fuzzy_matches(word, &terminal::starting_words(), 4);
-        self.announce(&crate::help::unknown(word, &closest));
-    }
 
     /// How many columns the terminal has, for wrapping help.
     fn columns(&self) -> usize {

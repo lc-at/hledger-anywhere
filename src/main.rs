@@ -10,13 +10,15 @@
 //!
 //! * [`terminal`], the line editor, the vocabulary, and the text printed around
 //!   output.
+//! * [`dispatch`], what a typed line asks the app to do: the decisions, read from
+//!   plain state and returned as effects, so they can be tested without a browser.
 //! * [`help`], the app's own help: a page per command, and the overview behind `?`.
 //! * [`journal`], which loaded file hledger should read.
 //! * [`plugins`], the plugin contract and the bundled plugins.
 //! * [`hledger_info`], which engine this is, and [`hledger`]'s request types.
 //!
-//! **Browser modules**: [`app`], which wires everything together and decides what a
-//! keystroke means, [`terminal::view`] (xterm.js), [`upload`] (the file picker),
+//! **Browser modules**: [`app`], which wires everything together and applies what
+//! [`dispatch`] decided, [`terminal::view`] (xterm.js), [`upload`] (the file picker),
 
 //!
 //! There is one thing in the app: a terminal. The engine is the real hledger CLI
@@ -31,6 +33,7 @@ mod store;
 #[cfg(target_arch = "wasm32")]
 mod upload;
 
+mod dispatch;
 mod hledger;
 mod hledger_info;
 mod help;
