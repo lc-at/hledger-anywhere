@@ -102,20 +102,14 @@ impl Screen {
         Ok(screen)
     }
 
-    /// Write text. The caller normalises newlines; see
-    /// [`to_terminal_text`](super::to_terminal_text).
+    /// Write text — the previous visit's scrollback included, which comes back
+    /// through here like anything else; see `replay_scrollback` in `app.rs`.
+    /// The caller normalises newlines; see [`to_terminal_text`](super::to_terminal_text).
     pub fn write(&self, text: &str) {
+        // Captured on purpose: the stored copy is the screen, bounded by the 512 KB
+        // trim in `Capture`, so any number of reloads keeps the tail of it.
         self.capture.borrow_mut().push(text);
-        self.write_raw(text);
-    }
-
-    /// Put the previous visit's scrollback back, without capturing it again.
-    ///
-    /// Replay goes to xterm instead of through [`Screen::write`], and that is the whole
-    /// of the not-capturing: [`Screen::write`] is the one path that pushes, so no reload
-    /// can store the replayed screen on top of itself.
-    pub fn replay(&self, text: &str) {
-        self.write_raw(text);
+        self.terminal.write(text);
     }
 
     /// Everything written since the mount or the last `clear`, in order.
@@ -130,15 +124,6 @@ impl Screen {
     pub fn clear(&self) {
         self.capture.borrow_mut().clear();
         self.terminal.clear();
-    }
-
-    /// Put text on the terminal itself, leaving the capture alone.
-    ///
-    /// Both writing paths end here: [`Screen::write`] captured first, because what the
-    /// visitor produced should survive the reload; [`Screen::replay`] did not, because
-    /// that text is the capture already.
-    fn write_raw(&self, text: &str) {
-        self.terminal.write(text);
     }
 
     fn focus(&self) {

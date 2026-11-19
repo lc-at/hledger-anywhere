@@ -9,9 +9,10 @@
 //! the wasm gate, and this is the half `cargo test` can see: bookkeeping that only ever
 //! compiled for wasm was bookkeeping no test had ever run against.
 //!
-//! `Screen::replay` never reaches this — replayed text goes straight to xterm — so there
-//! is no flag keeping a reload from storing the screen on top of itself. `push` is the
-//! one way in, and it is called only for text the app means to keep.
+//! Every write reaches `push`, the replayed screen included: what a reload puts back
+//! is the screen itself, so one visit adds one boot to it and the cap — not a path
+//! that skips the capture — is what keeps the stored copy bounded. `push` is the one
+//! way in.
 
 use std::collections::VecDeque;
 
@@ -131,11 +132,11 @@ mod tests {
 
     #[test]
     fn reading_it_back_over_and_over_grows_nothing() {
-        // A reload replays what a save read, and replay writes xterm directly — it
-        // never comes back through `push` — so the same read, taken after every
-        // reload, is the same bytes for as long as the visit goes. Growth has one way
-        // in, and this is not it: with `Screen::write` split into capture-then-write
-        // there is no flag left to get wrong, only a path replay does not take.
+        // A reload replays what a save read, and this pins the read: `as_text` neither
+        // empties the capture nor grows it, so the same text is there after every
+        // reload for as long as the visit goes. Growth has one way in, `push`, and a
+        // replay coming through it adds one screen once — the next save's bytes, the
+        // ones the cap above bounds — rather than the same bytes again and again.
         let mut capture = Capture::default();
         capture.push("what was on screen\r\n");
         let stored = capture.as_text();

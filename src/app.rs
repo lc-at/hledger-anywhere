@@ -2756,7 +2756,11 @@ fn storage() -> Option<web_sys::Storage> {
 ///
 /// No stored text is a first visit and a no-op. The capture is raw, exactly as
 /// it was written, so it goes back through the same newline normalisation
-/// everything else uses; see [`terminal::to_terminal_text`].
+/// everything else uses; see [`terminal::to_terminal_text`]. It goes back through
+/// [`Screen::write`] too, capture included: the stored copy is the screen, so the
+/// save at the end of this visit holds it with this visit's own boot under it,
+/// rather than only the boot — which is why the report is still there on the
+/// third reload and not just the first.
 fn replay_scrollback(screen: &Screen) {
     let Some(stored) = storage().and_then(|storage| storage.get_item(SCROLLBACK_KEY).ok().flatten())
     else {
@@ -2765,7 +2769,7 @@ fn replay_scrollback(screen: &Screen) {
     if stored.is_empty() {
         return;
     }
-    screen.replay(&terminal::to_terminal_text(&stored));
+    screen.write(&terminal::to_terminal_text(&stored));
     // The stored text ends wherever the cursor was, usually in the middle of a
     // prompt line, and the banner needs a line of its own below it.
     if !stored.ends_with('\n') {

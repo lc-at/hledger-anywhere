@@ -316,10 +316,16 @@ async function main() {
     // rows to be read, and a report scrolled off the top would fail for want of a scrollbar.
     // The app's own commands pile up quickly — a help overview alone is most of a hundred
     // rows — so the height is what the stored copy needs rather than a person's window.
-    // xterm puts only the rows on screen into the DOM, so this is also the ceiling the
+    // xterm puts only the rows on screen into the DOM (both `.xterm-rows` and the
+    // accessibility tree stop at the terminal's rows), so this is also the ceiling the
     // run's output has to fit under: 3200 was 198 rows and the scrollback outgrew it,
-    // taking the first banner out of the read window and failing the reload below.
-    const tab = await Tab.open(launched.cdp, { width: 1200, height: 4800 });
+    // taking the first banner out of the read window and failing the reload below; 4800
+    // was 298 and fit the 55,472-byte screen of the run that measured it, but a reload
+    // now replays the first visit back on top of that screen (the scrollback survives
+    // every reload, not the first), which is ~20 rows more and then ~4 rows per reload
+    // after. 7200 is ~445 rows: over the ~326 that chain can reach, measured against
+    // the 16.16 px a row of the default font takes here.
+    const tab = await Tab.open(launched.cdp, { width: 1200, height: 7200 });
 
     await run('the app boots to its banner', async () => {
       await tab.navigate(`${base}/`);
@@ -1452,26 +1458,46 @@ async function main() {
       }
     });
 
-    await run('a second reload does not grow the stored scrollback', async () => {
-      // The byte count either side of one more reload, with no typing in between. What
-      // the first reload left in storage is the whole screen that visit wrote, report
-      // included; what the second one saves is only this visit's own boot — banner,
-      // greeting, prompt, 665 bytes as measured here — because the replay that printed
-      // that first screen back goes to xterm without being captured again
-      // (`Screen::replay` never reaches the capture, so there is no flag to get wrong).
-      const before = (await tab.storedScrollback()).length;
-      await tab.reload();
+    await run('the scrollback survives any number of reloads', async () => {
+      // What the feature promises: the stored copy is the screen, so a reload that
+      // types nothing keeps the report on screen and grows the key by one boot and
+      // no more — for the third reload as well as the second, which is where a
+      // replay that was not captured showed up: visit A's history was replayed onto
+      // the screen once, then only visit B's own 665-byte boot was saved, so visit C
+      // replayed a screen with no report on it.
+      //
+      // The numbers this threshold sits between: one boot (banner, greeting, prompt)
+      // is ~665 bytes as measured, and the whole screen the reload above left in
+      // storage is ~55 KB (55,472 bytes, counted before the replay came back through
+      // the capture — the note below prints this run's exact count). So the second
+      // reload may grow the key by ~665, while a capture that took the replayed text
+      // in twice would grow it by ~L1; 2000 is ~3 boots and ~1/27 of that screen —
+      // room for the greeting to differ between visits, no room for a copy stacked
+      // on top.
+      const cap = 512 * 1024; // `MAX_CAPTURE_BYTES`, src/terminal/capture.rs
+      const l1 = Buffer.byteLength(await tab.storedScrollback(), 'utf8');
+      console.log(`note the stored scrollback held ${l1} bytes after the first reload`);
+
+      await tab.reload(); // the second
       await tab.booted();
-      const after = (await tab.storedScrollback()).length;
-      // So the count falls a long way and must not rise: a capture that took the
-      // replayed text back in would hold that same screen plus this visit's boot
-      // again — growth of the boot's 665 bytes, where the slack allows 256, under half
-      // this redraw: room for the greeting to differ between visits and no room for a
-      // boot to be stored twice.
-      const slack = 256;
-      console.log(`note the stored scrollback held ${before} bytes, then ${after}`);
-      if (after > before + slack) {
-        throw new Error(`the stored scrollback grew from ${before} to ${after} bytes across a reload that wrote nothing new`);
+      if (!(await tab.read()).includes('income:salary')) {
+        throw new Error('the report did not survive the second reload');
+      }
+      const l2 = Buffer.byteLength(await tab.storedScrollback(), 'utf8');
+      console.log(`note the stored scrollback held ${l2} bytes after the second reload`);
+      if (l2 - l1 >= 2000) {
+        throw new Error(`the stored scrollback grew by ${l2 - l1} bytes across a reload that only booted (${l1} then ${l2})`);
+      }
+
+      await tab.reload(); // the third
+      await tab.booted();
+      if (!(await tab.read()).includes('income:salary')) {
+        throw new Error('the report did not survive the third reload');
+      }
+      const l3 = Buffer.byteLength(await tab.storedScrollback(), 'utf8');
+      console.log(`note the stored scrollback held ${l3} bytes after the third reload`);
+      if (l3 > cap) {
+        throw new Error(`the stored scrollback holds ${l3} bytes, over the ${cap}-byte cap`);
       }
     });
 
