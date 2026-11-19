@@ -1197,7 +1197,7 @@ impl App {
 
     /// Run a command, optionally appending what it prints to a loaded file.
     fn run_with(self: &Rc<App>, command: &str) {
-        let argv = match argv_for(command) {
+        let argv = match hledger::argv_for(command) {
             Ok(argv) => argv,
             Err(complaint) => return self.announce(&complaint),
         };
@@ -1671,7 +1671,7 @@ impl App {
         if let Some(refusal) = terminal::read_only_refusal(command, self.writable.borrow().is_some()) {
             return Err(refusal);
         }
-        let argv = argv_for(command)?;
+        let argv = hledger::argv_for(command)?;
         if let Some(clash) = terminal::output_over(&self.paths(), &argv) {
             return Err(format!(
                 "-o would write over the loaded file {clash}, and this session is read-only"
@@ -2778,28 +2778,6 @@ async fn boot(app: Rc<App>) {
 }
 
 
-/// The command line to hand the engine.
-///
-/// The user's words, with a leading `hledger` accepted and dropped, that is how
-/// the command looks in a shell, and people paste commands. Nothing else is added:
-/// the journal comes from `$LEDGER_FILE`, so what runs is what was typed.
-fn argv_for(command: &str) -> Result<Vec<String>, String> {
-    // Quoting is the user's, and it is what makes a period expression with a space
-    // in it one argument: `balance -p "this year"`. Splitting on whitespace handed
-    // hledger `"this` and `year"`, which it could not parse.
-    let mut parts = terminal::tokenize(command)?;
-    if parts
-        .first()
-        .is_some_and(|first| first == "hledger" || first == "hledger-wasm")
-    {
-        parts.remove(0);
-    }
-    // A bare `hledger` is a real command: it prints hledger's own usage, which is
-    // a better answer than doing nothing.
-    let mut argv = vec!["hledger".to_string()];
-    argv.extend(parts);
-    Ok(argv)
-}
 
 // -- history ----------------------------------------------------------------
 
@@ -2945,62 +2923,5 @@ fn save_history(history: &[String]) {
     let start = history.len().saturating_sub(MAX_HISTORY);
     if let Ok(json) = serde_json::to_string(&history[start..]) {
         let _ = storage.set_item(HISTORY_KEY, &json);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::argv_for;
-
-    // This module is wasm-gated, so these run under a wasm test target only and
-    // are type-checked by `cargo clippy --target wasm32-unknown-unknown`.
-
-    #[test]
-    fn the_users_words_are_the_argv_apart_from_the_program_name() {
-        assert_eq!(
-            argv_for("balance --tree").expect("argv"),
-            ["hledger", "balance", "--tree"]
-        );
-        assert_eq!(argv_for("hledger balance").expect("argv"), ["hledger", "balance"]);
-        assert_eq!(
-            argv_for("  print   date:thismonth  ").expect("argv"),
-            ["hledger", "print", "date:thismonth"]
-        );
-        assert_eq!(
-            argv_for("hledger").expect("argv"),
-            ["hledger"],
-            "a bare hledger prints its usage"
-        );
-    }
-
-    #[test]
-    fn a_quoted_argument_reaches_hledger_whole_and_without_quotes() {
-        // The reason any of this exists: a period expression with a space in it is
-        // one argument, and hledger rejects it when it is not.
-        assert_eq!(
-            argv_for("balance -p \"this year\"").expect("argv"),
-            ["hledger", "balance", "-p", "this year"]
-        );
-        assert_eq!(
-            argv_for("register -p 'from 2024-01 to 2024-12'").expect("argv"),
-            ["hledger", "register", "-p", "from 2024-01 to 2024-12"]
-        );
-        assert_eq!(
-            argv_for("balance date:\"this year\"").expect("argv"),
-            ["hledger", "balance", "date:this year"]
-        );
-
-        // And an unclosed quote is reported rather than guessed at.
-        let complaint = argv_for("balance -p \"this year").expect_err("unclosed");
-        assert!(complaint.contains("not closed"), "{complaint}");
-    }
-
-    #[test]
-    fn a_file_flag_is_left_alone() {
-        // -f still works if someone wants it; the app does not add or remove one.
-        assert_eq!(
-            argv_for("balance -f /data/other.journal").expect("argv"),
-            ["hledger", "balance", "-f", "/data/other.journal"]
-        );
     }
 }
