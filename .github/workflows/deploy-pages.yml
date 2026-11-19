@@ -113,6 +113,12 @@ jobs:
       - name: Check the reconcile write path
         run: node scripts/check-reconcile-write.mjs
 
+      # A returning visitor must get the changed plugin file, not the one in their cache:
+      # the service worker's network-first promise, served with the ten-minute cache
+      # headers GitHub Pages sends, with the file changed underneath it.
+      - name: Check the service worker's freshness
+        run: node scripts/check-plugin-freshness.mjs
+
       - name: Engine smoke test
         # The shipped engine, driven the way the app drives it: no -f, with the
         # journal exported as $LEDGER_FILE. Nothing here needs a browser, so a

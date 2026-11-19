@@ -342,6 +342,10 @@ node scripts/check-plugin-windows.mjs
 # read back, with the refusals and the rollback. No browser needed.
 node scripts/check-reconcile-write.mjs
 
+# The service worker's network-first promise, under GitHub Pages' cache headers, with the
+# plugin file changed underneath. Chrome as above.
+node scripts/check-plugin-freshness.mjs
+
 # The plugin host as Rust, docs/plugins.md and the checks' own adapter state it: one
 # interface, three sayings of it, and they have to name the same methods.
 node scripts/check-host-contract.mjs
