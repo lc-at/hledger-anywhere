@@ -12,6 +12,14 @@
 // path: the page itself, a window the plugin opens at a blob: URL, and a load with no
 // worker installed at all.
 //
+// The other half of the promise is offline, which nothing here had asked for: sw.js's own
+// header opens with "the second visit should not need a network". So the same run then
+// cuts the connection and asks the worker for what only it can have — the shell the page
+// renders from, a plugin module it cached while it could still fetch one, a versioned
+// `v=` asset — with the server changed underneath while the network is down, so an answer
+// that reached it shows up as the wrong one rather than merely being possible. One fetch
+// afterwards, back online, proves the cut was real and has been undone.
+//
 // Usage:
 //   CHROME=<path> node scripts/check-plugin-freshness.mjs
 //   SW_FILE=/tmp/sw-old.js CHROME=<path> node scripts/check-plugin-freshness.mjs
@@ -128,6 +136,13 @@ const PAGE = `<!doctype html>
 const moduleFor = (version) => `export const version = '${version}';\n`;
 
 /**
+ * The engine's bytes, served at the URL shape src/hledger_info.rs builds for the real
+ * app (`/wasm/hledger.wasm?v=…`), with this run's version the way `/sw.js?v=test` carries
+ * one. Nothing about the bytes matters: what matters is that the URL has a `v=`.
+ */
+const ENGINE = 'the engine, as far as this test is concerned';
+
+/**
  * Serve the directory the way GitHub Pages does: every asset fresh for ten minutes, with an
  * ETag so a revalidation can be answered without sending the body again.
  */
@@ -213,9 +228,51 @@ async function openPage(url) {
     }
     throw new Error('the page never finished loading');
   };
+  let workerSocket = null;
+  let workerSend = null;
+  const emulateOffline = async (offline) => {
+    const conditions = { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 };
+    await send('Network.enable');
+    await send('Network.emulateNetworkConditions', conditions);
+    if (!workerSend) {
+      const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      const worker = targets.find((entry) => entry.type === 'service_worker');
+      if (!worker) throw new Error('the worker has no DevTools target to emulate');
+      workerSocket = new WebSocket(worker.webSocketDebuggerUrl);
+      await new Promise((resolve) => workerSocket.addEventListener('open', resolve));
+      let workerId = 0;
+      const workerWaiters = new Map();
+      workerSocket.addEventListener('message', (event) => {
+        const message = JSON.parse(event.data);
+        if (message.id && workerWaiters.has(message.id)) {
+          workerWaiters.get(message.id)(message.result ?? message.error);
+          workerWaiters.delete(message.id);
+        }
+      });
+      workerSend = (method, params = {}) => new Promise((resolve) => {
+        const next = ++workerId;
+        workerWaiters.set(next, resolve);
+        workerSocket.send(JSON.stringify({ id: next, method, params }));
+      });
+      await workerSend('Network.enable');
+    }
+    // The worker's fetches read the browser's HTTP cache too, and a fresh entry answers a
+    // `no-cache` fetch even with the network gone — Chrome serves it rather than failing —
+    // so with the cache left on, the ten-minute cache would answer every check below and
+    // the worker's own fallback would never be the thing under test. Disabled on this
+    // target, the worker's cache is the only thing that can answer, which is the promise
+    // its header makes for the second visit.
+    await workerSend('Network.setCacheDisabled', { cacheDisabled: offline });
+    await workerSend('Network.emulateNetworkConditions', conditions);
+  };
   return {
     evaluate,
     navigate,
+    // The offline scenario's network cut, on both targets at once: the worker runs its
+    // fetches in its own target, and emulation set on the page does not reach them — the
+    // page reports itself offline while the worker keeps talking to the network, which is
+    // exactly the traffic being tested.
+    emulateOffline,
     reload: async () => {
       const before = await evaluate('window.__boot || 0');
       await send('Page.reload', { ignoreCache: false });
@@ -231,6 +288,9 @@ async function openPage(url) {
     async close() {
       try {
         socket.close();
+      } catch { /* already gone */ }
+      try {
+        if (workerSocket) workerSocket.close();
       } catch { /* already gone */ }
       chrome.kill('SIGKILL');
       for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -284,6 +344,27 @@ async function versionAfterReload(page, base) {
   return page.evaluate(`import('${base}/plugins/demo.js').then((m) => m.version)`);
 }
 
+/**
+ * Wait until some cache holds a URL with the body the server just had: remember() writes
+ * the copy after the response has been delivered, so the copy has to be waited for rather
+ * than assumed. Every cache is read, because the probe cache holds a count under the same
+ * URL, and a wait rather than a claim — what the offline checks assert is answered by a
+ * fetch, and this only makes sure there is an answer to give.
+ */
+async function untilCached(page, url, want) {
+  for (let i = 0; i < 50; i += 1) {
+    const bodies = await page.evaluate(`caches.keys()
+      .then((names) => Promise.all(names.map((name) => caches.open(name)
+        .then((c) => c.match(${JSON.stringify(url)}))
+        .then((r) => (r ? r.text() : null)))))
+      .then((bodies) => bodies.filter(Boolean).map((body) => body.trim()))
+      .catch((e) => 'cache read failed: ' + e.message)`);
+    if (Array.isArray(bodies) && bodies.includes(want)) return true;
+    await sleep(100);
+  }
+  return false;
+}
+
 async function main() {
   const root = await mkdtemp(join(tmpdir(), 'hla-freshness-'));
   const dir = join(root, 'site');
@@ -301,6 +382,10 @@ async function main() {
   if (!workerSource.includes(anchor)) throw new Error('the worker changed shape; the probe has nowhere to go');
   await writeFile(join(dir, 'sw.js'), workerSource.replace(anchor, `${anchor}\n${probe}`));
   await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v1'));
+  // The engine, at the versioned URL the real app asks for; the offline scenario takes it
+  // away again, so a copy served from anywhere but the worker's cache is visible.
+  await mkdirp(join(dir, 'wasm'));
+  await writeFile(join(dir, 'wasm', 'hledger.wasm'), ENGINE);
 
   const { server, port, log } = await serve(dir);
   const base = `http://127.0.0.1:${port}`;
@@ -416,6 +501,87 @@ async function main() {
     // limitation rather than guard a guarantee.
     const withoutWorker = await versionAfterReload(page, base);
     notes.push(`with no worker, after a change: ${withoutWorker} (the HTTP cache's max-age decides)`);
+
+    // 4. With the network gone: the worker's other promise, which nothing above had asked
+    // for. Scenario 3 uninstalled the worker, so this page installs it again, reloads with
+    // it in control — the difference between a load the worker happened to be present for
+    // and one it answered — and warms the two things offline has to come from the cache:
+    // the plugin module, and the engine's versioned URL.
+    await page.navigate(`${base}/`);
+    await untilControlled(page, true);
+    await page.reload();
+    const engineUrl = `${base}/wasm/hledger.wasm?v=test`;
+    const warm = JSON.parse(await page.evaluate(`(async () => {
+      // The page's own import on load, waited for the way the checks above wait for it.
+      for (let i = 0; i < 60 && !window.__loaded; i += 1) await new Promise((r) => setTimeout(r, 100));
+      const engine = await fetch(${JSON.stringify(engineUrl)})
+        .then((r) => (r.ok ? r.text() : 'http ' + r.status)).catch((e) => 'fetch failed: ' + e.message);
+      return JSON.stringify({
+        controlled: Boolean(navigator.serviceWorker.controller),
+        plugin: window.__loaded || 'never settled',
+        engine,
+      });
+    })()`));
+    const warmDemo = await untilCached(page, `${base}/plugins/demo.js`, "export const version = 'v5';");
+    const warmEngine = await untilCached(page, engineUrl, ENGINE);
+    results.push(['the caches are warm before the network goes',
+      warm.controlled && warm.plugin === 'v5' && warm.engine === ENGINE && warmDemo && warmEngine,
+      JSON.stringify({ ...warm, cached: { demo: warmDemo, engine: warmEngine } })]);
+
+    // The server changes underneath while the network is down: the plugin file gets a new
+    // version and the engine's file disappears, so an answer that reaches the network is
+    // the wrong one rather than merely a possible one.
+    try {
+      await page.emulateOffline(true);
+      await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v6'));
+      await rm(join(dir, 'wasm', 'hledger.wasm'));
+
+      // Wait for the cut to be real rather than assuming the commands took: a reload
+      // issued too early would be answered by the network and prove nothing. This URL has
+      // never been fetched, so no cache anywhere holds it: a 404 means the network still
+      // answers, a failure means only the worker's own cache is left to answer anything.
+      let cutOff = 'still up';
+      for (let i = 0; i < 50 && !cutOff.startsWith('failed'); i += 1) {
+        cutOff = await page.evaluate(`fetch('${base}/never-requested.txt', { cache: 'no-cache' })
+          .then((r) => 'served: http ' + r.status)
+          .catch((e) => 'failed: ' + e.message)`);
+        if (!cutOff.startsWith('failed')) await sleep(100);
+      }
+      results.push(['the network is gone for the worker, and only its cache can answer',
+        cutOff.startsWith('failed'), cutOff]);
+
+      await page.reload();
+      const rendered = await pageVersion(page);
+      const shell = JSON.parse(await page.evaluate(`JSON.stringify({
+        marker: document.title === 'freshness' && typeof window.openBlob === 'function',
+        controlled: Boolean(navigator.serviceWorker.controller),
+      })`));
+      results.push(['the page still renders with the network gone',
+        shell.marker && shell.controlled, `${JSON.stringify(shell)} / the page imported ${rendered}`]);
+      // v6 is what the server has now: an import that answered with it reached the network,
+      // so the copy that answers has to be the v5 only the worker's cache holds.
+      results.push(['a plugin module still imports with the network gone',
+        rendered === 'v5', rendered]);
+      // The engine's file is gone from the server: this body can only have come from the
+      // cache the worker's `v=` branch serves without asking the network.
+      const engineAnswer = await page.evaluate(`fetch(${JSON.stringify(engineUrl)})
+        .then((r) => (r.ok ? r.text() : 'http ' + r.status))
+        .catch((e) => 'fetch failed: ' + e.message)`);
+      results.push(['a versioned asset answers from the cache with the network gone',
+        engineAnswer === ENGINE, engineAnswer]);
+    } finally {
+      // Offline is switched off on the way out, whatever failed above: the browser belongs
+      // to the rest of this run, and the check below has to see a network again.
+      await page.emulateOffline(false);
+    }
+
+    // Back online: one network-first fetch, and v6 is on the network only, so this shows
+    // the emulation is really off and leaves the worker doing its job for the next load.
+    const onlineAnswer = await page.evaluate(`fetch('${base}/plugins/demo.js', { cache: 'no-cache' })
+      .then((r) => (r.ok ? r.text() : 'http ' + r.status))
+      .catch((e) => 'fetch failed: ' + e.message)`);
+    results.push(['back online, the network-first fetch reaches the network again',
+      onlineAnswer.trim() === "export const version = 'v6';", onlineAnswer]);
   } catch (error) {
     check(false, 'the freshness scenario ran', error && error.stack ? error.stack.split('\n').slice(0, 3).join(' | ') : String(error));
   } finally {
