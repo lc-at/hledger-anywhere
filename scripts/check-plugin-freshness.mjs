@@ -396,12 +396,13 @@ async function main() {
     await sleep(400);
     await page.navigate(`${base}/?nosw=1`);
     // Registrations, not the controller: a page keeps the controller it had until it goes away,
-    // so the count is what says the worker is really not installed.
-    for (let i = 0; i < 60; i += 1) {
-      const left = await page.eval('navigator.serviceWorker.getRegistrations().then((all) => all.length)');
-      if (left === 0) break;
-      await sleep(100);
-    }
+    // so the count is what says the worker is really not installed. Waited for by name —
+    // a loop that ran out would carry on measuring "no worker" with one still installed.
+    await page.until(
+      'navigator.serviceWorker.getRegistrations().then((all) => all.length === 0)',
+      'the worker registrations to be gone',
+      { timeoutMs: 6000 },
+    );
     // Not a check but a measurement: with no worker the HTTP cache answers inside its
     // max-age, so a changed file can stay unseen for up to ten minutes. That ceiling is why
     // the worker is the thing that has to do this, and asserting it here would lock in a
