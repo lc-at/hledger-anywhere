@@ -16,7 +16,7 @@
 //
 // Everything else is the contract, in one place. `scripts/check-host-contract.mjs` reads this
 // file, `App::host` and the table in docs/plugins.md, and fails if the three name different
-// methods.
+// methods, count their arguments differently, or answer differently than the table says.
 //
 // The shapes are the ones docs/plugins.md promises. `read` answers with the text itself
 // rather than a promise of it, since the plan is worked out synchronously. `save` answers

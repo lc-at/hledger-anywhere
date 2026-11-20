@@ -92,7 +92,8 @@ jobs:
 
       # The plugin host is written down three times: `App::host` in Rust, the table in
       # docs/plugins.md, and the adapter every check builds a host from. This reads all
-      # three and fails if they do not name the same methods.
+      # three and fails if they name different methods, take different arguments, or
+      # answer differently than the table says.
       - name: Check the host contract
         run: node scripts/check-host-contract.mjs
 

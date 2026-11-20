@@ -123,7 +123,8 @@ Every row above is on every host, and is written down in three places that have 
 `host.window` in JavaScript, because a window has to be opened by the browser before the
 plugin awaits, and `scripts/host.mjs` builds the same host for the checks that run a plugin
 without an app. `node scripts/check-host-contract.mjs` reads all three and fails when they do
-not name the same methods.
+not name the same methods, when a method takes a different number of arguments than the table
+writes, or when an answer differs from the one the table says it gives.
 
 `host.hledger` accepts anything the command line accepts, and is bound by the same rules:
 `add` and `import` are refused, and `-o` may not write over a loaded file. A command that

@@ -347,7 +347,8 @@ node scripts/check-reconcile-write.mjs
 node scripts/check-plugin-freshness.mjs
 
 # The plugin host as Rust, docs/plugins.md and the checks' own adapter state it: one
-# interface, three sayings of it, and they have to name the same methods.
+# interface, three sayings of it, naming the same methods, taking the same arguments,
+# and answering the same way.
 node scripts/check-host-contract.mjs
 
 # The app itself in headless Chrome: it boots, runs a report, answers its own
