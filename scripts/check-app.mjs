@@ -25,6 +25,30 @@
 // Chrome is found the way scripts/browser.mjs finds it: CHROME first, then PATH, then
 // agent-browser's install.
 // dist/ has to exist: `trunk build` writes it, and CI runs this after the Build step.
+//
+// Coverage map: every Command variant (src/terminal/commands.rs:14-56), the scenario
+// that drives it here, or why no run can.
+//
+//   Upload         mountTheUpload              Open        openAFolderReadOnly (read-only fallback)
+//   Reopen         openAFolderReadOnly (its refusal)      Journal     switchTheJournal
+//   Clear          reloadAndClear              Help        helpAndSettings
+//   Demo           loadTheDemoJournal          Search      searchTheScreen
+//   SearchAgain    searchTheScreen             Download    writeAndDownload
+//   Alias          aliasAndRecall              Unalias     searchTheScreen
+//   Font           themeAndFont                ScreenReader pluginsAndScreenreader
+//   Plugins        pluginsAndScreenreader, addAndForgetARepository
+//   Settings       helpAndSettings, importTheSettingsBack
+//   Theme          themeAndFont                History     finderAndHistory, clearTheHistory
+//   Hledger        every report step, from loadTheDemoJournal on
+//
+// Inherent — no headless run can drive them: `open`'s File System Access picker and
+// `reopen`'s happy path need a real grant from a person; Ctrl+C stopping a running
+// command needs an engine command long enough to stop (its line-clearing half has no
+// step either). `upload`, `open`'s fallback and `drop` are all driven above.
+//
+// Payload arms with no step here — their decisions are `cargo test`'s in dispatch.rs:
+// `? <word>`, bare `settings`/`theme`/`alias`/`unalias`/`screenreader`/`download`/`find`,
+// `history <words>`, `N`, `plugins reload`.
 
 import { createServer } from 'node:http';
 import { accessSync, constants } from 'node:fs';
@@ -97,6 +121,13 @@ async function serve(dir) {
     } catch {
       response.writeHead(400);
       response.end();
+      return;
+    }
+    // The fixture repository, served by name: `plugins add` fetches it the way it
+    // fetches any other, over this server's own port.
+    if (path === PROBE_REPOSITORY) {
+      response.writeHead(200, { 'content-type': TYPES['.json'] });
+      response.end(PROBE_MANIFEST);
       return;
     }
     const name = path === '/' ? 'index.html' : path.replace(/^\//, '');
@@ -183,6 +214,33 @@ const OPEN_PRICES = `\
 `;
 
 /**
+ * The repository `plugins add` installs, and the only place `round25probe` is written.
+ *
+ * Its shape is the one `Manifest` reads (src/plugins/mod.rs): a `plugins` entry with a
+ * name and a summary, which is all `Registry::check` asks of one. `serve` answers for
+ * this path rather than dist/ holding it, so the fetch runs against this run's own
+ * server the way any repository's would. The `module` is never fetched: `plugins add`
+ * reads the manifest alone (app.rs `install_repository` → plugins::loader::fetch), and
+ * a module is imported only when its own command first runs, which no step here runs.
+ */
+const PROBE_REPOSITORY = '/round25probe.json';
+const PROBE_MANIFEST = `\
+{
+  "manifest": 1,
+  "name": "round25probe",
+  "plugins": [
+    {
+      "name": "round25probe",
+      "group": "Check",
+      "summary": "round25probe: a repository this check added and then forgot",
+      "completes": ["probe"],
+      "module": "./round25probe.js"
+    }
+  ]
+}
+`;
+
+/**
  * Write the four files the upload step hands to the picker, and return their paths.
  *
  * One mounts, three cannot, for the three reasons `src/upload.rs` gives for
@@ -255,20 +313,30 @@ class Tab extends BaseTab {
    * numbers to say so.
    */
   async booted() {
-    const expected = (await this.storedScrollback()).match(/hledger-anywhere/g);
+    // The banner's own title line, `hledger-anywhere  hledger …` (messages.rs welcome),
+    // rather than the word alone, read out of the stored copy with its escape sequences
+    // taken off first (`\x1b[1mhledger-anywhere\x1b[0m  \x1b[…mhledger …` is one line of
+    // it). The stored copy holds every write the visit made and the screen holds only
+    // what survived: xterm redraws the line once per keystroke, so typing a line that
+    // contains the word — `settings import hledger-anywhere-settings.json` does — counts
+    // every redraw in the stored copy and once on screen. The title line is written once
+    // per boot, is never typed, and is never redrawn over, so both sides count the same
+    // banners: the stored ones plus this visit's own.
+    const stored = (await this.storedScrollback()).replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+    const expected = stored.match(/hledger-anywhere {2}hledger/g);
     const want = (expected ? expected.length : 0) + 1;
     const at = `(() => {
       const lines = (${READ_TERMINAL}).text.split('\\n').map((line) => line.trim()).filter(Boolean);
-      const banners = (lines.join('\\n').match(/hledger-anywhere/g) || []).length;
+      const banners = (lines.join('\\n').match(/hledger-anywhere {2}hledger/g) || []).length;
       return banners >= ${want} && lines.length > 0 && lines[lines.length - 1].includes('»');
     })()`;
     try {
       await this.until(at, 'the terminal to finish booting');
     } catch (error) {
       const lines = (await this.read()).split('\n').map((line) => line.trim()).filter(Boolean);
-      const banners = (lines.join('\n').match(/hledger-anywhere/g) || []).length;
+      const banners = (lines.join('\n').match(/hledger-anywhere {2}hledger/g) || []).length;
       throw new Error(
-        `${error.message}: ${banners} banner on screen, ${want} expected — the stored scrollback did not come back, or this visit never finished printing`,
+        `${error.message}: ${banners} banner on screen over ${lines.length} rows, ${want} expected (${expected ? expected.length : 0} in the stored copy) — the stored scrollback did not come back, or this visit never finished printing`,
       );
     }
   }
@@ -315,8 +383,11 @@ class Tab extends BaseTab {
       // Punctuation takes the code and key code a keyboard sends for it. xterm
       // translates the event itself and keeps a printable character only when the
       // key code is one it recognises: a '.' claiming its own code point (46) is
-      // below that, and the keystroke never reaches the line.
+      // below that, and the keystroke never reaches the line — so '.' goes as the
+      // Period key's 190 and '/' as the Slash key's 191, which is the repository
+      // path `plugins add` is given below.
       else if (character === '.') await this.press('.', { code: 'Period', keyCode: 190, text: '.' });
+      else if (character === '/') await this.press('/', { code: 'Slash', keyCode: 191, text: '/' });
       else await this.press(character, { code: `Key${character.toUpperCase()}`, keyCode: character.toUpperCase().charCodeAt(0), text: character });
     }
     await sleep(120);
@@ -464,6 +535,44 @@ async function helpAndSettings({ tab }) {
     // The byte count in the message varies with what is set, so the file name is the
     // part worth holding still.
     await tab.until(`(${READ_TERMINAL}).text.includes('hledger-anywhere-settings.json')`, 'the export to be written');
+  });
+}
+
+/**
+ * Read the settings file the export above wrote back in, and put it into effect.
+ *
+ * Needs: `hledger-anywhere-settings.json` still in the loaded-file list — it is until
+ * upload/drop/open replace that list — and nothing the record holds having changed
+ * since it was written this visit, so this is a round trip that must change nothing.
+ * Leaves: the same settings in force, said out loud as what was applied, and the line
+ * at the prompt again. What the import names — font, screen reader, aliases, theme,
+ * plugin settings, repositories — is what the steps below still find. Nothing here
+ * writes a banner: the word `hledger-anywhere` reaches the screen only inside the file
+ * name, which `booted` does not count, so the count the reload scenario waits for does
+ * not move; the font and the theme are untouched by an import of the values they
+ * already hold.
+ */
+async function importTheSettingsBack({ tab }) {
+  // The wasm-only half of `settings`: `export` wrote the record out and put it in the
+  // loaded files, and `import <path>` reads that same file back through
+  // `file_contents` → `apply_settings_text` → `apply_settings` (src/app.rs) — the
+  // chain no other check reaches, because the picker branch needs a person to choose
+  // a file. What only a browser can show is that the loaded file was found by name,
+  // applied, and confirmed on the screen the way the code words it.
+
+  await run('settings import applies the exported file back unchanged', async () => {
+    await tab.type('settings import hledger-anywhere-settings.json');
+    await tab.enter();
+    // `settings_imported` (src/terminal/messages.rs) lists what `apply_settings`
+    // applied, in the order that function lists them: font, screen reader, aliases,
+    // theme, plugin settings, repositories — six of them, because the file was
+    // written by this visit and nothing in it had to be dropped, so there is no
+    // `could not use:` line under the list.
+    const said = 'Applied 6 settings: font, screen reader, aliases, theme, plugin settings, repositories.';
+    await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(said)})`, 'the import to be confirmed');
+    // `settle` draws the prompt under the message; that is the line the next scenario
+    // starts typing into.
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the import');
   });
 }
 
@@ -754,12 +863,72 @@ async function finderAndHistory({ tab }) {
 }
 
 /**
+ * Forget the commands run so far, and show what that leaves behind.
+ *
+ * Needs: the history listing the scenario above just drew — `demo` and `settings
+ * export` among its rows — and an empty line at the prompt.
+ * Leaves: the history holding only what was run since the clear (the clear wiped the
+ * line that asked for it as well, so the first entry is `history` itself), ↑ with
+ * nothing to recall, and the line at the prompt. The steps above keep their order and
+ * their listing: nothing after this reads the history they drew, and every count below
+ * is taken from reports on the screen, not from it.
+ */
+async function clearTheHistory({ tab }) {
+  // What `history clear` is for, end to end: `Command::History(Some("clear"))` decides
+  // `Effect::ClearHistory` followed by its own sentence (src/dispatch.rs), `apply`
+  // empties the stored list (src/app.rs), and the recall key and the listing are what a
+  // person then sees of that. `cargo test` pins the decision and the listing formatter;
+  // only a run like this one can show the list actually going.
+
+  await run('history clear forgets the commands run so far', async () => {
+    await tab.type('history clear');
+    await tab.enter();
+    // The sentence dispatch.rs prints after the wipe, word for word — it names the two
+    // things that read the history, ↑ and Ctrl+R, which is what the steps below check.
+    const said = 'The history is cleared: nothing is left for ↑ or Ctrl+R to recall.';
+    await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(said)})`, 'the clear to be announced');
+  });
+
+  await run('up arrow recalls nothing after the clear', async () => {
+    await tab.focus();
+    await tab.press('ArrowUp', { code: 'ArrowUp', keyCode: 38 });
+    // `history_prev` returns without touching the line when the history is empty, so
+    // the prompt redraws as it was: the line held nothing before the key and holds
+    // nothing now, and a command recalled onto it would end with that command instead
+    // of with the prompt. That ↑ reaches the editor at all is what the alias scenario
+    // above proved; what is new here is what it has to find.
+    const last = (await tab.read()).trimEnd().split('\n').pop();
+    if (!last.endsWith('»')) throw new Error(`the line after ↑ reads ${JSON.stringify(last)}`);
+  });
+
+  await run('history lists only what was run since the clear', async () => {
+    await tab.type('history');
+    await tab.enter();
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === '1  history')`,
+      'the listing to be drawn',
+    );
+    // The whole of the new listing, read from the clear message down so the listing
+    // the scenario above drew cannot stand in for it: `submit` remembers the line
+    // before it lists (src/app.rs), so what the clear left is this one entry, numbered
+    // first and only — the old rows are numbered above the message and gone from it.
+    const text = await tab.read();
+    const after = text.slice(text.lastIndexOf('The history is cleared'));
+    const rows = after.split('\n').map((line) => line.trim()).filter((line) => /^\d+  /.test(line));
+    if (rows.length !== 1 || rows[0] !== '1  history') {
+      throw new Error(`the listing after the clear holds ${JSON.stringify(rows)}`);
+    }
+  });
+}
+
+/**
  * Drive the rest of what the help's line on Tab promises — commands, flags, accounts,
  * aliases and paths — where each list comes from: the cursor's position picks the list,
  * `complete_or_menu` gathers the sources for it, and the rows are what `show_options`
  * drew.
  *
- * Needs: an empty line at the prompt (the finder left it that way), the alias `bal`
+ * Needs: an empty line at the prompt (the finder closed on it and the history clear
+ * above left it that way), the alias `bal`
  * defined, the demo's journals and the settings file still the loaded list, and
  * `assets:bank:checking` and `income:salary` in the main file for Tab to fetch the
  * accounts from.
@@ -1333,6 +1502,86 @@ async function pluginsAndScreenreader({ tab }) {
 }
 
 /**
+ * Install a repository this server itself serves, list it, then forget it.
+ *
+ * Needs: the plugin listing the scenario above drew — three installed, the bundled
+ * repository among them — an empty line at the prompt, and `serve` answering for
+ * `PROBE_REPOSITORY`.
+ * Leaves: the registry and the settings record back as the listing found them — the
+ * three bundled plugins, no remembered repository — with the line at the prompt.
+ * `round25probe` and its repository are this scenario's own, and nothing after it
+ * lists plugins or completions. None of this prints `hledger-anywhere`, so the banner
+ * count the reload scenario waits for does not move; the font and the theme are
+ * untouched.
+ */
+async function addAndForgetARepository({ tab }) {
+  // The registry's own install path, driven the way a visitor drives it: a manifest
+  // fetched over HTTP (assets/js/plugins.js `fetchManifest` → plugins::loader::fetch),
+  // parsed and checked by `Registry::install` (src/plugins/mod.rs), remembered by
+  // `add_repository` (src/app.rs) — and then `forget_repository` taking it back. What
+  // only a browser can show is the fetch reaching this run's server and the listing
+  // growing and shrinking around it.
+
+  await run('plugins add reads the repository and registers its plugin', async () => {
+    await tab.type(`plugins add ${PROBE_REPOSITORY}`);
+    await tab.enter();
+    // `plugin_installed` (src/terminal/messages.rs): how many registered, the
+    // repository by the name it was given, and the plugin's own name — then the
+    // sentence `add_repository` says once, when a repository is added.
+    const read = `Read 1 plugin from ${PROBE_REPOSITORY}: round25probe.`;
+    await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(read)})`, 'the repository to be read');
+    const warning = 'A plugin is code running in this page, so install repositories you trust.';
+    await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(warning)})`, 'the warning about plugins');
+    // `settle` draws the prompt under the message; the listing below types into it.
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the add');
+  });
+
+  await run('the listing shows the added plugin and its repository', async () => {
+    await tab.type('plugins');
+    await tab.enter();
+    // `plugin_list` heads with `count` and `installed`: four now, where the scenario
+    // above saw three. The row is the same `{name:<14}  {summary}` format it asserted,
+    // and the repositories section carries the new URL without the `bundled` flag —
+    // `plugin_list` gives that to `BUNDLED_REPOSITORIES` alone.
+    await tab.until(`(${READ_TERMINAL}).text.includes('4 plugins, installed')`, 'the listing to grow');
+    const lines = (await tab.read()).split('\n').map((line) => line.trim());
+    const row = `${'round25probe'.padEnd(14)}  round25probe: a repository this check added and then forgot`;
+    if (!lines.includes(row)) throw new Error(`${JSON.stringify(row)} is not a line of the listing`);
+    if (!lines.includes(PROBE_REPOSITORY)) throw new Error('the repository is not in the listing');
+  });
+
+  await run('plugins remove forgets the repository', async () => {
+    await tab.type(`plugins remove ${PROBE_REPOSITORY}`);
+    await tab.enter();
+    // `plugin_removed` for the one plugin that came from it — not the `Nothing was
+    // installed from {url}.` a repository with no plugins behind it would get.
+    const said = `Forgot 1 plugin that came from ${PROBE_REPOSITORY}.`;
+    await tab.until(`(${READ_TERMINAL}).text.includes(${JSON.stringify(said)})`, 'the repository to be forgotten');
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the remove');
+  });
+
+  await run('the listing is back to the bundled three', async () => {
+    await tab.type('plugins');
+    await tab.enter();
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === '3 plugins, installed')`,
+      'the listing to shrink back',
+    );
+    // Read from the forget message down, so the listings drawn before it cannot stand
+    // in for this one: the header, then neither of this scenario's own lines — the
+    // plugin's row and the bare repository path, both matched whole. The echoes of the
+    // add and remove commands still hold the URL, and neither is a line of the listing.
+    const text = await tab.read();
+    const after = text.slice(text.lastIndexOf('Forgot 1 plugin that came from'));
+    const lines = after.split('\n').map((line) => line.trim());
+    if (!lines.includes('3 plugins, installed')) throw new Error('the listing header is not on screen');
+    const row = `${'round25probe'.padEnd(14)}  round25probe: a repository this check added and then forgot`;
+    if (lines.includes(row)) throw new Error('the added plugin is still in the listing');
+    if (lines.includes(PROBE_REPOSITORY)) throw new Error('the repository is still in the listing');
+  });
+}
+
+/**
  * Throw the drop fixture at the page, mark it as the drop target, and read the report
  * back from the file the drop handed over.
  *
@@ -1761,13 +2010,16 @@ async function openAFolderReadOnly({ tab, launched, fixtures }) {
 /**
  * Reload until the stored scrollback proves itself, then clear it and prove that too.
  *
- * Needs: a banner count that has not moved since boot (no scenario above prints
- * `hledger-anywhere`), the font at the size the window was sized for, and this visit's
+ * Needs: no new banner since boot — no scenario above prints one, and `booted` counts
+ * the banner's title line rather than the word, so a typed line holding the word (the
+ * settings import types the file's name) cannot move the count — the font at the size
+ * the window was sized for, and this visit's
  * own screen in the stored scrollback — `income:salary` from the balance step is what
  * the assertions below look for in it. The reload is what stops that screen mattering
  * to anything after it.
  * Leaves: the screen cleared and the stored copy cleared with it — the reload after
- * `clear` finds no `income:salary` to replay.
+ * `clear` finds no `income:salary` to replay — and, last, the typed `clear` word
+ * reaching the same wipe with its own echo on screen to take away.
  */
 async function reloadAndClear({ tab }) {
   await run('the report and a fresh banner are there after a reload', async () => {
@@ -1837,6 +2089,21 @@ async function reloadAndClear({ tab }) {
     const text = await tab.read();
     if (text.includes('income:salary')) throw new Error('the cleared report came back');
   });
+
+  await run('the typed clear command reaches the same wipe', async () => {
+    await tab.type('clear');
+    await tab.enter();
+    // Ctrl+L above cleared the screen straight from the key handler; this is the word
+    // itself, through classify → dispatch → Effect::Clear (src/app.rs), which clears
+    // and redraws the prompt the same way. The echo of the word is what says it took
+    // that path: a line routed to hledger instead would keep the echo on screen and
+    // print hledger's complaint about a command it does not have, and a wipe that
+    // stopped short of the echo would leave `clear` itself behind.
+    await tab.until(
+      `(() => { const text = (${READ_TERMINAL}).text; return text.trimEnd().endsWith('»') && !text.includes('clear'); })()`,
+      'the typed clear to wipe the screen',
+    );
+  });
 }
 
 async function main() {
@@ -1886,13 +2153,16 @@ async function main() {
     await loadTheDemoJournal(session);
     await aliasAndRecall(session);
     await helpAndSettings(session);
+    await importTheSettingsBack(session);
     await searchTheScreen(session);
     await switchTheJournal(session);
     await finderAndHistory(session);
+    await clearTheHistory(session);
     await completeAtThePrompt(session);
     await themeAndFont(session);
     await mountTheUpload(session);
     await pluginsAndScreenreader(session);
+    await addAndForgetARepository(session);
     await dropAJournal(session);
     await writeAndDownload(session);
     await openAFolderReadOnly(session);
