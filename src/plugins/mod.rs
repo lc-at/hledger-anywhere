@@ -164,8 +164,12 @@ impl Registry {
         }
 
         // Read again rather than added to: a repository that is reloaded should not end up
-        // offering everything twice.
+        // offering everything twice. Its plugins are dropped the way its themes are, so a
+        // manifest that renamed or dropped one leaves no stale copy beside the new one.
+        // A name another source already holds is not this repository's to replace, and is
+        // still refused below, exactly as before.
         self.themes.retain(|(from, _, _)| from != repository);
+        self.plugins.retain(|plugin| plugin.repository != repository);
         let label = if manifest.name.trim().is_empty() {
             repository.to_string()
         } else {
@@ -541,6 +545,107 @@ mod tests {
             registry.remove_repository("https://example.invalid/other.json"),
             0
         );
+    }
+
+    #[test]
+    fn installing_a_repository_again_replaces_what_it_gave() {
+        // The manifest is authoritative for what a repository offers, so reading it again
+        // replaces the old plugins rather than leaving them beside the new ones: a rename
+        // takes the old word away, and a summary that changed is the one on screen.
+        let url = "https://example.invalid/p.json";
+        let mut registry = Registry::default();
+        registry
+            .install(
+                r#"{"plugins": [
+                    {"name": "oldname", "summary": "before the rename"},
+                    {"name": "kept", "summary": "unchanged by the rename"}
+                ]}"#,
+                url,
+            )
+            .expect("the first read");
+        let installed = registry
+            .install(
+                r#"{"plugins": [
+                    {"name": "newname", "summary": "after the rename"},
+                    {"name": "kept", "summary": "the same word, said better"}
+                ]}"#,
+                url,
+            )
+            .expect("the second read");
+        assert_eq!(installed.registered, vec!["newname", "kept"]);
+        assert!(installed.refused.is_empty(), "{:?}", installed.refused);
+        assert!(
+            registry.find("oldname").is_none(),
+            "the renamed plugin is still registered"
+        );
+        assert_eq!(
+            registry.find("kept").expect("kept").summary,
+            "the same word, said better"
+        );
+        assert_eq!(registry.find("newname").expect("newname").repository, url);
+        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.repositories(), vec![url]);
+    }
+
+    #[test]
+    fn reading_a_repository_again_leaves_the_other_repositories_alone() {
+        // Only what this repository gave goes: the bundled manifest's own plugin is still
+        // there, with its summary, while the second repository is read again.
+        let mut registry = registry();
+        registry
+            .install(
+                r#"{"plugins": [{"name": "probe", "summary": "from the probe"}]}"#,
+                "https://probe.invalid/p.json",
+            )
+            .expect("a second repository");
+        registry
+            .install(
+                r#"{"plugins": [{"name": "renamed", "summary": "from the probe, again"}]}"#,
+                "https://probe.invalid/p.json",
+            )
+            .expect("the second repository read again");
+        assert!(registry.find("probe").is_none());
+        let chart = registry.find("chart").expect("the other repository's plugin");
+        assert_eq!(chart.repository, "https://example.invalid/plugins.json");
+        assert_eq!(chart.summary, "open a balance chart in a window");
+        assert_eq!(registry.len(), 2);
+        assert_eq!(
+            registry.repositories(),
+            vec![
+                "https://example.invalid/plugins.json",
+                "https://probe.invalid/p.json"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_another_repository_holds_is_still_refused() {
+        // Dropping this repository's own plugins is not a claim on anyone else's: the
+        // name is refused, and the repository that already had it keeps it untouched.
+        let mut registry = registry();
+        let installed = registry
+            .install(
+                r#"{"plugins": [{"name": "chart", "summary": "a second chart"}]}"#,
+                "https://other.invalid/p.json",
+            )
+            .expect("a readable manifest");
+        assert!(installed.registered.is_empty(), "{:?}", installed.registered);
+        assert_eq!(
+            installed.refused,
+            vec!["chart: chart is already provided by another plugin"]
+        );
+        let chart = registry.find("chart").expect("chart");
+        assert_eq!(chart.repository, "https://example.invalid/plugins.json");
+        assert_eq!(chart.summary, "open a balance chart in a window");
+
+        // The repository that owns the name reads it again without meeting its own old
+        // copy: the drop runs before the checks, which still see everyone else's.
+        let installed = registry
+            .install(EXAMPLE, "https://example.invalid/plugins.json")
+            .expect("its own manifest again");
+        assert_eq!(installed.registered, vec!["chart"]);
+        assert!(installed.refused.is_empty(), "{:?}", installed.refused);
+        assert_eq!(registry.len(), 1);
     }
 
     #[test]

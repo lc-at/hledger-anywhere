@@ -36,7 +36,8 @@
 //   SearchAgain    searchTheScreen             Download    writeAndDownload
 //   Alias          aliasAndRecall              Unalias     searchTheScreen
 //   Font           themeAndFont                ScreenReader pluginsAndScreenreader
-//   Plugins        pluginsAndScreenreader, addAndForgetARepository
+//   Plugins        pluginsAndScreenreader, addAndForgetARepository,
+//                   reloadAfterTheManifestChanged
 //   Settings       helpAndSettings, importTheSettingsBack
 //   Theme          themeAndFont                History     finderAndHistory, clearTheHistory
 //   Hledger        every report step, from loadTheDemoJournal on
@@ -48,7 +49,7 @@
 //
 // Payload arms with no step here — their decisions are `cargo test`'s in dispatch.rs:
 // `? <word>`, bare `settings`/`theme`/`alias`/`unalias`/`screenreader`/`download`/`find`,
-// `history <words>`, `N`, `plugins reload`.
+// `history <words>`, `N`.
 
 import { createServer } from 'node:http';
 import { accessSync, constants } from 'node:fs';
@@ -127,7 +128,7 @@ async function serve(dir) {
     // fetches any other, over this server's own port.
     if (path === PROBE_REPOSITORY) {
       response.writeHead(200, { 'content-type': TYPES['.json'] });
-      response.end(PROBE_MANIFEST);
+      response.end(PROBE_MANIFEST_SERVED);
       return;
     }
     const name = path === '/' ? 'index.html' : path.replace(/^\//, '');
@@ -214,7 +215,7 @@ const OPEN_PRICES = `\
 `;
 
 /**
- * The repository `plugins add` installs, and the only place `round25probe` is written.
+ * The repository `plugins add` installs, and the manifest this run first reads for it.
  *
  * Its shape is the one `Manifest` reads (src/plugins/mod.rs): a `plugins` entry with a
  * name and a summary, which is all `Registry::check` asks of one. `serve` answers for
@@ -222,6 +223,7 @@ const OPEN_PRICES = `\
  * server the way any repository's would. The `module` is never fetched: `plugins add`
  * reads the manifest alone (app.rs `install_repository` → plugins::loader::fetch), and
  * a module is imported only when its own command first runs, which no step here runs.
+ * The reload scenario below rebinds what `serve` holds to `PROBE_MANIFEST_RENAMED`.
  */
 const PROBE_REPOSITORY = '/round25probe.json';
 const PROBE_MANIFEST = `\
@@ -235,6 +237,35 @@ const PROBE_MANIFEST = `\
       "summary": "round25probe: a repository this check added and then forgot",
       "completes": ["probe"],
       "module": "./round25probe.js"
+    }
+  ]
+}
+`;
+
+/**
+ * What `serve` answers with for `PROBE_REPOSITORY`: the manifest above until the reload
+ * scenario changes it, `PROBE_MANIFEST_RENAMED` while that scenario's reload runs, and
+ * the manifest above again once the repository is forgotten.
+ */
+let PROBE_MANIFEST_SERVED = PROBE_MANIFEST;
+
+/**
+ * The same repository after its manifest changed: the plugin renamed and its summary
+ * rewritten. That is the pair a re-read has to leave nothing of — the old name gone as a
+ * whole line rather than sitting beside the new one. The only place `round26reload` is
+ * written.
+ */
+const PROBE_MANIFEST_RENAMED = `\
+{
+  "manifest": 1,
+  "name": "round25probe",
+  "plugins": [
+    {
+      "name": "round26reload",
+      "group": "Check",
+      "summary": "round26reload: the same repository read again with a changed manifest",
+      "completes": ["probe"],
+      "module": "./round26reload.js"
     }
   ]
 }
@@ -1582,6 +1613,131 @@ async function addAndForgetARepository({ tab }) {
 }
 
 /**
+ * Read a repository again after its manifest changed underneath it.
+ *
+ * Needs: the probe repository added and forgotten by the scenario above, so the listing
+ * is the bundled three with no remembered repository, and `serve` answering for
+ * `PROBE_REPOSITORY`, whose manifest this scenario changes in place.
+ * Leaves: the registry and the settings record back as the listing found them — the
+ * three bundled plugins, no remembered repository — with the line at the prompt, and
+ * `serve` answering with the manifest it started with. Nothing after this scenario lists
+ * plugins or fetches `PROBE_REPOSITORY`, and none of this prints `hledger-anywhere`, so
+ * the banner count the reload scenario waits for does not move; the font and the theme
+ * are untouched.
+ */
+async function reloadAfterTheManifestChanged({ tab }) {
+  // `plugins reload` (app.rs `reload_plugins`) forgets every remembered repository, runs
+  // `loader::reset` so a module added since is imported when it runs, and reads each
+  // manifest again through `install_repository`. What only a browser can show is the
+  // fetch reaching this run's server a second time and the listing turning over: the
+  // plugin renamed and its summary rewritten, with the stale one gone rather than left
+  // beside the new one. `cargo test` holds the registry's half of that
+  // (src/plugins/mod.rs) and dispatch.rs holds the decision; this holds the chain.
+
+  const read = `Read 1 plugin from ${PROBE_REPOSITORY}: round25probe.`;
+  const forgot = `Forgot 1 plugin that came from ${PROBE_REPOSITORY}.`;
+  const staleRow = `${'round25probe'.padEnd(14)}  round25probe: a repository this check added and then forgot`;
+  const freshRow = `${'round26reload'.padEnd(14)}  round26reload: the same repository read again with a changed manifest`;
+
+  await run('plugins add reads the repository while its manifest still says round25probe', async () => {
+    await tab.type(`plugins add ${PROBE_REPOSITORY}`);
+    await tab.enter();
+    // `plugin_installed` (src/terminal/messages.rs) says the same sentence the scenario
+    // above said for the same manifest, so this run's copy is counted rather than
+    // matched: two now, where the screen held one.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split(${JSON.stringify(read)}).length - 1 >= 2`,
+      'the repository to be read again',
+    );
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the add');
+  });
+
+  await run('the listing shows the plugin as the manifest first wrote it', async () => {
+    await tab.type('plugins');
+    await tab.enter();
+    // The row is on screen once from the scenario above; a second copy can only be this
+    // listing, and reading it from the end of this add's own message keeps the earlier
+    // listing from standing in for this one.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split(${JSON.stringify(staleRow)}).length - 1 >= 2`,
+      'the listing to show the added plugin',
+    );
+    const text = await tab.read();
+    const lines = text.slice(text.lastIndexOf(read)).split('\n').map((line) => line.trim());
+    if (!lines.includes('4 plugins, installed')) throw new Error('the listing header is not after this add');
+    if (!lines.includes(staleRow)) throw new Error(`${JSON.stringify(staleRow)} is not a line of the listing`);
+    if (!lines.includes(PROBE_REPOSITORY)) throw new Error('the repository is not in the listing');
+  });
+
+  await run('plugins reload reads the changed manifest', async () => {
+    // The same URL, the same repository, a manifest that renamed its only plugin.
+    PROBE_MANIFEST_SERVED = PROBE_MANIFEST_RENAMED;
+    await tab.type('plugins reload');
+    await tab.enter();
+    // `reload_plugins` prints no line of its own when every repository reads: `submit`
+    // has already ended the typed line, and `settle` is what draws the prompt back under
+    // it. The prompt returning is therefore all the reload itself says, and it cannot be
+    // there before the reload finishes, because the typed line is what the screen ends
+    // with until then.
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the reload');
+  });
+
+  await run('the listing shows only what the changed manifest lists', async () => {
+    await tab.type('plugins');
+    await tab.enter();
+    await tab.until(
+      `(${READ_TERMINAL}).text.includes(${JSON.stringify(freshRow)})`,
+      'the reloaded plugin to be listed',
+    );
+    // Read from this listing's own header: it is the last one on screen, and neither of
+    // this scenario's earlier listings can stand in for it. The stale row was written
+    // once above and must not have been written again.
+    const text = await tab.read();
+    const lines = text
+      .slice(text.lastIndexOf('4 plugins, installed'))
+      .split('\n')
+      .map((line) => line.trim());
+    if (!lines.includes('4 plugins, installed')) throw new Error('the listing header is not on screen');
+    if (!lines.includes(freshRow)) throw new Error(`${JSON.stringify(freshRow)} is not a line of the listing`);
+    if (lines.includes(staleRow)) throw new Error('the plugin the manifest renamed is still in the listing');
+    if (!lines.includes(PROBE_REPOSITORY)) throw new Error('the repository is not in the listing');
+  });
+
+  await run('plugins remove forgets the repository again', async () => {
+    await tab.type(`plugins remove ${PROBE_REPOSITORY}`);
+    await tab.enter();
+    // `plugin_removed` for the one plugin that came from it, the same sentence the
+    // scenario above saw, so it is counted rather than matched.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split(${JSON.stringify(forgot)}).length - 1 >= 2`,
+      'the repository to be forgotten again',
+    );
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the remove');
+    PROBE_MANIFEST_SERVED = PROBE_MANIFEST;
+  });
+
+  await run('the listing is back to the bundled three', async () => {
+    await tab.type('plugins');
+    await tab.enter();
+    // This scenario's own forget message is the marker: the listing drawn after it is
+    // this one, holding the header and neither of this scenario's rows.
+    await tab.until(
+      `(${READ_TERMINAL}).text.lastIndexOf('3 plugins, installed') > (${READ_TERMINAL}).text.lastIndexOf(${JSON.stringify(forgot)})`,
+      'the listing to shrink back',
+    );
+    const text = await tab.read();
+    const lines = text
+      .slice(text.lastIndexOf(forgot))
+      .split('\n')
+      .map((line) => line.trim());
+    if (!lines.includes('3 plugins, installed')) throw new Error('the listing header is not on screen');
+    if (lines.includes(staleRow)) throw new Error('the renamed plugin is still in the listing');
+    if (lines.includes(freshRow)) throw new Error('the reloaded plugin is still in the listing');
+    if (lines.includes(PROBE_REPOSITORY)) throw new Error('the repository is still in the listing');
+  });
+}
+
+/**
  * Throw the drop fixture at the page, mark it as the drop target, and read the report
  * back from the file the drop handed over.
  *
@@ -2164,6 +2320,7 @@ async function main() {
     await mountTheUpload(session);
     await pluginsAndScreenreader(session);
     await addAndForgetARepository(session);
+    await reloadAfterTheManifestChanged(session);
     await dropAJournal(session);
     await writeAndDownload(session);
     await openAFolderReadOnly(session);
