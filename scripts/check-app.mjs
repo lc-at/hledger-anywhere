@@ -37,7 +37,7 @@
 //   Alias          aliasAndRecall              Unalias     searchTheScreen
 //   Font           themeAndFont                ScreenReader pluginsAndScreenreader
 //   Plugins        pluginsAndScreenreader, addAndForgetARepository,
-//                   reloadAfterTheManifestChanged
+//                   reloadAfterTheManifestChanged, runTheProbePlugin
 //   Settings       helpAndSettings, importTheSettingsBack
 //   Theme          themeAndFont                History     finderAndHistory, clearTheHistory
 //   Hledger        every report step, from loadTheDemoJournal on
@@ -131,6 +131,15 @@ async function serve(dir) {
       response.end(PROBE_MANIFEST_SERVED);
       return;
     }
+    // The module that repository's manifest names, served beside it: `plugins add` never
+    // fetches it, and the loader's `import()` is the only thing that does — resolved
+    // against the manifest's own URL (assets/js/plugins.js `moduleFor`), which lands on
+    // this server's `/round25probe.js`.
+    if (path === PROBE_MODULE) {
+      response.writeHead(200, { 'content-type': TYPES['.js'] });
+      response.end(PROBE_MODULE_TEXT);
+      return;
+    }
     const name = path === '/' ? 'index.html' : path.replace(/^\//, '');
     const file = join(dir, normalize(name));
     if (!file.startsWith(dir + sep)) {
@@ -220,10 +229,11 @@ const OPEN_PRICES = `\
  * Its shape is the one `Manifest` reads (src/plugins/mod.rs): a `plugins` entry with a
  * name and a summary, which is all `Registry::check` asks of one. `serve` answers for
  * this path rather than dist/ holding it, so the fetch runs against this run's own
- * server the way any repository's would. The `module` is never fetched: `plugins add`
- * reads the manifest alone (app.rs `install_repository` → plugins::loader::fetch), and
- * a module is imported only when its own command first runs, which no step here runs.
- * The reload scenario below rebinds what `serve` holds to `PROBE_MANIFEST_RENAMED`.
+ * server the way any repository's would. The `module` is not fetched by `plugins add`
+ * (app.rs `install_repository` → plugins::loader::fetch): it is imported only when its
+ * own command first runs, which the `runTheProbePlugin` scenario below does — `serve`
+ * answers for that file too, as `PROBE_MODULE`. The reload scenario below rebinds what
+ * `serve` holds to `PROBE_MANIFEST_RENAMED`.
  */
 const PROBE_REPOSITORY = '/round25probe.json';
 const PROBE_MANIFEST = `\
@@ -248,6 +258,48 @@ const PROBE_MANIFEST = `\
  * the manifest above again once the repository is forgotten.
  */
 let PROBE_MANIFEST_SERVED = PROBE_MANIFEST;
+
+/**
+ * The path `PROBE_MANIFEST` gives its module, resolved against the manifest's own URL by
+ * the loader (assets/js/plugins.js `moduleFor`), which is what puts it on this server.
+ */
+const PROBE_MODULE = '/round25probe.js';
+
+/**
+ * What `serve` answers for `PROBE_MODULE`, and the only copy of the module's text: a
+ * plugin in the shape `assets/js/plugins.js` `run` builds one from — a default export
+ * holding `run(args, host)`, which the loader awaits, and whose errors come back to the
+ * app as `${name} failed: ...`.
+ *
+ * What it does is only what this run has to see on screen: say a line carrying the
+ * plugin's own name and the `args` it was handed, ask the engine for `balance` and say
+ * the row that names the upload fixture — the only way an answer from `host.hledger` can
+ * reach a screen — remember a setting and say the value `host.setting` read back, and try
+ * to save a file, which with no folder open has to come back as `host_save`'s refusal
+ * (src/app.rs).
+ */
+const PROBE_MODULE_TEXT = `\
+export default {
+  async run(args, host) {
+    host.say('round25probe: run(' + JSON.stringify(args) + ') as ' + host.name);
+    const report = await host.hledger('balance');
+    const row = report.split('\\n').find((line) => line.includes('expenses:round17test')) || '(no such row)';
+    host.say('round25probe: hledger said ' + row.trim());
+    host.remember('checked', 'on');
+    host.say('round25probe: setting read back ' + host.setting('checked'));
+    const answer = await host.save('probe.journal', 'x\\n');
+    host.say('round25probe: save answered ' + JSON.stringify(answer));
+  },
+};
+`;
+
+/**
+ * What `host_save` says when nothing has opened a folder, and the only place this file
+ * holds it: the first of its two refusals (src/app.rs `host_save`), which the probe
+ * plugin says back through `host.save` and the scenario below asserts verbatim. Only
+ * `open` can make a loaded file writable, and that runs later in this run.
+ */
+const SAVE_REFUSAL = 'no folder is open for editing; run `open` first';
 
 /**
  * The same repository after its manifest changed: the plugin renamed and its summary
@@ -1620,7 +1672,8 @@ async function addAndForgetARepository({ tab }) {
  * Leaves: the registry and the settings record back as the listing found them — the
  * three bundled plugins, no remembered repository — with the line at the prompt, and
  * `serve` answering with the manifest it started with. Nothing after this scenario lists
- * plugins or fetches `PROBE_REPOSITORY`, and none of this prints `hledger-anywhere`, so
+ * plugins or fetches `PROBE_REPOSITORY` until the scenario below adds that repository
+ * back to run the plugin its manifest names. None of this prints `hledger-anywhere`, so
  * the banner count the reload scenario waits for does not move; the font and the theme
  * are untouched.
  */
@@ -1733,6 +1786,116 @@ async function reloadAfterTheManifestChanged({ tab }) {
     if (lines.includes(staleRow)) throw new Error('the renamed plugin is still in the listing');
     if (lines.includes(freshRow)) throw new Error('the reloaded plugin is still in the listing');
     if (lines.includes(PROBE_REPOSITORY)) throw new Error('the repository is still in the listing');
+  });
+}
+
+/**
+ * Run the probe repository's own plugin, from the module its manifest names.
+ *
+ * Needs: the probe repository added and forgotten by the scenarios above — so the registry
+ * is the bundled three and `serve` answers for `PROBE_REPOSITORY` with `PROBE_MANIFEST`
+ * again — the uploaded journal still loaded with no folder open (`open`'s fallback mounts
+ * one later, and nothing before it opens a folder), and the line at the prompt.
+ * Leaves: the registry as the remove left it — the three bundled plugins, no remembered
+ * repository — plus the one setting the plugin remembered, with the line at the prompt.
+ * None of this prints `hledger-anywhere`, so the banner count the reload scenario waits
+ * for does not move; the font and the theme are untouched.
+ */
+async function runTheProbePlugin({ tab }) {
+  // The chain no other step here reaches: a word classify gives to hledger
+  // (src/terminal/commands.rs) handed by dispatch to the registry's owner
+  // (src/dispatch.rs `Effect::RunPlugin`), `run_plugin` building the host (src/app.rs
+  // `host`), the loader importing the module over this run's server and awaiting it
+  // (src/plugins/loader.rs `run`, assets/js/plugins.js `run`), and the plugin's own
+  // calls coming back as `host.say` lines. `cargo test` holds the dispatch decision and
+  // `scripts/check-host-contract.mjs` holds the shape of the API; what only a browser
+  // can show is the whole of it running, with real files and the real engine behind it.
+
+  const read = `Read 1 plugin from ${PROBE_REPOSITORY}: round25probe.`;
+  const forgot = `Forgot 1 plugin that came from ${PROBE_REPOSITORY}.`;
+
+  await run('plugins add reads the repository whose module is about to run', async () => {
+    await tab.type(`plugins add ${PROBE_REPOSITORY}`);
+    await tab.enter();
+    // The same sentence the two scenarios above said for this manifest, so it is counted
+    // rather than matched: three now, where the screen held two.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split(${JSON.stringify(read)}).length - 1 >= 3`,
+      'the repository to be read a third time',
+    );
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the add');
+  });
+
+  await run('the plugin word runs the module its manifest names', async () => {
+    const before = await tab.read();
+    const quoted = occurrences(before, 'expenses:round17test');
+    await tab.type('round25probe');
+    await tab.enter();
+    // The module's first line, through `host.say`: it carries the plugin's own name and
+    // the `args` the loader handed over, so nothing but this module's `run` writing them
+    // — reached by importing `PROBE_MODULE` — can put it on screen.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === 'round25probe: run("") as round25probe')`,
+      'the module to be imported and run',
+      20000,
+    );
+
+    // `host.hledger` (src/app.rs `host` → `host_run`) runs `balance` over the loaded
+    // files and resolves with its stdout, which reaches a screen only by the plugin
+    // saying it: the row that names the upload fixture is in the line it says, so a
+    // screen holding one more copy of that account than it did above is a screen the
+    // engine's answer reached.
+    await tab.until(
+      `(${READ_TERMINAL}).text.includes('round25probe: hledger said ')`,
+      'the plugin to say what hledger answered',
+    );
+    const said = await tab.read();
+    if (occurrences(said, 'expenses:round17test') <= quoted) {
+      throw new Error('the plugin said what hledger answered, but no copy of the fixture account was added to the screen');
+    }
+
+    // `remember` writes the plugin's own settings and `setting` reads them back
+    // (src/app.rs `host`): the line holds the value the plugin read, so `null` here
+    // would be a round-trip that lost it.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === 'round25probe: setting read back on')`,
+      'the setting to round-trip',
+    );
+
+    // `host.save` (src/app.rs `host` → `host_save`) with no folder open has to refuse at
+    // its first branch, and the refusal comes back as the `{error: "..."}` the docs
+    // promise rather than a rejection. Asserted verbatim: these are the app's own words
+    // (SAVE_REFUSAL), reached here only because the plugin asked to write a file.
+    await tab.until(
+      `(${READ_TERMINAL}).text.includes(${JSON.stringify(SAVE_REFUSAL)})`,
+      'host.save to refuse with no folder open',
+    );
+    const lines = (await tab.read()).split('\n').map((line) => line.trim());
+    const saving = lines.find((line) => line.startsWith('round25probe: save answered '));
+    if (!saving) throw new Error('the plugin did not say what host.save answered');
+    if (!saving.includes(SAVE_REFUSAL)) {
+      throw new Error(`${JSON.stringify(saving)} does not hold ${JSON.stringify(SAVE_REFUSAL)} verbatim`);
+    }
+
+    // The loader awaits the module and `run_plugin` settles after it, so the prompt is
+    // what says the whole run finished rather than dying partway through it.
+    await tab.until(
+      `(${READ_TERMINAL}).text.trimEnd().endsWith('»')`,
+      'the prompt to come back after the plugin ran',
+    );
+  });
+
+  await run('plugins remove forgets the repository the module came from', async () => {
+    await tab.type(`plugins remove ${PROBE_REPOSITORY}`);
+    await tab.enter();
+    // The same sentence the scenarios above said twice, so it is counted rather than
+    // matched: three now, where the screen held two. Nothing after this scenario lists
+    // plugins, so this is what leaves the registry as the scenarios before it found it.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split(${JSON.stringify(forgot)}).length - 1 >= 3`,
+      'the repository to be forgotten a third time',
+    );
+    await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the prompt to come back after the remove');
   });
 }
 
@@ -2338,6 +2501,7 @@ async function main() {
     await pluginsAndScreenreader(session);
     await addAndForgetARepository(session);
     await reloadAfterTheManifestChanged(session);
+    await runTheProbePlugin(session);
     await dropAJournal(session);
     await writeAndDownload(session);
     await openAFolderReadOnly(session);
