@@ -2178,6 +2178,26 @@ async function openAFolderReadOnly({ tab, launched, fixtures }) {
  * reaching the same wipe with its own echo on screen to take away.
  */
 async function reloadAndClear({ tab }) {
+  // The height passed to Tab.open is the ceiling for everything on screen — xterm only
+  // renders the rows that fit, so a run that outgrows it fails in some early scenario's
+  // banner wait, far from the constant. The budget checks itself here, at the run's
+  // fullest and before the reloads thin it out: filled rows against rendered rows, with
+  // room to grow. This has been re-tuned at 3200, 4800, 7200 and 11200 by hand; when it
+  // fails, the height in main()'s Tab.open is what to grow.
+  await run('the screen fits the window with room to grow', async () => {
+    const room = await tab.eval(`(() => {
+      const rows = [...document.querySelectorAll('.xterm-rows > div')];
+      const filled = rows.filter((row) => row.textContent.trim()).length;
+      return { capacity: rows.length, filled };
+    })()`);
+    const margin = room.capacity - room.filled;
+    if (margin < 100) {
+      throw new Error(
+        `${margin} rows of margin (${room.filled} filled of ${room.capacity}) — grow the height passed to Tab.open in main()`,
+      );
+    }
+  });
+
   await run('the report and a fresh banner are there after a reload', async () => {
     // `booted` waits for the banners in the stored copy plus this visit's own, so what is
     // left to prove is the order: the report came back from the replay, and this visit's
