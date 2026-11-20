@@ -33,7 +33,7 @@ import { tmpdir } from 'node:os';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { findChrome, launch, Tab as BaseTab } from './browser.mjs';
+import { findChrome, launch, Tab as BaseTab, until } from './browser.mjs';
 import { BUDGET_CSV, COLORS, DARK, FLOWS_CSV, FLOWS_MONTHS_CSV, MONTHLY_CSV, RANKING_CSV, REGISTER_CSV, TREE_CSV, TREE_MONTHS_CSV, dailyCsv } from './chart-fixtures.mjs';
 
 // This process writes every page, so its own coverage counts: it is measured from before the
@@ -911,8 +911,8 @@ async function saving(tab, downloads) {
   await tab.eval("document.querySelector('.legend li').click()");
   await tab.key('s', { code: 'KeyS', keyCode: 83, text: 's' });
   await tab.key('p', { code: 'KeyP', keyCode: 80, text: 'p' });
-  const until = Date.now() + 8000;
-  while (Date.now() < until && readdirSync(downloads).filter((file) => /\.(svg|png)$/.test(file)).length < 2) await sleep(100);
+  const landed = () => readdirSync(downloads).filter((file) => /\.(svg|png)$/.test(file)).length >= 2;
+  await until('the SVG and the PNG to land in Downloads', landed, { timeoutMs: 8000 });
   const files = readdirSync(downloads);
   const svg = files.includes('hledger-line-expenses.svg') ? readFileSync(join(downloads, 'hledger-line-expenses.svg'), 'utf8') : '';
   check('s saves an SVG named after the chart', svg.startsWith('<?xml') && /xmlns="http:\/\/www.w3.org\/2000\/svg"/.test(svg), files.join(','));

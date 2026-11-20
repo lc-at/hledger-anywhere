@@ -176,9 +176,14 @@ async function openPage(url) {
     await workerCdp.send('Network.setCacheDisabled', { cacheDisabled: offline });
     await workerCdp.send('Network.emulateNetworkConditions', conditions);
   };
-  return {
-    evaluate: (expression) => tab.eval(expression),
-    navigate: (to) => tab.navigate(to),
+  // The tab itself, with this run's own parts hung on it: `eval`, `navigate` and `until`
+  // are the tab's own — the page handle's `evaluate` was an alias over `tab.eval`, a
+  // second name for one function, so it is gone rather than carried here, and the waits
+  // in this file ask the tab, which names what it waited for when it runs out of time.
+  // The tab's own `reload` is kept beside this one before the name goes to it, since
+  // the check below is what has to call it.
+  const reload = Tab.prototype.reload;
+  return Object.assign(tab, {
     // The offline scenario's network cut, on both targets at once: the worker runs its
     // fetches in its own target, and emulation set on the page does not reach them — the
     // page reports itself offline while the worker keeps talking to the network, which is
@@ -186,7 +191,7 @@ async function openPage(url) {
     emulateOffline,
     reload: async () => {
       const before = await tab.eval('window.__boot || 0');
-      await tab.reload();
+      await reload.call(tab);
       const after = await tab.eval('window.__boot || 0');
       // The load event says a page was drawn; the boot marker says it is a fresh one, since
       // only the document itself sets `window.__boot` on the way up.
@@ -209,18 +214,18 @@ async function openPage(url) {
         }
       }
     },
-  };
+  });
 }
 
 /** Wait until the worker is installed and controlling the page. */
 async function untilControlled(page, want) {
   for (let i = 0; i < 80; i += 1) {
-    const controlled = await page.evaluate('Boolean(navigator.serviceWorker.controller)');
+    const controlled = await page.eval('Boolean(navigator.serviceWorker.controller)');
     if (controlled === want) return;
     await sleep(100);
   }
   // Say what the registration actually is, rather than only that it never arrived.
-  const why = await page.evaluate(`JSON.stringify({
+  const why = await page.eval(`JSON.stringify({
     scriptRan: typeof window.openBlob,
     secure: window.isSecureContext,
     workerApi: typeof navigator.serviceWorker,
@@ -228,7 +233,7 @@ async function untilControlled(page, want) {
     title: document.title,
     body: document.body ? document.body.innerHTML.slice(0, 80) : null,
   })`);
-  const state = await page.evaluate(`navigator.serviceWorker.getRegistrations().then((all) => all.map((r) => ({
+  const state = await page.eval(`navigator.serviceWorker.getRegistrations().then((all) => all.map((r) => ({
     scope: r.scope, active: Boolean(r.active), installing: Boolean(r.installing), waiting: Boolean(r.waiting),
     error: r.installing ? 'installing' : (r.waiting ? 'waiting' : (r.active ? 'active' : 'none')),
   })))`).catch((error) => String(error));
@@ -237,18 +242,13 @@ async function untilControlled(page, want) {
 
 /** Wait for the page's own import on load, and say which version it got. */
 async function pageVersion(page) {
-  for (let i = 0; i < 60; i += 1) {
-    const value = await page.evaluate('window.__loaded || null');
-    if (value) return value;
-    await sleep(100);
-  }
-  return 'never settled';
+  return page.until('window.__loaded || null', 'the page’s own import on load to say its version');
 }
 
 /** Ask a fresh load what version of the plugin it can import. */
 async function versionAfterReload(page, base) {
   await page.reload();
-  return page.evaluate(`import('${base}/plugins/demo.js').then((m) => m.version)`);
+  return page.eval(`import('${base}/plugins/demo.js').then((m) => m.version)`);
 }
 
 /**
@@ -260,7 +260,7 @@ async function versionAfterReload(page, base) {
  */
 async function untilCached(page, url, want) {
   for (let i = 0; i < 50; i += 1) {
-    const bodies = await page.evaluate(`caches.keys()
+    const bodies = await page.eval(`caches.keys()
       .then((names) => Promise.all(names.map((name) => caches.open(name)
         .then((c) => c.match(${JSON.stringify(url)}))
         .then((r) => (r ? r.text() : null)))))
@@ -306,13 +306,13 @@ async function main() {
     // 1. Through the worker: this is the path a returning visitor takes.
     await page.navigate(`${base}/`);
     await untilControlled(page, true);
-    const first = await page.evaluate(`import('${base}/plugins/demo.js').then((m) => m.version)`);
+    const first = await page.eval(`import('${base}/plugins/demo.js').then((m) => m.version)`);
     results.push(['the page imports the plugin it was served', first === 'v1', first]);
     await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v2'));
     await page.reload();
     // The import comes first: a fetch with no-cache in front of it would refresh the HTTP
     // cache itself and prove nothing about the worker.
-    const after = await page.evaluate(`(async () => {
+    const after = await page.eval(`(async () => {
       const controlled = Boolean(navigator.serviceWorker.controller);
       // Wait for the page's own import to settle before asking for another one.
       for (let i = 0; i < 50 && !window.__loaded; i += 1) await new Promise((r) => setTimeout(r, 100));
@@ -339,12 +339,12 @@ async function main() {
     await pageVersion(page);
     // (a) A module only that window asks for. If the worker's cache never holds it, that
     //     realm's requests do not reach the worker at all, whatever the page's do.
-    const opened = await page.evaluate(`window.openBlob(new URL('/plugins/blob-only.js', location.origin).href)`);
+    const opened = await page.eval(`window.openBlob(new URL('/plugins/blob-only.js', location.origin).href)`);
     await sleep(700);
-    const firstWindow = await page.evaluate('window.__blob && window.__blob.document.title');
+    const firstWindow = await page.eval('window.__blob && window.__blob.document.title');
     results.push(['the window a plugin opens can import its module at all',
       opened && !String(firstWindow).startsWith('error'), String(firstWindow)]);
-    const seenByWorker = await page.evaluate(`caches.keys()
+    const seenByWorker = await page.eval(`caches.keys()
       .then((names) => Promise.all(names.map((name) => caches.open(name)
         .then((c) => c.match('${base}/plugins/blob-only.js'))
         .then((r) => (r ? r.text() : null)))))
@@ -357,7 +357,7 @@ async function main() {
     await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v3'));
     await page.reload();
     const pageSaw = await pageVersion(page);
-    const detail = await page.evaluate(`(async () => {
+    const detail = await page.eval(`(async () => {
       const viaFetch = await fetch('${base}/plugins/demo.js', { cache: 'no-cache' }).then((r) => r.text());
       const probe = await caches.open('probe').then((c) => c.match('${base}/plugins/demo.js')).then((r) => Boolean(r)).catch(() => 'no probe cache');
       const inCache = await caches.keys()
@@ -370,18 +370,18 @@ async function main() {
       return JSON.stringify({ navType: window.__navType, persisted: window.__persisted, controlledAtRequest: window.__controlled, probeCount, pageSaw: window.__loaded, viaFetch: viaFetch.trim(), inCache });
     })()`);
     notes.push(`a second change on a later load: the page imported ${pageSaw}, the server had v3 (${detail})`);
-    await page.evaluate(`window.openBlob(new URL('/plugins/demo.js', location.origin).href)`);
+    await page.eval(`window.openBlob(new URL('/plugins/demo.js', location.origin).href)`);
     await sleep(700);
-    const fromWindow = await page.evaluate('window.__blob && window.__blob.document.title');
+    const fromWindow = await page.eval('window.__blob && window.__blob.document.title');
     notes.push(`the window opened after that load showed: ${fromWindow}`);
 
     // A second import of the same URL in this document, after the file changed under it.
     await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v5'));
     await page.reload();
     await pageVersion(page);
-    const firstImport = await page.evaluate(`import(new URL('/plugins/demo.js', location.origin).href).then((m) => m.version)`);
+    const firstImport = await page.eval(`import(new URL('/plugins/demo.js', location.origin).href).then((m) => m.version)`);
     await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v6'));
-    const twice = await page.evaluate(`(async () => {
+    const twice = await page.eval(`(async () => {
       const url = new URL('/plugins/demo.js', location.origin).href;
       const again = await import(url).then((m) => m.version);
       const server = await fetch(url, { cache: 'no-cache' }).then((r) => r.text());
@@ -392,13 +392,13 @@ async function main() {
     // 3. With no worker, which is a first visit or a browser that refused to install one.
     await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v5'));
     await page.navigate(`${base}/?nosw=1`);
-    await page.evaluate('navigator.serviceWorker.getRegistrations().then((all) => all.map((r) => r.unregister()))');
+    await page.eval('navigator.serviceWorker.getRegistrations().then((all) => all.map((r) => r.unregister()))');
     await sleep(400);
     await page.navigate(`${base}/?nosw=1`);
     // Registrations, not the controller: a page keeps the controller it had until it goes away,
     // so the count is what says the worker is really not installed.
     for (let i = 0; i < 60; i += 1) {
-      const left = await page.evaluate('navigator.serviceWorker.getRegistrations().then((all) => all.length)');
+      const left = await page.eval('navigator.serviceWorker.getRegistrations().then((all) => all.length)');
       if (left === 0) break;
       await sleep(100);
     }
@@ -418,7 +418,7 @@ async function main() {
     await untilControlled(page, true);
     await page.reload();
     const engineUrl = `${base}/wasm/hledger.wasm?v=test`;
-    const warm = JSON.parse(await page.evaluate(`(async () => {
+    const warm = JSON.parse(await page.eval(`(async () => {
       // The page's own import on load, waited for the way the checks above wait for it.
       for (let i = 0; i < 60 && !window.__loaded; i += 1) await new Promise((r) => setTimeout(r, 100));
       const engine = await fetch(${JSON.stringify(engineUrl)})
@@ -452,7 +452,7 @@ async function main() {
       // worker's own cache is left to answer anything.
       let cutOff = 'still up';
       for (let i = 0; i < 50 && !cutOff.startsWith('failed'); i += 1) {
-        cutOff = await page.evaluate(`fetch('${base}/never-requested-${i}.txt', { cache: 'no-cache' })
+        cutOff = await page.eval(`fetch('${base}/never-requested-${i}.txt', { cache: 'no-cache' })
           .then((r) => 'served: http ' + r.status)
           .catch((e) => 'failed: ' + e.message)`);
         if (!cutOff.startsWith('failed')) await sleep(100);
@@ -462,7 +462,7 @@ async function main() {
 
       await page.reload();
       const rendered = await pageVersion(page);
-      const shell = JSON.parse(await page.evaluate(`JSON.stringify({
+      const shell = JSON.parse(await page.eval(`JSON.stringify({
         marker: document.title === 'freshness' && typeof window.openBlob === 'function',
         controlled: Boolean(navigator.serviceWorker.controller),
       })`));
@@ -474,7 +474,7 @@ async function main() {
         rendered === 'v5', rendered]);
       // The engine's file is gone from the server: this body can only have come from the
       // cache the worker's `v=` branch serves without asking the network.
-      const engineAnswer = await page.evaluate(`fetch(${JSON.stringify(engineUrl)})
+      const engineAnswer = await page.eval(`fetch(${JSON.stringify(engineUrl)})
         .then((r) => (r.ok ? r.text() : 'http ' + r.status))
         .catch((e) => 'fetch failed: ' + e.message)`);
       results.push(['a versioned asset answers from the cache with the network gone',
@@ -487,7 +487,7 @@ async function main() {
 
     // Back online: one network-first fetch, and v6 is on the network only, so this shows
     // the emulation is really off and leaves the worker doing its job for the next load.
-    const onlineAnswer = await page.evaluate(`fetch('${base}/plugins/demo.js', { cache: 'no-cache' })
+    const onlineAnswer = await page.eval(`fetch('${base}/plugins/demo.js', { cache: 'no-cache' })
       .then((r) => (r.ok ? r.text() : 'http ' + r.status))
       .catch((e) => 'fetch failed: ' + e.message)`);
     results.push(['back online, the network-first fetch reaches the network again',

@@ -58,7 +58,7 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { findChrome, launch, Tab as BaseTab } from './browser.mjs';
+import { findChrome, launch, Tab as BaseTab, until } from './browser.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, '..', 'dist');
@@ -1143,11 +1143,11 @@ async function completeAtThePrompt({ tab }) {
     // and a Tab while they load lists what has arrived — so the Tab is pressed
     // again until the journal's own names are in the list, rather than
     // assuming the run finished by some deadline.
-    const end = Date.now() + 30000;
-    while (!(await tab.eval(holds))) {
-      if (Date.now() > end) throw new Error('timed out waiting for the account names to arrive');
+    await until('the account names to arrive', async () => {
+      if (await tab.eval(holds)) return true;
       await tab.press('Tab', { code: 'Tab', keyCode: 9 });
-    }
+      return false;
+    });
     const lines = (await tab.read()).split('\n').filter((line) => line.trim());
     const at = lines.lastIndexOf(heading);
     if (at < 0) throw new Error('the heading is not a line of its own');
@@ -1343,8 +1343,7 @@ async function mountTheUpload({ tab, launched, fixtures }) {
       }
       await tab.type('upload');
       await tab.enter();
-      const end = Date.now() + 15000;
-      while (intercepted && !chooser && Date.now() < end) await sleep(60);
+      if (intercepted) await until('the intercepted file chooser to open', () => chooser, { timeoutMs: 15000 });
       if (chooser && chooser.backendNodeId) {
         await tab.send('DOM.setFileInputFiles', { files: paths, backendNodeId: chooser.backendNodeId });
       } else {
@@ -1913,23 +1912,22 @@ async function writeAndDownload({ tab, launched, downloads }) {
     // The announcement is the click, not the bytes: what is waited for is the
     // browser saying the download completed AND a file of the size the note
     // promised being readable in the directory it was given.
-    const end = Date.now() + 30000;
     let bytes = null;
-    for (;;) {
-      if (downloadStarts > before && downloadCompleted) {
+    try {
+      await until('the download to land as round19.csv', async () => {
+        if (!(downloadStarts > before && downloadCompleted)) return false;
         try {
           bytes = await readFile(join(downloads, 'round19.csv'));
         } catch {
-          bytes = null; // still on its way
+          return false; // still on its way
         }
-        if (bytes) break;
-      }
-      if (Date.now() > end) {
-        throw new Error(
-          `no file after 30 s: begun=${JSON.stringify(downloadBegun)} completed=${downloadCompleted} bytes=${bytes && bytes.length}`,
-        );
-      }
-      await sleep(60);
+        return Boolean(bytes);
+      });
+    } catch (error) {
+      // What the browser had said by then, beside the wait's own name.
+      throw new Error(
+        `${error.message}: begun=${JSON.stringify(downloadBegun)} completed=${downloadCompleted} bytes=${bytes && bytes.length}`,
+      );
     }
 
     // The name the browser was offered, which is the name the anchor set
@@ -2051,8 +2049,7 @@ async function openAFolderReadOnly({ tab, launched, fixtures }) {
         `(${READ_TERMINAL}).text.includes('This browser cannot open a folder for editing, so open loads it read-only.')`,
         'the fallback to be announced',
       );
-      const end = Date.now() + 15000;
-      while (intercepted && !chooser && Date.now() < end) await sleep(60);
+      if (intercepted) await until('the intercepted file chooser to open', () => chooser, { timeoutMs: 15000 });
       if (chooser && chooser.backendNodeId) {
         // The directory itself, not the files in it: `DOM.setFileInputFiles` expands
         // it into the `webkitRelativePath`s a real pick carries — `journal/
