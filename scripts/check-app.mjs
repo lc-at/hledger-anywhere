@@ -292,6 +292,12 @@ export default {
     host.say('round25probe: hledger said ' + row.trim());
     host.remember('checked', 'on');
     host.say('round25probe: setting read back ' + host.setting('checked'));
+    const files = host.files();
+    host.say('round25probe: files ' + files.map((file) => file.path + (file.writable ? ' writable' : ' read-only')).join(', '));
+    const held = host.read('round17.journal');
+    host.say('round25probe: read ' + (held !== null && held.includes('expenses:round17test') ? 'held the fixture' : 'missed it'));
+    const fresh = await host.refresh();
+    host.say('round25probe: refresh ' + JSON.stringify(fresh));
     const answer = await host.save('probe.journal', 'x\\n');
     host.say('round25probe: save answered ' + JSON.stringify(answer));
   },
@@ -1865,6 +1871,29 @@ async function runTheProbePlugin({ tab }) {
     await tab.until(
       `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === 'round25probe: setting read back on')`,
       'the setting to round-trip',
+    );
+
+    // `host.files` (src/app.rs `host_files`): with no folder open every loaded file is
+    // read-only, and the list holds the journal the upload mounted — no folder, no
+    // writable entry, and nothing else is loaded at this point in the run.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === 'round25probe: files round17.journal read-only')`,
+      'host.files to list the loaded journal read-only',
+    );
+
+    // `host.read` (src/app.rs `host_read`) answers with the text itself, synchronously:
+    // the line holds what the plugin found in the file, and the fixture account can
+    // only be there if the loaded file's contents came back.
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === 'round25probe: read held the fixture')`,
+      'host.read to hand back the loaded file',
+    );
+
+    // `host.refresh` (src/app.rs `host_refresh`) with no folder open answers the empty
+    // report rather than an error: no folder, nothing to re-read, and never a rejection.
+    await tab.until(
+      `(${READ_TERMINAL}).text.includes('round25probe: refresh {"changed":[],"missing":[]}')`,
+      'host.refresh to answer an empty report with no folder open',
     );
 
     // `host.save` (src/app.rs `host` → `host_save`) with no folder open has to refuse at
