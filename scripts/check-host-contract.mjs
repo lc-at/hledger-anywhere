@@ -16,8 +16,12 @@
 // nowhere else, and neither of them seen by a name check. So the same table is held to the
 // adapter a second way: every row written as a call has to take the parameters that call
 // names, and every row that states an answer has to get that answer out of a host built over
-// a backend answering the way the docs say the app's does. A row that gains a parameter, or
-// an answer that changes shape, fails here rather than in a plugin at run time.
+// a backend answering the way the docs say the app's does. The count is held to Rust as
+// well: `App::host` builds each of its methods as a `Closure::<dyn FnMut(...)>`, and that
+// parameter list is the arity wasm-bindgen calls the closure with, so a Rust closure that
+// loses a parameter fails here as surely as an adapter function that gains one. A row that
+// gains a parameter, or an answer that changes shape, fails here rather than in a plugin at
+// run time.
 //
 // Usage: node scripts/check-host-contract.mjs
 
@@ -78,18 +82,78 @@ const settled = async (call) => {
 const answered = (result) => (result.rejected ? `rejected: ${result.rejected.message}` : `answered: ${JSON.stringify(result.answer)}`);
 
 /**
+ * The body of `App::host` in src/app.rs, which both readings below come out of: the
+ * `Reflect::set(&host, ...)` that publishes a method, and the `Closure` built beside it.
+ */
+function hostSource() {
+  const source = readFileSync(join(ROOT, 'src/app.rs'), 'utf8');
+  const start = source.indexOf('fn host(self: &Rc<App>, name: &str) -> JsValue {');
+  const end = source.indexOf('fn host_files(', start);
+  if (start < 0 || end < 0) throw new Error('App::host was not found in src/app.rs, so nothing could be read out of it');
+  return source.slice(start, end);
+}
+
+/**
  * The methods `App::host` puts on the host, from the mechanism it uses: every
  * `Reflect::set(&host, &"name".into(), ...)` in that one function. The sets on other objects
  * in it (`colors`, `answer`, `entry`) are not the host's, and are not matched.
  */
 function fromRust() {
-  const source = readFileSync(join(ROOT, 'src/app.rs'), 'utf8');
-  const start = source.indexOf('fn host(self: &Rc<App>, name: &str) -> JsValue {');
-  const end = source.indexOf('fn host_files(', start);
-  if (start < 0 || end < 0) throw new Error('App::host was not found in src/app.rs, so nothing could be read out of it');
-  const names = [...source.slice(start, end).matchAll(/Reflect::set\(&host, &"(\w+)"\.into\(\)/g)].map((match) => match[1]);
+  const names = [...hostSource().matchAll(/Reflect::set\(&host, &"(\w+)"\.into\(\)/g)].map((match) => match[1]);
   if (!names.length) throw new Error('App::host sets nothing on the host with Reflect::set(&host, ...) any more');
   return new Set(names);
+}
+
+/** How many parameters a `FnMut(...)` list holds, ignoring any comma nested inside one. */
+function countParameters(list) {
+  if (!list.trim()) return 0;
+  let depth = 0;
+  let count = 1;
+  for (const character of list) {
+    if ('(<['.includes(character)) depth += 1;
+    else if (')>]'.includes(character)) depth -= 1;
+    else if (character === ',' && !depth) count += 1;
+  }
+  return count;
+}
+
+/**
+ * How many arguments `App::host` builds each method to take, from the
+ * `Closure::<dyn FnMut(...)>` it builds it as: that parameter list is the arity
+ * wasm-bindgen calls the closure with, and it sits in the same block as the
+ * `Reflect::set(&host, ...)` that publishes it — so each set is read against the last
+ * closure opened before it.
+ *
+ * A name set without a closure beside it is `null`, which the check below reports rather
+ * than counts. A name no set mentions is absent from the map, which is the loader's two:
+ * they are added in JavaScript and Rust builds no closure for them.
+ */
+function rustArity() {
+  const source = hostSource();
+  const sets = [...source.matchAll(/Reflect::set\(&host, &"(\w+)"\.into\(\)/g)];
+  const arity = new Map();
+  let previous = 0;
+  for (const set of sets) {
+    const between = source.slice(previous, set.index);
+    previous = set.index + set[0].length;
+    const built = [...between.matchAll(/Closure::<dyn FnMut/g)].pop();
+    const open = built ? built.index + built[0].length : -1;
+    if (open < 0 || between[open] !== '(') {
+      arity.set(set[1], null);
+      continue;
+    }
+    let depth = 0;
+    let close = open;
+    for (; close < between.length; close += 1) {
+      if ('(<['.includes(between[close])) depth += 1;
+      else if (')>]'.includes(between[close])) {
+        depth -= 1;
+        if (!depth) break;
+      }
+    }
+    arity.set(set[1], countParameters(between.slice(open + 1, close)));
+  }
+  return arity;
 }
 
 /**
@@ -198,6 +262,30 @@ try {
     check(method.length === row.params.length,
       `host.${row.name} takes (${row.params.join(', ')}) as docs/plugins.md:${row.line} writes it`,
       `docs name ${row.params.length} parameter(s), the adapter's function takes ${method.length}`);
+  }
+
+  // The same rows held to Rust's arity: `App::host` builds each of its methods as a
+  // `Closure::<dyn FnMut(...)>`, and that parameter list is what wasm-bindgen calls the
+  // closure with, so it has to be the number of parameters the docs row names. The
+  // loader's two are skipped on the reason the header gives — Rust builds no closure for
+  // them, JavaScript adding them instead, which the check above holds — and a set with
+  // nothing countable beside it fails here rather than being passed over as unknown.
+  const closures = rustArity();
+  for (const row of rows) {
+    if (!row.call || FROM_LOADER.has(row.name)) continue;
+    const label = `App::host's closure for host.${row.name} takes (${row.params.join(', ')}) as docs/plugins.md:${row.line} writes it`;
+    const arity = closures.get(row.name);
+    if (arity === undefined) {
+      check(false, label, `App::host never sets host.${row.name}, so there is no closure to count`);
+      continue;
+    }
+    if (arity === null) {
+      check(false, label, `App::host sets host.${row.name} without a Closure::<dyn FnMut(...)> whose parameters could be counted`);
+      continue;
+    }
+    check(arity === row.params.length,
+      label,
+      `docs name ${row.params.length} parameter(s), App::host's closure takes ${arity}`);
   }
 
   // What each call ANSWERS, with the docs line each promise comes from. The in-check backend
