@@ -42,15 +42,14 @@
 //   Theme          themeAndFont                History     finderAndHistory, clearTheHistory
 //   Hledger        every report step, from loadTheDemoJournal on
 //
-// Inherent, for two different reasons. Person-bound — no headless run can drive them:
-// `open`'s File System Access picker and `reopen`'s happy path need a real grant from a
-// person. Not driven, though a headless run could: Ctrl+C stopping a running command
-// needs an engine command slow enough to still be running when the key lands and to lose
-// the race to it; that branch's line-clearing half (app.rs `on_input`, the `^C` written
-// and the queued input dropped) needs only the key to land while a command is busy, and
-// Ctrl+C at an idle prompt (app.rs `handle`) clears the line with no command running at
-// all. None of the three has a step. `upload`, `open`'s fallback and `drop` are all
-// driven above.
+// Inherent, for one reason now. Person-bound — no headless run can drive them: `open`'s
+// File System Access picker and `reopen`'s happy path need a real grant from a person.
+// What this map used to call "not driven, though a headless run could" has a step now:
+// cancelARunningCommand drives Ctrl+C both ways it can arrive — the busy branch of
+// app.rs `on_input` against a command slow enough to lose the race to the key (the `^C`
+// line, the queued input dropped, `[cancelled]`, the prompt back) and the idle branch of
+// app.rs `handle`, which throws a typed line away with no command running at all.
+// `upload`, `open`'s fallback and `drop` are all driven above.
 //
 // Payload arms with no step here — their decisions are `cargo test`'s in dispatch.rs:
 // `? <word>`, bare `settings`/`theme`/`alias`/`unalias`/`screenreader`/`download`/`find`,
@@ -227,6 +226,38 @@ const OPEN_PRICES = `\
 ; Fixture of scripts/check-app.mjs, for the open step alone.
 2026-05-06 price x  $1.00
 `;
+
+/**
+ * The journal the cancel step mounts, and the only place `expenses:round27slow` is
+ * written — nothing else in this session, nor anything else in this repository, holds
+ * it. The transactions are what it is for: `balance` over them is slow enough to still
+ * be running when Ctrl+C lands (the arithmetic is in the step that presses the key).
+ *
+ * Sized against the shipped engine itself, once, on this machine — generate, then
+ * `HLEDGER_NO_FILE_ARG=1 node --experimental-wasi-unstable-preview1
+ * scripts/hledger-wasm.mjs <file> balance` (AGENTS.md) — at 12,000 transactions:
+ * 984,953 bytes and 5,360 ms, of which 519 ms is the engine's own startup (a
+ * two-transaction journal costs that much alone), so ~4.8 s is the journal. The report
+ * it would have drawn is four rows — two accounts, the rule, the total — so cancelling
+ * it and drawing it later barely moves the screen, and the file is far under
+ * `MAX_FILE_BYTES` (src/upload.rs, 5 MB), which at this density would buy ~64,000
+ * transactions and ~28 s.
+ */
+const SLOW_JOURNAL = 'round27slow.journal';
+const SLOW_ACCOUNT = 'expenses:round27slow';
+const SLOW_TRANSACTIONS = 12000;
+
+/** The slow journal's own text: transactions dated through January, two accounts, all of it balanced. */
+function slowJournal(count) {
+  const entries = [];
+  for (let i = 0; i < count; i += 1) {
+    const day = String((i % 28) + 1).padStart(2, '0');
+    entries.push(
+      `2026-01-${day} * slow ${i}\n    ${SLOW_ACCOUNT}    $${1 + (i % 9)}.00\n    assets:bank:checking\n`,
+    );
+  }
+  return `; Fixture of scripts/check-app.mjs, for the cancel step alone.\n${entries.join('')}`;
+}
 
 /**
  * The repository `plugins add` installs, and the manifest this run first reads for it.
@@ -2189,8 +2220,9 @@ async function writeAndDownload({ tab, launched, downloads }) {
  * Leaves: `hledger.journal` and `prices/x.journal` mounted with the prompt naming the
  * first, the fixture's account and amount on screen from a fresh report, and `reopen`'s
  * refusal under them. The page's `showDirectoryPicker` is deleted and left deleted: no
- * later step opens a picker (`clear` and the reloads do not), and every reload the
- * reload scenario performs mounts a fresh page where the method is back — so the
+ * later step opens *that* picker — the cancel scenario below runs `upload`, which takes
+ * the plain file input — and `clear` and the reloads open nothing, while every reload
+ * the reload scenario performs mounts a fresh page where the method is back, so the
  * deletion needs no putting back. Nothing here prints `hledger-anywhere`, so the banner
  * count that scenario waits for does not move; the font and the theme are untouched.
  */
@@ -2354,6 +2386,253 @@ async function openAFolderReadOnly({ tab, launched, fixtures }) {
       `(${READ_TERMINAL}).text.includes('There is no remembered folder to reopen. open chooses one, and remembers it for next time.')`,
       'reopen to say it has nothing to reopen',
     );
+  });
+}
+
+/**
+ * Cancel a command that is still running, then run the engine again after it, then
+ * cancel nothing and clear the line anyway.
+ *
+ * Needs: the folder `openAFolderReadOnly` mounted — a journal being read, the line
+ * empty at the prompt — `launched`'s CDP session to intercept the file chooser with
+ * (the same wiring the upload step uses), and `fixtures` to write the slow journal
+ * into. The engine has been run all session, so what the timing below waits for is
+ * the command itself rather than a first compile. `upload` replaces whatever is
+ * loaded, exactly as the upload step did, and no scenario between here and the end
+ * needs the folder's files.
+ * Leaves: `round27slow.journal` mounted as the main file with the prompt naming it,
+ * a `^C` and an `[cancelled]` from the stopped run, a report drawn by the engine
+ * that took its place, a second `^C` from the idle line, and the line at the prompt.
+ * None of it prints `hledger-anywhere`, so the banner count the reload scenario
+ * waits for does not move; the font and the theme are untouched.
+ */
+async function cancelARunningCommand({ tab, launched, fixtures }) {
+  // The last thing the coverage map called "not driven, though a headless run could",
+  // both ways Ctrl+C reaches the app: the busy branch of `on_input` (app.rs), which
+  // must see the key while a command is still running to write `^C`, take the queued
+  // line with `pending.clear()` and throw the worker away (app.rs `cancel` →
+  // src/hledger/bridge.rs `cancel` → assets/js/hledger-wasi.js `cancel`, which ends
+  // the run as `EngineError::Cancelled` → `[cancelled]` in `finish`); and the idle
+  // branch of `handle` (app.rs), which throws a typed line away with nothing running
+  // at all. The first one needs a command slow enough to lose the race to the key —
+  // `slowJournal` writes that command, sized in its own comment against the engine.
+
+  await run('the slow journal arrives and is the file being read', async () => {
+    const journal = slowJournal(SLOW_TRANSACTIONS);
+    await writeFile(join(fixtures, SLOW_JOURNAL), journal);
+
+    // The upload step's interception, in shape (see that step for the plumbing):
+    // headless cannot show the file dialog and wait for a person, so the click's
+    // `Page.fileChooserOpened` is where the input the picker opens gets caught.
+    let chooser = null;
+    const watching = launched.cdp.on((message) => {
+      if (message.sessionId === tab.sessionId && message.method === 'Page.fileChooserOpened') {
+        chooser = message.params || {};
+      }
+    });
+    let handed = 'the intercepted file chooser';
+    try {
+      let intercepted = true;
+      try {
+        await tab.send('Page.setInterceptFileChooserDialog', { enabled: true });
+      } catch {
+        intercepted = false;
+      }
+      await tab.type('upload');
+      await tab.enter();
+      if (intercepted) await until('the intercepted file chooser to open', () => chooser, { timeoutMs: 15000 });
+      if (chooser && chooser.backendNodeId) {
+        await tab.send('DOM.setFileInputFiles', { files: [join(fixtures, SLOW_JOURNAL)], backendNodeId: chooser.backendNodeId });
+      } else {
+        // No chooser event: the input `open_picker` made is still on the page, so the
+        // file this step just wrote is built onto it and the `change` the picker waits
+        // on is dispatched by hand. The text goes in whole rather than as an
+        // expression, because the point is that the page mounts the very journal the
+        // engine was measured against.
+        handed = 'an in-page change event, because no chooser opened';
+        const failed = await tab.eval(`(() => {
+          const input = document.getElementById('hledger-anywhere-upload-input');
+          if (!input) return 'the upload input is not on the page';
+          const transfer = new DataTransfer();
+          transfer.items.add(new File([${JSON.stringify(journal)}], ${JSON.stringify(SLOW_JOURNAL)}));
+          input.files = transfer.files;
+          input.dispatchEvent(new Event('change'));
+          return '';
+        })()`);
+        if (failed) throw new Error(failed);
+      }
+    } finally {
+      watching();
+    }
+
+    // Waited for on this step's own words rather than `Uploaded 1 file.`, which has
+    // been on screen since the upload step printed it: only this journal's name in
+    // the sentence `files_arrived` writes for the file `choose_main` picked is new.
+    const arrival = `Reading ${SLOW_JOURNAL}. Type balance for a report, or ? for the rest.`;
+    const arrived = `(${READ_TERMINAL}).text.includes(${JSON.stringify(arrival)})`;
+    try {
+      await tab.until(arrived, 'the uploaded journal to arrive');
+    } catch {
+      const waiting = await tab.eval("Boolean(document.getElementById('hledger-anywhere-upload-input'))");
+      if (!waiting) throw new Error('the selection was read, but the arrival message never printed');
+      handed += '; a change event was dispatched for it';
+      await tab.eval("document.getElementById('hledger-anywhere-upload-input').dispatchEvent(new Event('change'))");
+      await tab.until(arrived, 'the uploaded journal to arrive after the change event');
+    }
+    if (handed !== 'the intercepted file chooser') console.log(`note the file was handed over by ${handed}`);
+
+    // Every line `files_arrived` (src/terminal/messages.rs) writes for this mount,
+    // with the upload step's own message counted rather than matched: it is on screen
+    // once from there, and twice only when this upload arrived as well.
+    const text = await tab.read();
+    const lines = text.split('\n').map((line) => line.trim());
+    const said = [
+      'Uploaded 1 file.',
+      SLOW_JOURNAL,
+      arrival,
+    ];
+    for (const line of said) {
+      if (!lines.includes(line)) throw new Error(`${JSON.stringify(line)} is not a line on screen`);
+    }
+    const uploads = occurrences(text, 'Uploaded 1 file.');
+    if (uploads !== 2) {
+      throw new Error(`${uploads} copies of 'Uploaded 1 file.' on screen: one from the upload step, one from this one`);
+    }
+  });
+
+  await run('ctrl+c stops the command that was running', async () => {
+    const before = await tab.read();
+    // None of these three can be on screen yet: `^C` comes only from the two Ctrl+C
+    // arms (app.rs), `[cancelled]` only from a run the worker was thrown away under
+    // (app.rs `finish`), and the account exists only in the journal just mounted —
+    // and only a report draws it, which is what makes it the proof the run below was
+    // stopped before it could print anything.
+    if (occurrences(before, '^C')) throw new Error('^C was already on screen');
+    if (occurrences(before, '[cancelled]')) throw new Error('[cancelled] was already on screen');
+    if (occurrences(before, SLOW_ACCOUNT)) throw new Error(`${SLOW_ACCOUNT} was already on screen`);
+
+    await tab.type('balance');
+    await tab.enter();
+    // `submit` → `run_with` sets `busy` and the tab title in the same key handler
+    // (app.rs), before the Enter key press returns, so the title naming the command
+    // is what says the *busy* branch — not the idle one — will read the next key.
+    // Polling for it, rather than sleeping: it is written with `busy`.
+    await tab.until(`document.title.includes('running balance')`, 'the command to start running');
+
+    // And a line started while the command runs, which the busy branch buffers
+    // (app.rs `on_input`, `pending`) instead of dropping. The ^C below has to take it
+    // with `pending.clear()`: were the buffer still holding `bal`, `settle` would
+    // replay it and draw the prompt over it, so the last line below would read
+    // `round27slow.journal » bal` and the prompt assertion would fail on exactly that.
+    await tab.type('bal');
+
+    // Ctrl+C, in the shape Ctrl+L and Ctrl+R are sent in above: keyCode 67 for `c`,
+    // modifiers 2 for Ctrl, no text — xterm translates the pair to `\u{3}`, which is
+    // what app.rs `on_input` matches.
+    //
+    // The race, as arithmetic rather than as trust: `press` paces every key with a
+    // fixed 60 ms (its own definition) and `type` adds a focus and 120 ms per line,
+    // so Enter → title gate → `bal` → this key is ~600 ms of input pacing against the
+    // 5,360 ms the shipped engine measured for this journal natively (see
+    // `slowJournal`). The run's own request is posted on the microtask checkpoint
+    // that follows the Enter event — before any further keystroke can be dispatched —
+    // so it is in the bridge's pending map by the time this key lands, ~600 ms into a
+    // 5,360 ms run. This machine would have to be ~9× faster for the command to win.
+    await tab.press('c', { code: 'KeyC', keyCode: 67, modifiers: 2 });
+
+    // The busy branch's three words, in the order the code writes them: `^C` from the
+    // key handler itself, `[cancelled]` where `finish` reads the worker's rejection
+    // (app.rs: `Err(EngineError::Cancelled) => self.say("[cancelled]")`), and the
+    // prompt `settle` draws under both, naming the file the upload mounted — empty,
+    // because the buffered line went with the cancel.
+    const prompt = `${SLOW_JOURNAL} »`;
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('\\n').some((line) => line.trim() === '^C')`,
+      'the ^C to be written',
+    );
+    await tab.until(`(${READ_TERMINAL}).text.includes('[cancelled]')`, 'the run to end as cancelled');
+    await tab.until(
+      `(${READ_TERMINAL}).text.trimEnd().endsWith(${JSON.stringify(prompt)})`,
+      'the prompt to come back with the queued line dropped',
+    );
+
+    const lines = (await tab.read()).split('\n').map((line) => line.trim());
+    const mark = lines.indexOf('^C');
+    const result = lines.lastIndexOf('[cancelled]');
+    if (mark > result) {
+      throw new Error('the ^C was written after the result: the key did not land while the command was running');
+    }
+    if (occurrences(lines.join('\n'), SLOW_ACCOUNT)) {
+      throw new Error('the cancelled run drew a report anyway');
+    }
+  });
+
+  await run('the engine runs the next command after a cancel', async () => {
+    // The cancel throws the whole worker away (bridge.rs `cancel`), so what runs next
+    // is a rebuilt one: a fresh worker starts with no environment at all, and app.rs
+    // `cancel` answers that with `configure` before the next command's own request
+    // reaches it. A worker poisoned by the cancellation, or one missing `$LEDGER_FILE`,
+    // would draw no report or hledger's complaint about having none — so a real report
+    // from the journal still mounted is what says the engine survived.
+    const before = await tab.read();
+    const rules = occurrences(before, '--------------------');
+    await tab.type('balance --tree');
+    await tab.enter();
+    await tab.until(
+      `(${READ_TERMINAL}).text.split(${JSON.stringify(SLOW_ACCOUNT)}).length - 1 > 0`,
+      'the report from the restarted engine',
+    );
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('--------------------').length - 1 > ${rules}`,
+      'a fresh report rule',
+    );
+    await tab.until(
+      `(${READ_TERMINAL}).text.trimEnd().endsWith(${JSON.stringify(`${SLOW_JOURNAL} »`)})`,
+      'the prompt to come back after the report',
+    );
+    const after = await tab.read();
+    // One report, one row for the account: `--tree` does not split a leaf account
+    // further, so a second copy would be another report rather than this one.
+    const rows = occurrences(after, SLOW_ACCOUNT);
+    if (rows !== 1) throw new Error(`the account is in ${rows} rows, expected the one report`);
+    if (occurrences(after, '--------------------') <= rules) throw new Error('no fresh report rule was drawn');
+  });
+
+  await run('ctrl+c at an idle prompt clears the line', async () => {
+    // The other arm of the same key: app.rs `handle`'s `\u{3}`, which runs with no
+    // command anywhere near the engine — the run above settled, so `busy` is false
+    // and the key cannot reach the branch above. It writes `^C` where the cursor is,
+    // clears the line under it and draws the prompt again.
+    const before = await tab.read();
+    const marks = occurrences(before, '^C');
+
+    await tab.type('stale');
+    const echoed = await tab.read();
+    if (!echoed.trimEnd().endsWith(`${SLOW_JOURNAL} » stale`)) {
+      throw new Error(`the line reads ${JSON.stringify(echoed.trimEnd().split('\n').pop())}`);
+    }
+
+    await tab.press('c', { code: 'KeyC', keyCode: 67, modifiers: 2 });
+    await tab.until(
+      `(${READ_TERMINAL}).text.split('^C').length - 1 > ${marks}`,
+      'the second ^C to be written',
+    );
+    await tab.until(
+      `(${READ_TERMINAL}).text.trimEnd().endsWith(${JSON.stringify(`${SLOW_JOURNAL} »`)})`,
+      'the line to be cleared back to the prompt',
+    );
+
+    const lines = (await tab.read()).split('\n').map((line) => line.trim());
+    const cancelled = lines.filter((line) => line.includes('^C'));
+    if (cancelled.length !== marks + 1) {
+      throw new Error(`${cancelled.length} ^C rows on screen, expected ${marks + 1}`);
+    }
+    // The `^C` was written onto the line it cancelled rather than beside it: that row
+    // still holds the word that was typed, and the prompt below is the same row
+    // redrawn without it — which is what `clear_line` + `prompt` (app.rs) do.
+    if (!cancelled[cancelled.length - 1].includes('stale')) {
+      throw new Error(`the last ^C row reads ${JSON.stringify(cancelled[cancelled.length - 1])}`);
+    }
   });
 }
 
@@ -2539,6 +2818,7 @@ async function main() {
     await dropAJournal(session);
     await writeAndDownload(session);
     await openAFolderReadOnly(session);
+    await cancelARunningCommand(session);
     await reloadAndClear(session);
 
     if (!stopped) console.log(`note the terminal was read from ${tab.via}`);
