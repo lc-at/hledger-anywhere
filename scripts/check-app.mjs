@@ -2140,9 +2140,10 @@ async function main() {
     // was 298 and fit the 55,472-byte screen of the run that measured it, but a reload
     // now replays the first visit back on top of that screen (the scrollback survives
     // every reload, not the first), which is ~20 rows more and then ~4 rows per reload
-    // after. 7200 is ~445 rows: over the ~326 that chain can reach, measured against
-    // the 16.16 px a row of the default font takes here.
-    const tab = await Tab.open(launched.cdp, { width: 1200, height: 7200 });
+    // after. 7200 was ~445 rows and the run had grown to 448 — two rows of margin, too
+    // close: 11200 is ~690 against the 448 the scenarios measure now, so the next
+    // scenario has room to add output before the early screens scroll out again.
+    const tab = await Tab.open(launched.cdp, { width: 1200, height: 11200 });
 
     // The run as the scenarios it is made of. Each declares what it needs from the
     // scenario before it and what it leaves for the one after in its own comment
