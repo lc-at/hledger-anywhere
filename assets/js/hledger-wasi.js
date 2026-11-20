@@ -36,6 +36,14 @@ class HledgerWasi {
     /** Tail of the request chain; keeps runs strictly sequential. */
     this.queue = Promise.resolve();
     this.wasmPath = DEFAULT_WASM_PATH;
+    /**
+     * The last `WebAssembly.Module` a worker compiled, with the URL it compiled
+     * it for. A worker dies on cancel but the compiled module does not: posting
+     * it up here is what lets the next worker instantiate instead of fetching
+     * and compiling the 13 MB again. One slot — a share replaces the previous —
+     * so a changed engine URL can never be answered with a stale module.
+     */
+    this.compiled = null;
   }
 
   static isSupported() {
@@ -69,6 +77,16 @@ class HledgerWasi {
 
     worker.onmessage = (event) => {
       const message = event.data || {};
+      // The compiled-module share: unsolicited (no `id`), so it is read before
+      // the pending map. Keyed by the URL it was compiled for, which is the
+      // worker's own view of what it fetched — a deploy changes that URL, and a
+      // module compiled for the old one must never be handed to the new worker.
+      if (message.type === 'compiled') {
+        if (message.module instanceof WebAssembly.Module && typeof message.wasmPath === 'string') {
+          this.compiled = { url: message.wasmPath, module: message.module };
+        }
+        return;
+      }
       const entry = this.pending.get(message.id);
       if (entry === undefined) {
         return;
@@ -111,9 +129,19 @@ class HledgerWasi {
     const id = this.nextId;
     this.nextId += 1;
 
+    // Hand the compiled module along with the request when — and only when — it
+    // was compiled for the URL this worker is about to see. The worker repeats
+    // the check against its own `wasmPath` (a `configure` for a new URL may
+    // still be in flight), so a module is only ever used against the exact URL
+    // it came from; anything else falls back to fetch and compile.
+    const shared =
+      this.compiled !== null && this.compiled.url === this.wasmPath
+        ? { module: this.compiled.module, moduleUrl: this.compiled.url }
+        : {};
+
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      worker.postMessage({ id, type, ...payload });
+      worker.postMessage({ id, type, ...shared, ...payload });
     });
   }
 
@@ -137,10 +165,11 @@ class HledgerWasi {
    *
    * The engine is one synchronous `_start()` inside the worker, so there is
    * nothing to signal and no way to ask it to stop: the only way is to throw the
-   * worker away. The next run creates a new one and recompiles the module, the
-   * bytes come from the HTTP cache, so that costs a compile, not a download, and
-   * the caller must reconfigure it, because a fresh worker starts with the
-   * default environment and no journal.
+   * worker away. The next run creates a new one, which starts from the compiled
+   * module the last one shared (see `this.compiled`) when its URL still matches
+   * — instantiate only, no fetch and no compile — and the caller must
+   * reconfigure it, because a fresh worker starts with the default environment
+   * and no journal.
    */
   cancel() {
     const worker = this.worker;

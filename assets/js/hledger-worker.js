@@ -18,7 +18,14 @@
  *   in : { id, type: 'configure', wasmPath?, ledgerFile?, columns?, lines? }
  *        { id, type: 'init' }
  *        { id, type: 'run', argv: string[], files: [path, contents][] }
+ *        any of which may also carry `module` + `moduleUrl`: a WebAssembly.Module
+ *        the main thread compiled for exactly `moduleUrl`, handed to a worker
+ *        spawned after a cancel so it instantiates instead of fetching and
+ *        compiling the 13 MB again. It is used only when `moduleUrl` is the
+ *        URL this worker would fetch itself.
  *   out: { id, type: 'configured' | 'ready' | 'result' | 'error', ... }
+ *        { type: 'compiled', wasmPath, module }  (no id: unsolicited, after a
+ *        successful compile, so the next worker can start from this module)
  */
 
 import {
@@ -101,25 +108,43 @@ function ledgerFileIn(env) {
 /** Compiled once and shared by every run: WebAssembly.compile is the expensive part. */
 let compiled = null;
 
+/**
+ * A module the main thread handed over, with the URL it was compiled for.
+ *
+ * The main thread keeps one of these across a cancel, so the worker it spawns
+ * next can skip the fetch and the compile. It is only ever used against
+ * `moduleUrl` itself: the bytes belong to that URL, and a deploy changes it.
+ */
+let provided = null;
+
 function post(message) {
   self.postMessage(message);
 }
 
 function ensureCompiled() {
+  if (compiled === null && provided !== null && provided.url === wasmPath) {
+    // Already compiled, for exactly this URL: the 13 MB fetch and the compile
+    // both happened in a previous worker, and the main thread kept the module.
+    compiled = Promise.resolve(provided.module);
+  }
   if (compiled === null) {
+    // The URL this compile is for, captured now: `wasmPath` can change while
+    // the fetch is in flight, and the share below has to name the URL the bytes
+    // actually came from.
+    const path = wasmPath;
     compiled = (async () => {
       let response;
       try {
-        response = await fetch(wasmPath);
+        response = await fetch(path);
       } catch (cause) {
         throw Object.assign(
-          new Error(`could not load ${wasmPath}: ${cause && cause.message ? cause.message : cause}`),
+          new Error(`could not load ${path}: ${cause && cause.message ? cause.message : cause}`),
           { code: 'missing-wasm' },
         );
       }
       if (!response.ok) {
         throw Object.assign(
-          new Error(`could not load ${wasmPath}: HTTP ${response.status} ${response.statusText}`),
+          new Error(`could not load ${path}: HTTP ${response.status} ${response.statusText}`),
           { code: 'missing-wasm' },
         );
       }
@@ -127,7 +152,13 @@ function ensureCompiled() {
       return WebAssembly.compile(bytes);
     })();
     // A failed attempt must not be cached, or a transient error would be
-    // permanent for the lifetime of the page.
+    // permanent for the lifetime of the page — and nothing is shared on failure:
+    // the share is what the next worker would start from, so it happens only
+    // once there is a module to share.
+    compiled.then(
+      (module) => post({ type: 'compiled', wasmPath: path, module }),
+      () => {},
+    );
     compiled.catch(() => {
       compiled = null;
     });
@@ -311,6 +342,13 @@ async function run(request) {
 self.onmessage = async (event) => {
   const request = event.data || {};
   const id = request.id;
+
+  // A module handed over by the main thread. Kept whether or not it matches the
+  // current URL: `configure` may move `wasmPath` onto it later, and the URL
+  // check in `ensureCompiled` is what decides whether it can be used.
+  if (request.module instanceof WebAssembly.Module && typeof request.moduleUrl === 'string') {
+    provided = { module: request.module, url: request.moduleUrl };
+  }
 
   try {
     switch (request.type) {

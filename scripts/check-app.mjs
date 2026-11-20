@@ -2390,6 +2390,62 @@ async function openAFolderReadOnly({ tab, launched, fixtures }) {
 }
 
 /**
+ * Follow the engine's worker over CDP: which session it is, and how many times it has
+ * fetched the wasm.
+ *
+ * The page's resource timing never sees into a worker: `performance.getEntriesByType('resource')`
+ * on the page holds only the page's own requests (probed against the built app — the engine's
+ * fetch is not among them), so a zero there would prove nothing. Every worker target gets a
+ * DevTools session of its own, though, and `Runtime.evaluate` in that session answers with the
+ * worker's own `performance`, where its fetches do land. The sessions come from
+ * `Target.setAutoAttach` on the page's session, which attaches to the worker already running as
+ * well as to the one a cancel spawns next — `Target.getTargets` will not name a worker at all,
+ * it reports one with an empty URL, and an explicit `Target.attachToTarget` answers but never
+ * runs what is sent to it — with `waitForDebuggerOnStart: false` leaving them running. A count
+ * is only ever read from a session whose target URL ended in `/js/hledger-worker.js`, so a
+ * number from anywhere else cannot pass for "the engine did not fetch".
+ */
+function followTheEngineWorker(tab, launched) {
+  const sessions = new Set();
+  const stop = launched.cdp.on((message) => {
+    if (message.method === 'Target.attachedToTarget') {
+      const info = message.params.targetInfo;
+      if (info.type === 'worker' && info.url.endsWith('/js/hledger-worker.js')) {
+        sessions.add(message.params.sessionId);
+      }
+    } else if (message.method === 'Target.detachedFromTarget') {
+      sessions.delete(message.params.sessionId);
+    }
+  });
+  const attached = tab.send('Target.setAutoAttach', {
+    autoAttach: true,
+    waitForDebuggerOnStart: false,
+    flatten: true,
+  });
+
+  /** This worker's own count of engine fetches, waited for then read from the worker. */
+  const fetched = async () => {
+    await attached;
+    await until('the engine worker session to be attached', () => sessions.size === 1);
+    const [sessionId] = [...sessions];
+    const { result, exceptionDetails } = await launched.cdp.send(
+      'Runtime.evaluate',
+      {
+        expression: `performance.getEntriesByType('resource').filter((entry) => entry.name.includes('hledger.wasm')).length`,
+        returnByValue: true,
+      },
+      sessionId,
+    );
+    if (exceptionDetails || typeof result.value !== 'number') {
+      throw new Error('the engine worker did not answer with its fetch count');
+    }
+    return result.value;
+  };
+
+  return { fetched, stop };
+}
+
+/**
  * Cancel a command that is still running, then run the engine again after it, then
  * cancel nothing and clear the line anyway.
  *
@@ -2416,6 +2472,13 @@ async function cancelARunningCommand({ tab, launched, fixtures }) {
   // branch of `handle` (app.rs), which throws a typed line away with nothing running
   // at all. The first one needs a command slow enough to lose the race to the key —
   // `slowJournal` writes that command, sized in its own comment against the engine.
+
+  // Before anything is cancelled: what the running worker has fetched of the engine.
+  // The check after the restart counts the same thing in the worker that replaces it,
+  // and this is the control that says the counter can see a fetch at all — the page's
+  // own resource timing cannot see into a worker, so a bare zero would prove nothing.
+  const engine = followTheEngineWorker(tab, launched);
+  const fetchedBeforeCancel = await engine.fetched();
 
   await run('the slow journal arrives and is the file being read', async () => {
     const journal = slowJournal(SLOW_TRANSACTIONS);
@@ -2596,6 +2659,28 @@ async function cancelARunningCommand({ tab, launched, fixtures }) {
     const rows = occurrences(after, SLOW_ACCOUNT);
     if (rows !== 1) throw new Error(`the account is in ${rows} rows, expected the one report`);
     if (occurrences(after, '--------------------') <= rules) throw new Error('no fresh report rule was drawn');
+  });
+
+  await run('the restarted engine starts from the compiled module, not a fetch', async () => {
+    // The worker the cancel threw away fetched the engine itself — counted at the
+    // top of this scenario, and asserted here rather than trusted there. The worker
+    // that replaced it must not fetch at all: hledger-wasi.js kept the module the
+    // dead one compiled, keyed by the URL it was compiled for, and handed it to the
+    // new worker with its first request, so the restart is an instantiate with no
+    // fetch and no compile. Counted in the worker's own resource timeline over CDP:
+    // no timing and no sleep — either the fetch happened or it did not, and the
+    // follower above only ever answers for the engine's own worker.
+    if (fetchedBeforeCancel < 1) {
+      throw new Error(
+        `the engine worker's timeline held ${fetchedBeforeCancel} wasm fetches before the cancel: ` +
+          'nothing for a restarted worker not to repeat',
+      );
+    }
+    const after = await engine.fetched();
+    if (after !== 0) {
+      throw new Error(`the restarted engine worker fetched the wasm ${after} times`);
+    }
+    engine.stop();
   });
 
   await run('ctrl+c at an idle prompt clears the line', async () => {

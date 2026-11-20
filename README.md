@@ -385,8 +385,8 @@ to that tag's release. To publish a new engine, build it, update `size` and `sha
 
 - **No interactive commands.** The engine is one synchronous `_start()` call, so nothing
   can be prompted part-way through. That is the other reason `hledger add` cannot work.
-- **A cancelled command restarts the engine**, which recompiles the module (from the HTTP
-  cache, so it costs a compile rather than a download).
+- **A cancelled command restarts the engine**, which comes back from the compiled module
+  the dead worker shared — instantiate only, no fetch, no compile.
 - **Output over 2 MB is truncated**, with a note saying to use `-o out.csv` and then
   `download out.csv`, which writes the whole thing.
 - **Uploads replace rather than accumulate**, capped at 5 MB per file and 50 MB total.
