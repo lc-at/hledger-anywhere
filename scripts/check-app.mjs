@@ -42,10 +42,15 @@
 //   Theme          themeAndFont                History     finderAndHistory, clearTheHistory
 //   Hledger        every report step, from loadTheDemoJournal on
 //
-// Inherent — no headless run can drive them: `open`'s File System Access picker and
-// `reopen`'s happy path need a real grant from a person; Ctrl+C stopping a running
-// command needs an engine command long enough to stop (its line-clearing half has no
-// step either). `upload`, `open`'s fallback and `drop` are all driven above.
+// Inherent, for two different reasons. Person-bound — no headless run can drive them:
+// `open`'s File System Access picker and `reopen`'s happy path need a real grant from a
+// person. Not driven, though a headless run could: Ctrl+C stopping a running command
+// needs an engine command slow enough to still be running when the key lands and to lose
+// the race to it; that branch's line-clearing half (app.rs `on_input`, the `^C` written
+// and the queued input dropped) needs only the key to land while a command is busy, and
+// Ctrl+C at an idle prompt (app.rs `handle`) clears the line with no command running at
+// all. None of the three has a step. `upload`, `open`'s fallback and `drop` are all
+// driven above.
 //
 // Payload arms with no step here — their decisions are `cargo test`'s in dispatch.rs:
 // `? <word>`, bare `settings`/`theme`/`alias`/`unalias`/`screenreader`/`download`/`find`,
