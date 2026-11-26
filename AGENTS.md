@@ -1,5 +1,26 @@
 # AGENTS.md
 
+## Comments
+
+A comment earns its place by answering a WHY the code cannot show: a non-obvious
+constraint, a browser/engine quirk, timing arithmetic, a cross-file pointer, a
+deliberate behaviour that looks wrong otherwise (e.g. `save` never rejects), the
+reason a check asserts what it asserts when ordering matters. Everything else is
+deleted on sight: narration of what the next line does, doc comments that restate
+the name or signature, essays a reader will not need. Module headers (`//!`) stay
+only while they state the module's reason to exist or its layout contract.
+Vendored code (`assets/plugins/vendor/`, THIRD_PARTY_LICENSES.md) is never edited.
+
+## No quickfixes or workarounds
+
+Do not add `TODO`, `FIXME`, `XXX`, `HACK`, "for now", "temporary", or
+workaround-shaped code — fix the thing properly, or state in a necessary comment
+the constraint that makes the approach the right one. Existing workarounds are
+found and removed or replaced by proper fixes as part of quality work. Tests may
+encode real external behaviour (browser key handling, cache headers); that is a
+fact of the world being asserted, not a workaround, and belongs in a necessary
+comment.
+
 ## Building and testing
 
 `cargo test` needs a C linker this machine does not have (no `cc`, no glibc-devel), so the Rust suite runs in a prepared podman image — `hla-build`, Tumbleweed with gcc:
