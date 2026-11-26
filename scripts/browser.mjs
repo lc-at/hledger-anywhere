@@ -211,8 +211,6 @@ export class Tab {
    * call. An expression that throws fails here, under itself.
    */
   async eval(expression) {
-    // An expression is a value or an effect; an effect such as defineProperty returns the
-    // window, which cannot be sent back by value, so anything that is not plain data is dropped.
     const wrapped = `(async () => { const value = await (${expression}); return value instanceof Node || value === window || typeof value === 'function' ? undefined : value; })()`;
     const result = await this.send('Runtime.evaluate', { expression: wrapped, returnByValue: true, awaitPromise: true });
     if (result.exceptionDetails) throw new Error(`${expression}: ${result.exceptionDetails.text}`);

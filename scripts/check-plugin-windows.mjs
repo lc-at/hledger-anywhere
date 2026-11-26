@@ -1252,7 +1252,6 @@ async function reconciling(tab) {
   await tickRow(5);
   check('a later posting cannot be ticked, and nothing is written for it',
     (await tab.eval("document.querySelectorAll('#rows tr.on').length")) === 4 && (await changed()).length === 2, '');
-  // The keyboard: down to the pending transfer, and Space.
   await tab.eval("document.activeElement && document.activeElement.blur()");
   for (let step = 0; step < 3; step += 1) await tab.key('j', { code: 'KeyJ', keyCode: 74, text: 'j' });
   await tab.key('k', { code: 'KeyK', keyCode: 75, text: 'k' });
@@ -1427,8 +1426,6 @@ async function reconciling(tab) {
 }
 
 
-// The generic fixture: a journal carrying every kind of posting the window has to handle, so the
-// window itself is checked against it and not only against one shape of journal.
 async function reconcileGeneric(tab) {
   await showReconcile(tab, { variant: 'generic', balance: '15640' });
   const seen = await tab.eval(`(() => {

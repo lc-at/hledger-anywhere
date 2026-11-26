@@ -176,12 +176,10 @@ async function openPage(url) {
     await workerCdp.send('Network.setCacheDisabled', { cacheDisabled: offline });
     await workerCdp.send('Network.emulateNetworkConditions', conditions);
   };
-  // The tab itself, with this run's own parts hung on it: `eval`, `navigate` and `until`
-  // are the tab's own — the page handle's `evaluate` was an alias over `tab.eval`, a
-  // second name for one function, so it is gone rather than carried here, and the waits
-  // in this file ask the tab, which names what it waited for when it runs out of time.
-  // The tab's own `reload` is kept beside this one before the name goes to it, since
-  // the check below is what has to call it.
+  // The tab itself, with this run's own parts hung on it: the waits ask the tab, which
+  // names what it waited for when it runs out of time, and the tab's own `reload` is
+  // kept beside this one before the name goes to it, since the check below is what has
+  // to call it.
   const reload = Tab.prototype.reload;
   return Object.assign(tab, {
     // The offline scenario's network cut, on both targets at once: the worker runs its

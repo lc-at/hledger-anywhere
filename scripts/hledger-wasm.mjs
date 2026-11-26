@@ -26,10 +26,8 @@
 //   node --experimental-wasi-unstable-preview1 scripts/hledger-wasm.mjs \
 //       fixtures/demo/hledger.journal balance --pivot payee
 //
-// The journal's directory is mounted at `/data`, because that is where the app
-// mounts a loaded directory and where its `-f /data/<name>` argv points. Any
-// `include` in the journal therefore resolves relative to its own directory,
-// exactly as it does in the browser.
+// Any `include` in the journal resolves relative to its own directory, exactly as
+// it does in the browser.
 //
 // Env:
 //   HLEDGER_WASM          path to the engine (default: assets/wasm/hledger.wasm)
@@ -91,10 +89,9 @@ const wasi = new WASI({
   // The journal's own directory is the WASI root, which the GHC runtime needs:
   // it chdir's to the working directory during start-up and aborts with
   // `chdir(/) failed` if `/` is not a preopen. The app preopens `/` the same way
-  // (with files under `data/`); this just has one less level.
-  // `/` is what the GHC runtime needs (see below). `/data` is where the app
-  // mounts uploaded files, so the no-file-arg mode mounts the journal's
-  // directory there as well and points LEDGER_FILE into it.
+  // (with files under `data/`); this just has one less level. The no-file-arg
+  // mode mounts that same directory at `/data` as well, where the app mounts
+  // uploaded files, and points LEDGER_FILE into it.
   preopens: noFileArg
     ? { '/': dirname(journal), '/data': dirname(journal) }
     : { '/': dirname(journal) },

@@ -8,13 +8,8 @@
 // What cannot be checked here is the drawing and the interacting: real SVG, a tooltip, a wheel
 // zoom, a click that asks hledger again. Those are verified in a browser.
 //
-// The CSVs below are copied from the shipped engine, not invented:
-//
-//   hledger balance expenses -M -O csv
-//   "account","2024-01","2024-02","2024-03"
-//   "expenses:food:coffee","0","$12.50","$0"
-//   ...
-//   "Total:","$1200.00","$1250.00","$1286.40"
+// The CSVs below are copied from the shipped engine, not invented: the command that
+// prints the first of them is `hledger balance expenses -M -O csv`.
 //
 // Periods are columns and accounts are rows, which is the opposite of the obvious guess and the
 // reason the first version of this plugin charted nothing.

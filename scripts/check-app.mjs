@@ -439,14 +439,11 @@ class Tab extends BaseTab {
    */
   async booted() {
     // The banner's own title line, `hledger-anywhere  hledger …` (messages.rs welcome),
-    // rather than the word alone, read out of the stored copy with its escape sequences
-    // taken off first (`\x1b[1mhledger-anywhere\x1b[0m  \x1b[…mhledger …` is one line of
-    // it). The stored copy holds every write the visit made and the screen holds only
-    // what survived: xterm redraws the line once per keystroke, so typing a line that
-    // contains the word — `settings import hledger-anywhere-settings.json` does — counts
-    // every redraw in the stored copy and once on screen. The title line is written once
-    // per boot, is never typed, and is never redrawn over, so both sides count the same
-    // banners: the stored ones plus this visit's own.
+    // escape sequences stripped, rather than the word alone: xterm redraws a line once
+    // per keystroke, so a typed line containing the word (`settings import
+    // hledger-anywhere-settings.json`) counts every redraw in the stored copy and once on
+    // screen, while the title is written once per boot, never typed and never redrawn
+    // over — so both sides count the same banners: the stored ones plus this visit's own.
     const stored = (await this.storedScrollback()).replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
     const expected = stored.match(/hledger-anywhere {2}hledger/g);
     const want = (expected ? expected.length : 0) + 1;
@@ -595,11 +592,6 @@ async function loadTheDemoJournal({ tab }) {
  * these numbers are this scenario's own proof and nothing later's.
  */
 async function aliasAndRecall({ tab }) {
-  // The app's own commands after the engine's: what it says for itself, the alias it
-  // keeps, the history it recalls, the help a bare `?` prints and the settings written
-  // out. The decisions behind all of that are `cargo test`'s; what only a browser can
-  // see is whether `apply` put them on the screen, so each step reads the terminal
-  // rather than the state behind it.
 
   await run('the alias is defined and said so', async () => {
     await tab.type('alias bal=balance');
@@ -682,8 +674,7 @@ async function importTheSettingsBack({ tab }) {
   // loaded files, and `import <path>` reads that same file back through
   // `file_contents` → `apply_settings_text` → `apply_settings` (src/app.rs) — the
   // chain no other check reaches, because the picker branch needs a person to choose
-  // a file. What only a browser can show is that the loaded file was found by name,
-  // applied, and confirmed on the screen the way the code words it.
+  // a file.
 
   await run('settings import applies the exported file back unchanged', async () => {
     await tab.type('settings import hledger-anywhere-settings.json');
@@ -711,11 +702,6 @@ async function importTheSettingsBack({ tab }) {
  * total itself stays inside this scenario, because only the `n` step under it uses it.
  */
 async function searchTheScreen({ tab }) {
-  // Search is the one app command whose work happens on the screen itself: `find`
-  // decides, and only a run like this one can show that App::find then read the rows,
-  // counted the hits and left the app's own words out of them. The words asserted are
-  // the ones it formats — `match {index} of {total} · {term}` and
-  // `No match for {term}.` — rather than anything paraphrased here.
 
   // The counter line the search just printed is chatter and does not add to what the
   // next search counts, so `n` a step below asserts against this same number.
@@ -874,11 +860,6 @@ async function switchTheJournal({ tab }) {
  * read off the list, not guessed at above.
  */
 async function finderAndHistory({ tab }) {
-  // The only parts of Ctrl+R's finder and of `history` that no other check touches: the
-  // matching and the drawing are pinned by `cargo test` against `Picker` and
-  // `history_listing`, but only a real window can show that a keystroke opened the
-  // finder, that what was typed went into its query rather than the line, and that the
-  // selection ran.
 
   // The command the finder holds on the selection, read off the list itself: what is
   // put on the prompt is whatever row carries the marker, so the run below asserts the
@@ -999,11 +980,8 @@ async function finderAndHistory({ tab }) {
  * is taken from reports on the screen, not from it.
  */
 async function clearTheHistory({ tab }) {
-  // What `history clear` is for, end to end: `Command::History(Some("clear"))` decides
-  // `Effect::ClearHistory` followed by its own sentence (src/dispatch.rs), `apply`
-  // empties the stored list (src/app.rs), and the recall key and the listing are what a
-  // person then sees of that. `cargo test` pins the decision and the listing formatter;
-  // only a run like this one can show the list actually going.
+  // `Command::History(Some("clear"))` decides `Effect::ClearHistory` followed by its own
+  // sentence (src/dispatch.rs), and `apply` empties the stored list (src/app.rs).
 
   await run('history clear forgets the commands run so far', async () => {
     await tab.type('history clear');
@@ -1060,11 +1038,6 @@ async function clearTheHistory({ tab }) {
  * Leaves: the line empty again with no menu on screen — where the theme step starts.
  */
 async function completeAtThePrompt({ tab }) {
-  // Three surfaces the Keys section of the help promises and no step above drives:
-  // the menu Tab draws, the colours `theme` writes into the page, and the size `font`
-  // gives xterm. Each is asserted by the value the code itself formats — the heading
-  // `completion` prints, the theme's own background as a custom property, the font
-  // size as the rows measure it — rather than by something having changed.
 
   await run('tab on an empty line lists the commands', async () => {
     await tab.focus();
@@ -1137,17 +1110,12 @@ async function completeAtThePrompt({ tab }) {
     // Escape is `menu_cancel`: the line goes back to what was typed, and only that.
     await tab.press('Escape', { code: 'Escape', keyCode: 27 });
     await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('» d')`, 'the line to be put back');
-    // And the line is emptied again for the commands below.
     await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
     await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
   });
 
-  // The rest of what the help's line on Tab promises — commands, flags,
-  // accounts, aliases and paths — driven where each list comes from: the
-  // cursor's position picks the list (terminal/commands.rs `completion`),
-  // `complete_or_menu` (app.rs) gathers the sources for it, and the rows are
-  // what `show_options` drew. The line may only change where `complete`
-  // changes it, and each assertion is on the words the code itself offers.
+  // The line may only change where `complete` changes it, and each assertion is on the
+  // words the code itself offers.
 
   await run('tab completes a flag after a command', async () => {
     await tab.type('balance -');
@@ -1188,7 +1156,6 @@ async function completeAtThePrompt({ tab }) {
       `(${READ_TERMINAL}).text.trimEnd().endsWith('» balance -')`,
       'the line to be put back',
     );
-    // ...and is emptied for the steps below.
     await tab.press('u', { code: 'KeyU', keyCode: 85, modifiers: 2 });
     await tab.until(`(${READ_TERMINAL}).text.trimEnd().endsWith('»')`, 'the line to be cleared');
   });
@@ -1548,11 +1515,6 @@ async function mountTheUpload({ tab, launched, fixtures }) {
  * does not move.
  */
 async function pluginsAndScreenreader({ tab }) {
-  // The surfaces the upload chain leaves undriven: the registry's own listing, the
-  // accessibility tree the `screenreader` command moves, and the third way a file
-  // arrives — dropped on the page rather than picked or opened. Each is asserted by
-  // the words the code itself formats (`plugin_list`, `set_screen_reader`,
-  // `files_arrived`) or by the DOM the code itself creates.
 
   await run('the plugins are listed with their summaries', async () => {
     await tab.type('plugins');
@@ -1764,7 +1726,6 @@ async function reloadAfterTheManifestChanged({ tab }) {
   });
 
   await run('plugins reload reads the changed manifest', async () => {
-    // The same URL, the same repository, a manifest that renamed its only plugin.
     PROBE_MANIFEST_SERVED = PROBE_MANIFEST_RENAMED;
     await tab.type('plugins reload');
     await tab.enter();
@@ -2070,9 +2031,6 @@ async function dropAJournal({ tab }) {
  * does not move.
  */
 async function writeAndDownload({ tab, launched, downloads }) {
-  // A report the screen would have to cut is written into the engine's own filesystem
-  // with `-o`, `download` reads it back and hands it to the browser, and real bytes land
-  // on disk — plus the refusal for a name nothing wrote.
 
   // The browser's download events, listened for before anything asks for a
   // download: `downloadWillBegin` says which file was offered, `downloadProgress`
@@ -2152,7 +2110,6 @@ async function writeAndDownload({ tab, launched, downloads }) {
         return Boolean(bytes);
       });
     } catch (error) {
-      // What the browser had said by then, beside the wait's own name.
       throw new Error(
         `${error.message}: begun=${JSON.stringify(downloadBegun)} completed=${downloadCompleted} bytes=${bytes && bytes.length}`,
       );
@@ -2770,21 +2727,18 @@ async function reloadAndClear({ tab }) {
   });
 
   await run('the scrollback survives any number of reloads', async () => {
-    // What the feature promises: the stored copy is the screen, so a reload that
-    // types nothing keeps the report on screen and grows the key by one boot and
-    // no more — for the third reload as well as the second, which is where a
-    // replay that was not captured showed up: visit A's history was replayed onto
-    // the screen once, then only visit B's own 665-byte boot was saved, so visit C
-    // replayed a screen with no report on it.
+    // What the feature promises: the stored copy is the screen, so a reload that types
+    // nothing keeps the report and grows the key by one boot and no more — the third
+    // reload as well as the second, which is where an uncaptured replay showed up: visit
+    // A's history was replayed onto the screen once, then only visit B's own 665-byte
+    // boot was saved, so visit C replayed a screen with no report on it.
     //
-    // The numbers this threshold sits between: one boot (banner, greeting, prompt)
-    // is ~665 bytes as measured, and the whole screen the reload above left in
-    // storage is ~55 KB (55,472 bytes, counted before the replay came back through
-    // the capture — the note below prints this run's exact count). So the second
-    // reload may grow the key by ~665, while a capture that took the replayed text
-    // in twice would grow it by ~L1; 2000 is ~3 boots and ~1/27 of that screen —
-    // room for the greeting to differ between visits, no room for a copy stacked
-    // on top.
+    // The numbers this threshold sits between: one boot (banner, greeting, prompt) is
+    // ~665 bytes as measured and the whole screen ~55 KB (55,472 bytes — the note below
+    // prints this run's exact count), so a correct second reload grows the key by ~665
+    // while a capture that took the replayed text in twice would grow it by ~L1; 2000 is
+    // ~3 boots and ~1/27 of that screen — room for the greeting to differ between
+    // visits, no room for a copy stacked on top.
     const cap = 512 * 1024; // `MAX_CAPTURE_BYTES`, src/terminal/capture.rs
     const l1 = Buffer.byteLength(await tab.storedScrollback(), 'utf8');
     console.log(`note the stored scrollback held ${l1} bytes after the first reload`);
@@ -2863,20 +2817,15 @@ async function main() {
 
   try {
     launched = await launch(chrome, { windowSize: '1200,1600', profile });
-    // Tall rather than a person's window: the whole scrollback has to be visible for the
-    // rows to be read, and a report scrolled off the top would fail for want of a scrollbar.
-    // The app's own commands pile up quickly — a help overview alone is most of a hundred
-    // rows — so the height is what the stored copy needs rather than a person's window.
-    // xterm puts only the rows on screen into the DOM (both `.xterm-rows` and the
-    // accessibility tree stop at the terminal's rows), so this is also the ceiling the
-    // run's output has to fit under: 3200 was 198 rows and the scrollback outgrew it,
-    // taking the first banner out of the read window and failing the reload below; 4800
-    // was 298 and fit the 55,472-byte screen of the run that measured it, but a reload
-    // now replays the first visit back on top of that screen (the scrollback survives
-    // every reload, not the first), which is ~20 rows more and then ~4 rows per reload
-    // after. 7200 was ~445 rows and the run had grown to 448 — two rows of margin, too
-    // close: 11200 is ~690 against the 448 the scenarios measure now, so the next
-    // scenario has room to add output before the early screens scroll out again.
+    // Tall rather than a person's window: xterm puts only the rows that fit into the DOM
+    // (both `.xterm-rows` and the accessibility tree stop at the terminal's rows), so the
+    // height is both what the scrollback has to be readable in and the ceiling the run's
+    // output must fit under. Re-tuned by hand as the run grew: 3200 (198 rows) was
+    // outgrown and took the first banner out of the read window, failing the reload
+    // below; 4800 (298) fit the 55,472-byte screen it was measured against, but a
+    // replay now adds ~20 rows and then ~4 per reload; 7200 (~445) was two rows short of
+    // the 448 the run had grown to; 11200 is ~690 against 448 now, so the next scenario
+    // has room to add output before the early screens scroll out again.
     const tab = await Tab.open(launched.cdp, { width: 1200, height: 11200 });
 
     // The run as the scenarios it is made of. Each declares what it needs from the
