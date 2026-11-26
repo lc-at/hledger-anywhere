@@ -99,7 +99,6 @@ const PAGE = `<!doctype html>
 </script>
 </body></html>`;
 
-/** The plugin module, whose only content is which version it is. */
 const moduleFor = (version) => `export const version = '${version}';\n`;
 
 /**
@@ -215,7 +214,6 @@ async function openPage(url) {
   });
 }
 
-/** Wait until the worker is installed and controlling the page. */
 async function untilControlled(page, want) {
   for (let i = 0; i < 80; i += 1) {
     const controlled = await page.eval('Boolean(navigator.serviceWorker.controller)');
@@ -238,12 +236,10 @@ async function untilControlled(page, want) {
   throw new Error(`the worker did not become ${want ? 'controlling' : 'uninstalled'} in time: ${why} / ${JSON.stringify(state)}`);
 }
 
-/** Wait for the page's own import on load, and say which version it got. */
 async function pageVersion(page) {
   return page.until('window.__loaded || null', 'the page’s own import on load to say its version');
 }
 
-/** Ask a fresh load what version of the plugin it can import. */
 async function versionAfterReload(page, base) {
   await page.reload();
   return page.eval(`import('${base}/plugins/demo.js').then((m) => m.version)`);
