@@ -370,9 +370,8 @@ export function mount(root = document) {
   // nothing the person did not see.
   let lineByLine = Boolean(state.lines);
   let hideCleared = true;
-  // Rows already cleared when the window opened are hidden by default, so the window opens on the
-  // work still to do. A row the person ticks or edits from here stays in view, so nothing vanishes
-  // from under the hand that just changed it.
+  // Rows already cleared when the window opened are hidden by default, so the window opens on
+  // the work still to do; a row the person ticks or edits from here stays in view.
   let clearedAtOpen = new Set(state.data.rows.filter((row) => row.status === 'Cleared').map((row) => row.id));
   let touched = new Set();
   let editing = null;
@@ -391,7 +390,6 @@ export function mount(root = document) {
   let focus = 0;
   let shown = [];
   let pending = null;
-  // Changes waiting their turn, the one being written, and ticks not yet in the file.
   const queue = [];
   let busy = false;
   let writingIds = new Set();
@@ -437,8 +435,7 @@ export function mount(root = document) {
     const now = sums();
     const { balance, date } = statement();
     // Two figures in small text, so the line stays slim: where the account started, and where
-    // the ticked lines take it by the statement date. The closing balance is the input beside
-    // them and the difference is the number all three are in service of.
+    // the ticked lines take it by the statement date.
     $('figures').innerHTML = `opening <b>${escape(money(now.opening))}</b> · cleared to ${escape(date || 'the statement date')} <b>${escape(money(now.expected))}</b>`;
     const zero = now.difference === 0;
     $('difference').className = `difference${zero ? ' zero' : ''}`;
@@ -474,8 +471,6 @@ export function mount(root = document) {
     });
     $('notes').innerHTML = notes.map((text) => `<p class="note">${escape(text)}</p>`).join('') + restores.join('');
 
-    // Hints: where the difference probably comes from, and with line-by-line checking on, where
-    // the statement and the journal part.
     const all = rows();
     const found = now.difference ? hints(all.filter((row) => !date || row.date <= date), ticked, now.difference, style()) : [];
     const points = checkpoints(all, lineByLine ? expected : {});
@@ -573,7 +568,6 @@ export function mount(root = document) {
     else if (dateBeingEdited === row.id) {
       date = `<input type="date" class="date-input" data-date-input="${escape(row.id)}" value="${escape(row.date)}" title="${escape(row.date)}" aria-label="date of this transaction">`;
     } else {
-      // Up and down within the day, only where there is a neighbour to pass.
       const up = !neighbour(all, row.id, 'up').refused;
       const down = !neighbour(all, row.id, 'down').refused;
       date = `<button class="date-btn" data-date="${escape(row.id)}" title="change the date (d)">${escape(row.date)}</button>`
@@ -722,17 +716,14 @@ ${row.inserted && inserts.some((entry) => entry.id === row.id) ? `<button data-d
     if (editing && editing.startsWith('new:') && !inserts.some((insert) => insert.id === editing)) {
       html.push(editorHtml({ id: editing, inserted: true, text: drafting || template(statement().date || state.statementDate, state.data.account, null, style()) }));
     }
-    // A day boundary gets a heavier rule than the hairline between postings, so the eye can
-    // find where one day's postings end.
     let previous = null;
     for (const row of shown) {
       html.push(rowHtml(row, date && row.date > date, previous !== null && row.date !== previous, all));
       previous = row.date;
       if (editing === row.id) html.push(editorHtml(row));
     }
-    // The rows are replaced wholesale, which takes the focus with them, so focus goes back to
-    // the line that had it, and to nothing else, so typing in the bar or in a field is never
-    // disturbed.
+    // The rows are replaced wholesale, which takes the focus with them, so it goes back to the
+    // line that had it and to nothing else, or typing in the bar would be disturbed.
     const active = root.activeElement;
     const hadRowFocus = Boolean(active && active.closest && active.closest('#rows tr[data-id]'));
     const focusedId = hadRowFocus ? active.closest('tr[data-id]').getAttribute('data-id') : null;
@@ -841,7 +832,6 @@ ${row.inserted && inserts.some((entry) => entry.id === row.id) ? `<button data-d
       return;
     }
     busy = true;
-    // Ticks queued one after another go as one write.
     let entry = queue.shift();
     if (entry.change.kind === 'tick') {
       const ticks = [entry];
@@ -1362,7 +1352,6 @@ ${row.inserted && inserts.some((entry) => entry.id === row.id) ? `<button data-d
           $('fe-reload').hidden = !answer.conflict;
           return;
         }
-        // A typed running balance the new line was added to explain is now that line's.
         if (typed && answer.focus && expected[typed] != null) { expected[answer.focus] = expected[typed]; delete expected[typed]; drawRows(); }
         opened.dirty = false;
         closeFile();
@@ -1712,7 +1701,6 @@ ${candidate.postings.map((posting) => `<div class="posting"><span>${escape(posti
 
   root.addEventListener('keydown', (event) => {
     const typing = /^(INPUT|TEXTAREA)$/.test(event.target.tagName);
-    // The date editor: Enter keeps the date, Escape leaves it alone.
     const dateInput = event.target.closest && event.target.closest('[data-date-input]');
     if (dateInput) {
       if (event.key === 'Enter') { event.preventDefault(); finishDateEdit(dateInput.dataset.dateInput, dateInput.value); }

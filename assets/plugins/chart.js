@@ -153,7 +153,6 @@ export function read(text) {
   }
   if (kept.length === 0) return null;
 
-  // Every cell is read in the report's main commodity, and the rest is named, not added in.
   const { amounts, unit, others } = inOneCommodity(kept.flatMap((row) => row.cells));
   const series = kept.map((row, index) => ({
     label: row.label,

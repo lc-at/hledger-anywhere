@@ -375,7 +375,6 @@ export function related(parsed) {
     .slice(0, 5)
     .map((type) => {
       const options = Object.fromEntries(Object.entries(parsed.options).filter(([name]) => TYPES[type].options.includes(name)));
-      // An option that needs --animate goes when --animate does.
       for (const [name, types] of Object.entries(NEEDS_ANIMATE)) {
         if (options[name] && !options.animate && types.includes(type)) delete options[name];
       }

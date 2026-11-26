@@ -225,13 +225,10 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
       // counts it in the account's balance all the same, so it is listed and counted here
       // too, marked, because it is not a movement the statement would show.
       virtual: posting.ptype === 'VirtualPosting' || posting.ptype === 'BalancedVirtualPosting',
-      // A posting is cleared when its own mark says so, or when its transaction is marked
-      // and the posting says nothing of its own. That is hledger's rule, not a choice: in a
-      // journal whose transactions are marked, `register --cleared` lists them and
-      // `--uncleared` lists none of them, so ignoring the transaction's mark made this
-      // window report a whole year of cleared postings as still to do. A posting that marks
-      // itself (`*` or `!`) keeps its own answer, which is what the marks this plugin
-      // writes are, so a half-reconciled transaction still reads correctly.
+      // A posting is cleared by its own mark, or by its transaction's when it says nothing
+      // of its own: hledger's rule, not a choice — a journal whose transactions are marked
+      // is listed in full by `register --cleared` and not at all by `--uncleared`. One that
+      // marks itself keeps its answer, so a half-reconciled transaction still reads right.
       status: posting.pstatus && posting.pstatus !== 'Unmarked'
         ? posting.pstatus
         : (transaction.tstatus || 'Unmarked'),
@@ -259,8 +256,7 @@ export function readPrint(transactions, account, { inclusive = false, wanted = n
 
 // Cutting a row's text splits the file it comes from, and one read cuts every row's text from
 // the same one or two files: splitting a large journal per row would cost more than every run
-// of hledger the window makes. So the last few texts are kept split; past four the whole cache
-// is dropped rather than evicted one by one, which is simpler and covers every read there is.
+// of hledger the window makes. So the last few are kept split; past four the whole cache goes.
 const split = new Map();
 
 /**

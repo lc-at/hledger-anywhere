@@ -862,7 +862,6 @@ function drawSeries(svg, model, colors, hooks, state) {
     hooks.tip.show({ title: model.periods[index], rows }, at, pointer ?? top);
   }
 
-  // The series a pointer at height `py` means, at period `index`.
   function nearest(index, py) {
     const values = valuesAt(index);
     if (stacked) {
@@ -1079,7 +1078,6 @@ function drawColumns(svg, model, colors, hooks, state) {
     label: (cell) => `${cell.series.label}, ${cell.period}, ${amountOf(cell.value, unit)}`,
   });
 
-  // Period labels: as many as fit without touching.
   const widest = Math.max(...model.periods.map((period) => period.length)) * 6.6 + 12;
   const every = Math.max(1, Math.ceil(widest / Math.max(1, x.step())));
   model.periods.forEach((period, at) => {
@@ -1238,7 +1236,6 @@ function drawTreemap(svg, data, colors, hooks) {
     const h = node.y1 - node.y0;
     const colour = ink(colourOf(node));
     if (node.children) {
-      // A parent's strip: its name, then its total, as far as the card is wide.
       if (w < 30 || h < 16) continue;
       const name = fit(node.data.name, w - 8);
       const text = group.append('text').attr('x', 4).attr('y', 13).attr('font-size', 11).attr('fill', colour).style('pointer-events', 'none');

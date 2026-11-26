@@ -449,7 +449,6 @@ export function mount(root = document) {
     follow(link.dataset.args);
   });
 
-  // Draw one picture: a renderer from chart-d3.js, or one from chart-more.js.
   function drawOne(kind, data) {
     return (MORE.includes(kind) ? renderMore : render)(kind, svg, data, state.colors, hooks, view) || {};
   }
