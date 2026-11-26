@@ -2290,8 +2290,8 @@ impl App {
             "\u{1b}[B" | "\u{1b}OB" | "\u{e}" | "\n" | "\u{12}" => self.move_finder(1),
             "\u{1b}[5~" => self.move_finder(-page),
             "\u{1b}[6~" => self.move_finder(page),
-            "\u{1b}[H" | "\u{1b}[1~" => self.move_finder(isize::MIN / 2),
-            "\u{1b}[F" | "\u{1b}[4~" => self.move_finder(isize::MAX / 2),
+            "\u{1b}[H" | "\u{1b}[1~" => self.move_finder(isize::MIN),
+            "\u{1b}[F" | "\u{1b}[4~" => self.move_finder(isize::MAX),
             "\u{7f}" | "\u{8}" => {
                 if let Some(finder) = self.finder.borrow_mut().as_mut() {
                     finder.query.pop();
