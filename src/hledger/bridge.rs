@@ -31,7 +31,6 @@ const BRIDGE_GLOBAL: &str = "hledgerWasi";
 const BRIDGE_WAIT_MS: f64 = 5_000.0;
 const BRIDGE_POLL_MS: i32 = 25;
 
-/// Look up `window.hledgerWasi` if it has been published yet.
 fn bridge_if_ready() -> Option<JsValue> {
     let window = web_sys::window()?;
     let bridge = Reflect::get(window.as_ref(), &JsValue::from_str(BRIDGE_GLOBAL)).ok()?;
@@ -42,7 +41,6 @@ fn bridge_if_ready() -> Option<JsValue> {
     }
 }
 
-/// Look up `window.hledgerWasi`, waiting for the bridge script if necessary.
 async fn bridge() -> Result<JsValue, EngineError> {
     if web_sys::window().is_none() {
         return Err(EngineError::Unsupported("no window object".into()));
@@ -67,7 +65,6 @@ async fn bridge() -> Result<JsValue, EngineError> {
     }
 }
 
-/// Yield to the browser's event loop for `ms` milliseconds.
 pub(crate) async fn delay(ms: i32) {
     let promise = Promise::new(&mut |resolve, _reject| {
         let Some(window) = web_sys::window() else {
@@ -84,7 +81,6 @@ pub(crate) async fn delay(ms: i32) {
     let _ = JsFuture::from(promise).await;
 }
 
-/// Look up a method on the bridge object.
 fn method(target: &JsValue, name: &str) -> Result<Function, EngineError> {
     Reflect::get(target, &JsValue::from_str(name))
         .ok()
@@ -94,7 +90,6 @@ fn method(target: &JsValue, name: &str) -> Result<Function, EngineError> {
         })
 }
 
-/// Call a bridge method and await its promise.
 async fn call(target: &JsValue, name: &str, arguments: &[JsValue]) -> Result<JsValue, EngineError> {
     let function = method(target, name)?;
     let arguments = Array::from_iter(arguments.iter().cloned());
@@ -112,8 +107,6 @@ async fn call(target: &JsValue, name: &str, arguments: &[JsValue]) -> Result<JsV
         .map_err(|error| classify(error, name))
 }
 
-/// Turn a JavaScript rejection into the most specific error we can.
-///
 /// The bridge tags transport failures with a `code`, which is what lets a
 /// missing `hledger.wasm` be reported as actionable guidance rather than as a
 /// generic engine error.
@@ -168,8 +161,6 @@ fn string_array(value: &JsValue) -> Vec<String> {
     array.iter().filter_map(|item| item.as_string()).collect()
 }
 
-/// Compile the module ahead of the first command.
-///
 /// Optional, `run` compiles on demand, but doing it up front means the first
 /// command is not the thing that has to wait for the whole download.
 pub async fn init() -> Result<(), EngineError> {
@@ -177,8 +168,6 @@ pub async fn init() -> Result<(), EngineError> {
     call(&bridge, "init", &[]).await.map(|_| ())
 }
 
-/// Tell the worker about the world the engine runs in.
-///
 /// `ledger_file` is what lets the user type `hledger balance` with no `-f`:
 /// hledger reads `$LEDGER_FILE` when no file is given. `columns` and `lines` are
 /// the terminal's size, which hledger needs because it formats reports to the
@@ -213,8 +202,6 @@ pub async fn configure(
     call(&bridge, "configure", &[options.into()]).await.map(|_| ())
 }
 
-/// A character count as a JS number, or `undefined` when there is none.
-///
 /// `Number.isInteger` on the worker side rejects anything else, so a nonsense
 /// size cannot become a nonsense `$COLUMNS`.
 fn number(value: Option<u32>) -> JsValue {
@@ -224,7 +211,6 @@ fn number(value: Option<u32>) -> JsValue {
     }
 }
 
-/// Run one invocation on the worker.
 pub async fn run(request: &HledgerRequest) -> Result<HledgerOutput, EngineError> {
     let bridge = bridge().await?;
 
@@ -281,7 +267,6 @@ pub async fn run(request: &HledgerRequest) -> Result<HledgerOutput, EngineError>
     })
 }
 
-/// Throw the worker away, stopping whatever it is running.
 pub async fn cancel() -> Result<(), EngineError> {
     // Deliberately not `bridge().await`: cancelling must not wait for the bridge
     // script to appear, and if it never did there is nothing to cancel.

@@ -35,7 +35,6 @@ pub fn theme_list(themes: &[(String, String)], current: &str) -> String {
     text
 }
 
-/// What `theme <name>` prints when a theme is applied.
 pub fn theme_applied(name: &str, from: &str) -> String {
     format!(
         "Theme {}{}. {}\r\n",
@@ -62,12 +61,12 @@ pub fn theme_usage(name: &str, available: &[String]) -> String {
     )
 }
 
-/// What `plugins` prints: what is installed, and the repositories it came from.
 /// A plugin's summary, for one that took a word hledger also answers to.
 pub fn shadowing_note(name: &str, summary: &str) -> String {
     format!("{summary}; hledger {name} still runs hledger's own")
 }
 
+/// What `plugins` prints: what is installed, and the repositories it came from.
 pub fn plugin_list(installed: &[(String, String)], repositories: &[(String, bool)]) -> String {
     let mut text = String::new();
     if installed.is_empty() {
@@ -144,7 +143,6 @@ pub fn plugin_installed(url: &str, registered: &[String], refused: &[String]) ->
     text
 }
 
-/// What `plugins remove` prints.
 pub fn plugin_removed(url: &str, count_: usize) -> String {
     if count_ == 0 {
         format!("Nothing was installed from {}.\r\n", bold(url))
@@ -167,7 +165,6 @@ pub fn bundled_returns(url: &str) -> String {
     )
 }
 
-/// What `plugins` says about something that is not one of its own arguments.
 pub fn plugin_usage(word: &str) -> String {
     format!(
         "{} is not a plugins command. {} lists what is installed, {} reads a repository, \
@@ -234,7 +231,6 @@ pub fn settings_imported(applied: &[String], dropped: &[String]) -> String {
     text
 }
 
-/// What `settings` says about an argument it does not know.
 pub fn settings_usage(word: &str) -> String {
     format!(
         "{} is not a settings command. {} shows them, {} writes them to a file, and {} \
@@ -270,11 +266,6 @@ pub fn alias_note(name: &str, expansion: &str) -> String {
     format!("[{name} {} {expansion}]", dim("runs"))
 }
 
-/// What the terminal prints after a run that wrote files.
-///
-/// Writing instead of printing is what `-o` is for, and the file only exists
-/// inside the run's in-memory mount, so saying where it went matters more than
-/// usual: without this the command looks like it did nothing.
 /// A path as something the user can type back.
 ///
 /// Quoted when it has a space in it, because every command the app suggests is one
@@ -288,6 +279,11 @@ pub fn quoted(path: &str) -> String {
     }
 }
 
+/// What the terminal prints after a run that wrote files.
+///
+/// Writing instead of printing is what `-o` is for, and the file only exists
+/// inside the run's in-memory mount, so saying where it went matters more than
+/// usual: without this the command looks like it did nothing.
 pub fn wrote_note(files: &[(String, usize, bool)]) -> String {
     let mut text = String::from("[");
     for (index, (path, bytes, replaced)) in files.iter().enumerate() {
@@ -384,7 +380,6 @@ pub fn prompt_for(main: Option<&str>) -> String {
     format!("{} {} ", dim(&label), accent("»"))
 }
 
-/// What the terminal prints after loading the demo.
 pub fn demo_loaded(files: usize, main: &str) -> String {
     format!(
         "Loaded the sample journal ({files} files), reading {}.\r\n",
@@ -392,7 +387,6 @@ pub fn demo_loaded(files: usize, main: &str) -> String {
     )
 }
 
-/// A count and its noun, spelled for the count.
 pub fn count(n: usize, singular: &str, plural: &str) -> String {
     if n == 1 {
         format!("1 {singular}")

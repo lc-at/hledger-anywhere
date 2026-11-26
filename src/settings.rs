@@ -20,7 +20,6 @@ use std::collections::BTreeMap;
 
 use crate::terminal;
 
-/// The theme the app ships with.
 pub const DEFAULT_THEME: &str = "default";
 
 /// A command alias, as a record rather than a pair, so an exported file says what each
@@ -31,15 +30,12 @@ pub struct Alias {
     pub command: String,
 }
 
-/// Everything the app remembers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Terminal font size in pixels.
     pub font: u32,
-    /// Whether the terminal's accessibility tree is on.
     pub screen_reader: bool,
-    /// The selected colour theme, by name.
     pub theme: String,
     /// Command aliases, in the order they are listed.
     pub aliases: Vec<Alias>,
@@ -72,14 +68,12 @@ pub struct Import {
 }
 
 impl Settings {
-    /// The record as the exported file holds it.
+    // Pretty and sorted: an exported file is something a person may read, diff, or
+    // paste into a support thread.
     pub fn to_json(&self) -> String {
-        // Pretty and sorted: an exported file is something a person may read, diff, or
-        // paste into a support thread.
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// Read a record from an exported file.
     pub fn from_json(text: &str) -> Result<Import, String> {
         let mut settings: Settings = serde_json::from_str(text)
             .map_err(|error| format!("that file is not settings: {error}"))?;
@@ -146,12 +140,10 @@ impl Settings {
         dropped
     }
 
-    /// One plugin's settings.
     pub fn plugin_settings(&self, plugin: &str) -> BTreeMap<String, String> {
         self.plugin.get(plugin).cloned().unwrap_or_default()
     }
 
-    /// Set one plugin setting, and report whether it changed anything.
     pub fn set_plugin_setting(&mut self, plugin: &str, key: &str, value: &str) -> bool {
         let entry = self.plugin.entry(plugin.to_string()).or_default();
         if entry.get(key).map(String::as_str) == Some(value) {
@@ -161,14 +153,11 @@ impl Settings {
         true
     }
 
-    /// Whether a repository is already installed.
     pub fn has_repository(&self, url: &str) -> bool {
         self.repositories.iter().any(|known| known == url.trim())
     }
 }
 
-/// Whether a string is something the app can fetch a manifest from.
-///
 /// A URL, or a path the app's own server serves. Nothing else: a bare word is almost
 /// always a typo, and saying so is better than a failed fetch later.
 pub fn looks_like_a_manifest(text: &str) -> bool {

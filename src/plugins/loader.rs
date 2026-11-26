@@ -16,10 +16,8 @@ use wasm_bindgen_futures::JsFuture;
 
 use crate::hledger::bridge;
 
-/// The global published by `assets/js/plugins.js`.
 const GLOBAL: &str = "hledgerPlugins";
 
-/// Look up `window.hledgerPlugins`, if it is there yet.
 fn plugins_if_ready() -> Option<JsValue> {
     let window = web_sys::window()?;
     let plugins = Reflect::get(window.as_ref(), &JsValue::from_str(GLOBAL)).ok()?;
@@ -30,7 +28,6 @@ fn plugins_if_ready() -> Option<JsValue> {
     }
 }
 
-/// Look up `window.hledgerPlugins`, waiting briefly for the module script.
 async fn plugins() -> Result<JsValue, String> {
     if let Some(plugins) = plugins_if_ready() {
         return Ok(plugins);
@@ -48,7 +45,6 @@ async fn plugins() -> Result<JsValue, String> {
     ))
 }
 
-/// Call one of the loader's functions and await what it returns.
 async fn call(name: &str, arguments: &[JsValue]) -> Result<JsValue, String> {
     let plugins = plugins().await?;
     let function = Reflect::get(&plugins, &JsValue::from_str(name))
@@ -64,7 +60,6 @@ async fn call(name: &str, arguments: &[JsValue]) -> Result<JsValue, String> {
         .map_err(|error| describe(&error))
 }
 
-/// The `error` field of a result object, if it has one.
 fn field(result: &JsValue, name: &str) -> Option<String> {
     Reflect::get(result, &JsValue::from_str(name))
         .ok()
@@ -82,7 +77,7 @@ fn describe(error: &JsValue) -> String {
         .unwrap_or_else(|| "the plugin loader failed".to_string())
 }
 
-/// Fetch a manifest. The text is returned, not trusted: the caller parses it.
+/// The text is returned, not trusted: the caller parses it.
 pub async fn fetch(url: &str) -> Result<String, String> {
     let result = call("fetchManifest", &[JsValue::from_str(url)]).await?;
     match field(&result, "text") {
@@ -119,12 +114,10 @@ pub async fn run(
     }
 }
 
-/// Forget imported modules, so a reloaded repository is read again.
 pub async fn reset() -> Result<(), String> {
     call("reset", &[]).await.map(|_| ())
 }
 
-/// An empty object, which the host API is filled into.
 pub fn empty_object() -> Object {
     Object::new()
 }

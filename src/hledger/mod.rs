@@ -50,7 +50,6 @@ pub fn mounted_path(path: &str) -> String {
     format!("{DATA_DIR}/{}", path.trim_start_matches('/'))
 }
 
-/// What the engine produced for one invocation.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HledgerOutput {
     pub argv: Vec<String>,
@@ -68,8 +67,6 @@ pub struct HledgerOutput {
 }
 
 impl HledgerOutput {
-    /// Whether this run should be treated as a failure.
-    ///
     /// A non-zero exit is the obvious case. The subtle one is hledger exiting 0
     /// with something on stderr and nothing on stdout, a warning that is really
     /// the whole story, which the terminal should colour as an error.
@@ -77,7 +74,6 @@ impl HledgerOutput {
         self.exit_code != 0 || (!self.stderr.trim().is_empty() && self.stdout.trim().is_empty())
     }
 
-    /// A single message describing the failure, preferring hledger's own stderr.
     pub fn failure_message(&self) -> String {
         let stderr = self.stderr.trim();
         if !stderr.is_empty() {
@@ -107,7 +103,6 @@ pub enum EngineError {
     Cancelled,
 }
 
-/// One invocation: the argv to run, and the files to mount.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HledgerRequest {
     /// Complete argv, including `argv[0]`.
@@ -121,8 +116,6 @@ impl HledgerRequest {
     }
 }
 
-/// Compile the module ahead of the first command.
-///
 /// Optional, a run compiles on demand, but doing it up front means the first
 /// command is not the thing that waits for the whole 13 MB download.
 #[cfg(target_arch = "wasm32")]
@@ -130,8 +123,6 @@ pub async fn init() -> Result<(), EngineError> {
     bridge::init().await
 }
 
-/// Set the environment the engine runs in: the journal, and the terminal size.
-///
 /// `ledger_file` of `None` makes hledger fall back to `$HOME/.hledger.journal`
 /// and fail honestly when there is nothing there. The size is what hledger
 /// formats reports to; `None` leaves it on its 80-column default.
@@ -145,8 +136,6 @@ pub async fn configure(
     bridge::configure(ledger_file, columns, lines, wasm_path).await
 }
 
-/// Run one invocation.
-///
 /// A failed command is `Ok` with a non-zero exit code: the terminal needs the
 /// stderr to display. `Err` is reserved for transport failures and for
 /// [`EngineError::Cancelled`].
@@ -155,8 +144,6 @@ pub async fn run(request: HledgerRequest) -> Result<HledgerOutput, EngineError> 
     bridge::run(&request).await
 }
 
-/// Stop the command that is running.
-///
 /// The engine runs one synchronous `_start()` in its worker and cannot be asked
 /// to stop, so this throws the worker away. Whoever calls it must configure the
 /// engine again afterwards: a new worker knows nothing about the journal or the
@@ -196,8 +183,6 @@ fn native_error() -> EngineError {
     EngineError::Unsupported("the wasm engine is only available in a browser build".to_string())
 }
 
-/// The command line to hand the engine.
-///
 /// The user's words, with a leading `hledger` accepted and dropped, that is how
 /// the command looks in a shell, and people paste commands. Nothing else is added:
 /// the journal comes from `$LEDGER_FILE`, so what runs is what was typed.

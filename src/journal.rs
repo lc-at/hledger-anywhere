@@ -18,18 +18,15 @@ use crate::hledger::JournalFile;
 /// Names hledger's own tooling looks for, in preference order.
 const CONVENTIONAL_NAMES: [&str; 3] = ["hledger.journal", ".hledger.journal", "hledger.hledger"];
 
-/// Whether a path is one hledger would accept as a journal.
 fn is_journal_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".journal") || lower.ends_with(".hledger") || lower.ends_with(".j")
 }
 
-/// The file name without its directories.
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// How deeply nested a path is; a shallower file is the more likely root.
 fn depth(path: &str) -> usize {
     path.matches('/').count()
 }
@@ -54,7 +51,6 @@ fn includes(contents: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether `target` names `file`, allowing for a relative path.
 fn names_file(target: &str, file: &str) -> bool {
     let target = target.trim_start_matches("./");
     let file = file.trim_start_matches("./");

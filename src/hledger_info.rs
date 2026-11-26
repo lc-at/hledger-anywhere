@@ -9,13 +9,10 @@
 // wasm-gated, so its items look unused to `cargo test`'s build.
 #![cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 
-/// The hledger version the pinned wasm build was made from.
 const HLEDGER_VERSION: &str = env!("HLEDGER_WASM_HLEDGER_VERSION");
 
-/// SHA-256 of the pinned artifact, as recorded in `wasm.lock`.
 const SHA256: &str = env!("HLEDGER_WASM_SHA256");
 
-/// The engine version as the user should see it in the banner.
 pub fn version() -> &'static str {
     if HLEDGER_VERSION.is_empty() {
         "unknown version"
@@ -24,8 +21,6 @@ pub fn version() -> &'static str {
     }
 }
 
-/// A one-line description of the engine, for the app's own help.
-///
 /// The checksum is included because "which build are you running?" is the first
 /// question worth answering about a pinned binary, and the answer has to come
 /// from the binary rather than from a document that may have moved on.
@@ -37,8 +32,6 @@ pub fn describe() -> String {
     format!("hledger {} · wasm sha256 {short}…", version())
 }
 
-/// The engine's URL, with its checksum as a version.
-///
 /// A URL that changes when the bytes change is what lets the service worker serve
 /// 13 MB from the cache without ever asking the network: for an immutable URL
 /// there is no such thing as a stale answer. Without it, either every visit

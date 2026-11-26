@@ -48,7 +48,6 @@ pub fn available() -> bool {
         .unwrap_or(false)
 }
 
-/// What a mounted file remembers about its place on disk.
 #[derive(Clone, Debug)]
 pub struct FileRef {
     pub handle: FileSystemFileHandle,
@@ -56,7 +55,6 @@ pub struct FileRef {
     pub last_modified: f64,
 }
 
-/// A directory that was opened and walked.
 #[derive(Debug)]
 pub struct Opened {
     pub root: FileSystemDirectoryHandle,
@@ -73,7 +71,6 @@ pub struct PendingDirectory {
 }
 
 impl PendingDirectory {
-    /// Wait for the user to choose a directory, then read it.
     pub async fn await_selection(self) -> Result<Opened, PickError> {
         let root = JsFuture::from(self.settled)
             .await
@@ -89,8 +86,6 @@ impl PendingDirectory {
     }
 }
 
-/// Read an already-granted directory into an [`Opened`].
-///
 /// Shared by the picker path and by a restore that still holds a usable handle.
 pub async fn read_directory(root: FileSystemDirectoryHandle) -> Result<Opened, PickError> {
     let writable = query_write(&root).await;
@@ -107,8 +102,6 @@ pub async fn read_directory(root: FileSystemDirectoryHandle) -> Result<Opened, P
     })
 }
 
-/// Open the directory picker and return a handle to await the result.
-///
 /// Deliberately not `async fn`: see the module comment.
 pub fn open_directory() -> Result<PendingDirectory, PickError> {
     let window = web_sys::window()
@@ -123,7 +116,6 @@ pub fn open_directory() -> Result<PendingDirectory, PickError> {
     Ok(PendingDirectory { settled })
 }
 
-/// Whether the directory still grants `readwrite` access.
 pub async fn query_write(root: &FileSystemDirectoryHandle) -> bool {
     let descriptor = FileSystemHandlePermissionDescriptor::new();
     descriptor.set_mode(FileSystemPermissionMode::Readwrite);
@@ -160,9 +152,7 @@ pub async fn stat(handle: &FileSystemFileHandle) -> Result<(u64, f64), String> {
     Ok((file.size() as u64, file.last_modified()))
 }
 
-/// What reading one mounted file again found. See [`reread`].
 pub enum Reread {
-    /// Same size and modification time as `known`.
     Unchanged,
     /// Moved on disk, and admitted again: the new text and the stat it was read at.
     Changed { contents: String, file: FileRef },
@@ -172,8 +162,6 @@ pub enum Reread {
     Failed(String),
 }
 
-/// Stat a mounted file and, if it moved since `known`, read it again.
-///
 /// The text is admitted by the same rules a first read uses, and the returned
 /// [`FileRef`] carries the stat of the very `File` the text came from, so a save made
 /// after this compares against what was actually read.
@@ -216,8 +204,6 @@ pub async fn reread(known: &FileRef) -> Reread {
     }
 }
 
-/// Write `contents` over `path`'s file, refusing if it changed on disk since read.
-///
 /// The returned [`FileRef`] carries the post-write stat, so the next write compares
 /// against this one rather than the original read.
 pub async fn write_file(
@@ -253,7 +239,6 @@ pub async fn write_file(
     })
 }
 
-/// Walk a directory tree, admitting files the same way an upload does.
 async fn walk(
     root: &FileSystemDirectoryHandle,
     files: &mut BTreeMap<String, FileRef>,
@@ -314,7 +299,6 @@ async fn walk(
     Ok(())
 }
 
-/// Read and admit one file, recording its handle when it is kept.
 async fn admit_one(
     path: &str,
     handle: &FileSystemHandle,
@@ -383,12 +367,10 @@ async fn admit_one(
     Ok(())
 }
 
-/// A `DOMException` name, if the value is one.
 fn aborted(error: &JsValue) -> bool {
     named(error, "AbortError")
 }
 
-/// Whether the value is a `DOMException` (or any error) with this `name`.
 fn named(error: &JsValue, expected: &str) -> bool {
     Reflect::get(error, &JsValue::from_str("name"))
         .ok()
@@ -396,7 +378,6 @@ fn named(error: &JsValue, expected: &str) -> bool {
         .is_some_and(|name| name == expected)
 }
 
-/// The best available description of a `JsValue`.
 fn describe(error: &JsValue) -> String {
     error
         .as_string()

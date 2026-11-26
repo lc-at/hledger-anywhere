@@ -8,7 +8,6 @@
 
 use super::text::{accent_escape, dim, BOLD, RESET};
 
-/// One past command that matches the query, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Match {
     pub entry: String,
@@ -101,7 +100,6 @@ fn term_match(term: &str, chars: &[char]) -> Option<(i64, Vec<usize>)> {
     Some((score(chars, &positions), positions))
 }
 
-/// What a set of matched positions is worth.
 fn score(chars: &[char], positions: &[usize]) -> i64 {
     let mut total = 0;
     let mut previous: Option<usize> = None;
@@ -196,7 +194,6 @@ pub struct Picker<'a> {
     pub height: usize,
 }
 
-/// The label the query is typed after.
 pub const PICKER_PROMPT: &str = "history> ";
 
 /// The lines that draw the finder, and the column the cursor goes back to on the first.

@@ -15,8 +15,6 @@ pub struct Stat {
     pub last_modified: f64,
 }
 
-/// Whether the file on disk is not the one last read or written.
-///
 /// The same test a save makes before writing, so after a refresh has taken in every
 /// changed file, a save no longer refuses on account of the outside edit.
 pub fn differs(known: Stat, on_disk: Stat) -> bool {
@@ -26,7 +24,6 @@ pub fn differs(known: Stat, on_disk: Stat) -> bool {
 /// What became of one mounted file when the folder was read again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// Same size and modification time as last known.
     Unchanged,
     /// Read again from disk; the copy in memory was replaced.
     Changed,
@@ -47,7 +44,6 @@ pub struct Report {
 }
 
 impl Report {
-    /// Note what became of `path`.
     pub fn record(&mut self, path: &str, outcome: Outcome) {
         match outcome {
             Outcome::Unchanged => {}
@@ -63,7 +59,7 @@ impl Report {
         }
     }
 
-    /// Whether anything in memory was replaced, so the engine and the stored session
+    /// Anything in memory was replaced, so the engine and the stored session
     /// have to be told.
     pub fn any_changed(&self) -> bool {
         !self.changed.is_empty()

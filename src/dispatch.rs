@@ -29,19 +29,12 @@ pub enum Effect {
     Print(String),
     /// Print a note that answers nothing, said before the line it belongs to runs.
     Say(String),
-    /// Wipe the screen and redraw the prompt, for `clear`.
     Clear,
-    /// Open the file picker and mount what it returns, for `upload`.
     Upload,
-    /// Open a folder on disk, keeping its handles, for `open`.
     Open,
-    /// Take back the folder an earlier `open` granted, for `reopen`.
     Reopen,
-    /// Load the built-in sample journal, for `demo`.
     Demo,
-    /// `alias name=command`: the definition, as it was written.
     SetAlias(String),
-    /// `unalias name`: forget that alias.
     RemoveAlias(String),
     /// `history clear`: forget the commands run so far. The sentence that says so
     /// follows as its own print, in the order the two happen.
@@ -50,33 +43,21 @@ pub enum Effect {
     /// is. The listing and the wording of applying one belong to the app, which
     /// asks the settings and the registry for them.
     Theme(Option<String>),
-    /// `settings`: list what is remembered between visits.
     SettingsShow,
-    /// `settings export`: write the record out and hand it to the browser.
     SettingsExport,
-    /// `settings import [path]`: read a settings file from that path, or ask for
-    /// the file when no path was given.
     SettingsImport(Option<String>),
-    /// `plugins`: list the installed plugins and where they came from.
     PluginsList,
-    /// `plugins add <url>`: fetch that repository and take the plugins it offers.
     PluginsAdd(String),
-    /// `plugins remove <url>`: forget that repository.
     PluginsRemove(String),
-    /// `plugins reload`: read every remembered repository again.
     PluginsReload,
-    /// `screenreader on|off`: the accessibility tree's new state.
     ScreenReader(bool),
-    /// `font <size>`: the size to set, already clamped to the usable range.
     FontSize(u32),
     /// `find`, `/text`: the term to search the scrollback for, empty when the
     /// command carried none and the last search is meant.
     Search(String),
     /// `n` and `N`: repeat the last search forwards or backwards.
     SearchAgain(bool),
-    /// `download <path>`: the file written by a command this session to save.
     Download(String),
-    /// `journal <path>`: the loaded file to read as the journal.
     SetJournal(String),
     /// A line for hledger, verbatim, to run.
     RunHledger(String),
@@ -100,22 +81,16 @@ pub struct View<'a> {
     /// Aliases in the order they were defined: expanded for hledger's words, listed
     /// by `alias`, removed by `unalias`.
     pub aliases: &'a [(String, String)],
-    /// The commands run this visit, for `history` and its filters.
     pub history: &'a [String],
     /// The terminal's width, which the help wraps to.
     pub columns: usize,
     /// Whether the loaded files came from an `open`ed directory and can be written,
     /// which changes what a writing command is told.
     pub writable: bool,
-    /// The loaded files, as `journal` lists them.
     pub files: &'a [JournalFile],
-    /// The uploaded path of the journal hledger reads, if one is chosen.
     pub main: Option<&'a str>,
-    /// Files commands have written this session, as `download` lists them.
     pub written: &'a [JournalFile],
-    /// The terminal font size, in pixels, as `font` reports it.
     pub font: u32,
-    /// Whether the terminal's accessibility tree is on, as `screenreader` reports it.
     pub screen_reader: bool,
     /// The plugins installed this visit: who answers to a word, and what their help
     /// pages say.
@@ -359,7 +334,6 @@ mod tests {
     /// hledger claims.
     const MANIFEST: &str = r#"{"name":"Charts","plugins":[{"name":"chart","summary":"open a balance chart"}]}"#;
 
-    /// The state a command sees when nothing is loaded and nothing is set.
     struct TestView {
         aliases: Vec<(String, String)>,
         history: Vec<String>,

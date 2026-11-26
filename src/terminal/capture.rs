@@ -34,8 +34,6 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// Keep a chunk of what was written, dropping the oldest until it fits.
-    ///
     /// The trim runs chunk by chunk, so a write costs what it appends and
     /// nothing else; only crossing the cap walks back over old chunks.
     pub fn push(&mut self, chunk: &str) {
@@ -49,8 +47,6 @@ impl Capture {
         }
     }
 
-    /// Everything kept, oldest first, as one string.
-    ///
     /// What a save stores and the next visit replays. Reading it neither empties it nor
     /// grows it: only [`Capture::push`] adds, only [`Capture::clear`] takes away.
     pub fn as_text(&self) -> String {
@@ -69,7 +65,6 @@ impl Capture {
 mod tests {
     use super::*;
 
-    /// A quarter of the cap, in one chunk.
     fn quarter(letter: char) -> String {
         letter.to_string().repeat(MAX_CAPTURE_BYTES / 4)
     }

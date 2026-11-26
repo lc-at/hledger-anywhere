@@ -15,25 +15,18 @@
 use crate::plugins::PluginInfo;
 use crate::terminal::{bold, dim};
 
-/// One command's help.
 pub struct Entry {
-    /// The word alone, as [crate::terminal::COMMANDS] lists it.
     pub word: &'static str,
-    /// The word with its arguments, as a person would type it.
     pub usage: &'static str,
-    /// The section of the overview it belongs to.
     pub group: &'static str,
-    /// One line for the overview and the terminal banner.
     pub summary: &'static str,
     /// The page: one or two sentences and nothing more, because a terminal is not a
     /// manual and the examples carry the rest.
     pub detail: &'static str,
-    /// Commands worth trying, and what each one does.
     pub examples: &'static [(&'static str, &'static str)],
 }
 
 impl Entry {
-    /// The overview's row for this command.
     pub fn row(&self) -> (String, String) {
         (self.usage.to_string(), self.summary.to_string())
     }
@@ -248,12 +241,10 @@ pub const ENTRIES: &[Entry] = &[
     },
 ];
 
-/// The entry for a word, if the app has one.
 pub fn find(word: &str) -> Option<&'static Entry> {
     ENTRIES.iter().find(|entry| entry.word == word)
 }
 
-/// The help groups, in the order the entries declare them.
 fn groups<'a, I>(entries: I) -> Vec<(&'static str, Vec<&'a Entry>)>
 where
     I: IntoIterator<Item = &'a Entry>,
@@ -268,9 +259,6 @@ where
     sections
 }
 
-/// What a bare ? prints: the commands by group, the plugins among them, the keys, and
-/// one thing worth trying first.
-///
 /// plugins are (word, group, summary), which is what the registry knows about them.
 pub fn overview(plugins: &[(&str, &str, &str)], width: usize) -> String {
     let mut text = String::new();
@@ -356,14 +344,11 @@ pub fn page(entry: &Entry, width: usize) -> String {
     page_parts(entry.usage, entry.detail, &[examples], width)
 }
 
-/// A heading on a page, over rows of a form and what it does.
 pub struct Section<'a> {
     pub title: &'a str,
     pub rows: Vec<(&'a str, &'a str)>,
 }
 
-/// A plugin's page, from what its manifest declares, as printed by `chart?`.
-///
 /// The same shape as the app's own pages: the usage, the paragraph, then the manifest's
 /// sections in its order, then its examples. A manifest written before per-command help
 /// has only a summary, and still gets a page made of that.
@@ -447,9 +432,6 @@ fn page_parts(usage: &str, detail: &str, sections: &[Section], width: usize) -> 
     text
 }
 
-/// A paragraph wrapped to `width` columns, never splitting a word unless the word is
-/// longer than the line.
-///
 /// The terminal wraps at the column edge without knowing where the words are, which is
 /// what turned a long sentence into "handle, s" on one line and "o the files" on the
 /// next. The source's own newlines are ignored, so a paragraph can be written as one
@@ -475,7 +457,6 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// What word? says when nothing answers to word.
 pub fn unknown(word: &str, closest: &[String]) -> String {
     let mut text = format!("There is no help for {}.\r\n", bold(word));
     if closest.is_empty() {

@@ -19,7 +19,6 @@ pub const DIM_RED: &str = "\u{1b}[2;31m";
 /// The accent colour the rest of the interface uses, as a 256-colour amber.
 pub const DEFAULT_ACCENT: &str = "\u{1b}[38;5;214m";
 
-/// Back to normal.
 pub const RESET: &str = "\u{1b}[0m";
 
 thread_local! {
@@ -40,12 +39,10 @@ pub fn set_style(accent: String, dim: String) {
     STYLE.with(|style| *style.borrow_mut() = (accent, dim));
 }
 
-/// The escape that starts the app's accent colour, for a whole line of its own.
 pub fn accent_escape() -> String {
     STYLE.with(|style| style.borrow().0.clone())
 }
 
-/// The escape that starts the app's dim colour, for a whole line of its own.
 pub fn dim_escape() -> String {
     STYLE.with(|style| style.borrow().1.clone())
 }
@@ -92,8 +89,6 @@ pub fn plain(text: &str) -> String {
     out
 }
 
-/// Wrap the app's own prose to `width` columns.
-///
 /// Only the app's words go through this. A report from hledger laid itself out and must
 /// not be touched, and neither must a table the app aligned. A line that already fits is
 /// returned exactly as it is, so alignment survives; only a line too long for the screen
@@ -165,8 +160,6 @@ pub fn visible_output(stdout: &str) -> (String, Option<String>) {
     )
 }
 
-/// Normalise text for a terminal.
-///
 /// xterm.js, like a real terminal, starts a new line only on `\r\n`: a bare `\n`
 /// moves down without returning to the left margin, which turns a report into a
 /// staircase. The engine's output uses `\n`, so it is converted here rather than

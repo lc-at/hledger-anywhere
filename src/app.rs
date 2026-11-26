@@ -45,13 +45,10 @@ use crate::upload::{self, Picked};
 /// repository the visitor adds is installed the same way.
 const BUNDLED_REPOSITORIES: &[&str] = &["/plugins/plugins.json"];
 
-/// `localStorage` key for the terminal font size.
 const FONT_KEY: &str = "hledger-anywhere.terminal.font.v1";
 
-/// `localStorage` key for the command aliases.
 const ALIAS_KEY: &str = "hledger-anywhere.terminal.aliases.v1";
 
-/// `localStorage` key for the screen reader preference.
 const SCREEN_READER_KEY: &str = "hledger-anywhere.terminal.screenreader.v1";
 
 /// An event listener the app keeps alive for as long as it runs.
@@ -79,19 +76,16 @@ struct Finder {
     saved: String,
 }
 
-/// Id of the element the terminal is mounted into.
 const TERMINAL_ID: &str = "terminal";
 
 /// `localStorage` key for the command history, versioned like the store's keys.
 const HISTORY_KEY: &str = "hledger-anywhere.terminal.history.v1";
 
-/// `localStorage` key for what was on screen, so a reload can put it back.
 const SCROLLBACK_KEY: &str = "hledger-anywhere.scrollback.v1";
 
-/// How many history entries are kept.
 const MAX_HISTORY: usize = 1000;
 
-/// Start the app. Called once, from `main`.
+/// Called once, from `main`.
 pub fn start() {
     // The settings record first: the font, the accessibility tree and the aliases all
     // come from it, and it is where the installed repositories are listed.
@@ -208,7 +202,7 @@ fn register_service_worker() {
     );
 }
 
-/// The element the terminal lives in, from `index.html`.
+/// The element from `index.html`.
 fn terminal_element() -> Option<HtmlElement> {
     let document = web_sys::window()?.document()?;
     document
@@ -217,7 +211,6 @@ fn terminal_element() -> Option<HtmlElement> {
         .ok()
 }
 
-/// Everything the app owns.
 struct App {
     screen: Rc<Screen>,
     editor: RefCell<Editor>,
@@ -233,9 +226,7 @@ struct App {
     registry: RefCell<Registry>,
     /// The API handed to each plugin, kept because a plugin may hold on to it.
     hosts: RefCell<BTreeMap<String, JsValue>>,
-    /// Whether the engine's download has been started yet.
     engine_warming: Cell<bool>,
-    /// Whether the engine is loaded and ready to run.
     engine_ready: Cell<bool>,
     /// Input typed while busy, replayed when the engine is free.
     pending: RefCell<String>,
@@ -267,7 +258,6 @@ struct App {
     /// The Ctrl+R finder, while it is open.
     finder: RefCell<Option<Finder>>,    /// The terminal font size, in pixels, kept between visits.
     font: Cell<u32>,
-    /// Whether the terminal's accessibility tree is on, kept between visits.
     screen_reader: Cell<bool>,
     /// Command aliases, in the order they were defined.
     aliases: RefCell<Vec<(String, String)>>,
@@ -393,7 +383,6 @@ impl App {
         *self._keys.borrow_mut() = Some(closure);
     }
 
-    /// One step bigger, one smaller, or back to the default.
     fn rescale(self: &Rc<App>, direction: i32) {
         let next = if direction == 0 {
             terminal::DEFAULT_FONT
@@ -488,7 +477,6 @@ impl App {
         ));
     }
 
-    /// Set the font size outright, from a key or from `font <size>`.
     fn set_font_size(self: &Rc<App>, size: u32) {
         let size = size.clamp(terminal::MIN_FONT, terminal::MAX_FONT);
         if size == self.font.get() {
@@ -538,7 +526,6 @@ impl App {
         }
     }
 
-    /// Print a block, in `style` when given.
     fn block(&self, text: &str, style: Option<&str>) {
         let text = terminal::to_terminal_text(&self.wrapped(text));
         if let Some(style) = style {
@@ -851,7 +838,6 @@ impl App {
         }
     }
 
-    /// The uploaded paths, in upload order.
     fn paths(&self) -> Vec<String> {
         self.files.borrow().iter().map(|file| file.path.clone()).collect()
     }
@@ -1283,8 +1269,6 @@ impl App {
         self.settle();
     }
 
-    /// The end of every run: ready for input, and replaying what was typed while
-    /// the engine was busy.
     /// Say in the window title what is running, if anything.
     ///
     /// A slow report is otherwise silent for as long as it takes, and the tab is the
@@ -1321,7 +1305,6 @@ impl App {
         });
     }
 
-    /// Say why nothing has appeared yet, when a command has to wait for the engine.
     fn waiting_note(&self) {
         if !self.engine_ready.get() {
             self.say(&terminal::dim(
@@ -1733,7 +1716,6 @@ impl App {
     }
 
 
-    /// Fetch one manifest and take the plugins it offers.
     async fn install_repository(self: &Rc<App>, url: &str) -> Result<plugins::Installed, String> {
         let text = plugins::loader::fetch(url).await?;
         self.registry.borrow_mut().install(&text, url)
@@ -1949,7 +1931,6 @@ impl App {
         });
     }
 
-    /// The contents of a loaded file, if it is loaded.
     fn file_contents(&self, path: &str) -> Option<String> {
         self.files
             .borrow()
@@ -1958,7 +1939,6 @@ impl App {
             .map(|file| file.contents.clone())
     }
 
-    /// Read settings text and put it into effect.
     fn apply_settings_text(self: &Rc<App>, text: &str) {
         match Settings::from_json(text) {
             Ok(import) => self.apply_settings(import.settings, &import.dropped),
@@ -2143,6 +2123,8 @@ impl App {
         }
     }
 
+    /// The end of every run: ready for input, and replaying what was typed while
+    /// the engine was busy.
     fn settle(self: &Rc<App>) {
         self.busy.set(false);
         // Whatever was running has stopped, whether it printed, drew, or failed.
@@ -2205,7 +2187,6 @@ impl App {
         self.search_finder();
     }
 
-    /// Match the query again, back at the best match.
     fn search_finder(self: &Rc<App>) {
         let history = self.editor.borrow().history().to_vec();
         if let Some(finder) = self.finder.borrow_mut().as_mut() {
@@ -2260,7 +2241,6 @@ impl App {
         self.screen.write(&out);
     }
 
-    /// Close the finder, putting `line` on the prompt, with the list cleared away.
     fn close_finder(self: &Rc<App>, line: &str) {
         *self.finder.borrow_mut() = None;
         self.screen.write("\r\u{1b}[J");
@@ -2268,7 +2248,6 @@ impl App {
         self.prompt();
     }
 
-    /// Move the selection by `step`, stopping at either end.
     fn move_finder(self: &Rc<App>, step: isize) {
         if let Some(finder) = self.finder.borrow_mut().as_mut() {
             let last = finder.matches.len().saturating_sub(1);
@@ -2277,7 +2256,6 @@ impl App {
         self.prompt();
     }
 
-    /// One key while the finder is open.
     fn finder_input(self: &Rc<App>, data: &str) {
         let page = self.finder_height() as isize;
         match data {
@@ -2446,7 +2424,6 @@ impl App {
         *self._drop.borrow_mut() = Some(closure);
     }
 
-    /// Show that a drop would land here.
     fn highlight_drop(&self, on: bool) {
         if let Some(document) = web_sys::window().and_then(|window| window.document())
             && let Some(body) = document.body()
@@ -2531,7 +2508,6 @@ impl App {
     }
 
 
-    /// How many columns the terminal has, for wrapping help.
     fn columns(&self) -> usize {
         self.screen.size().0 as usize
     }
@@ -2659,7 +2635,6 @@ fn stat_of(file: &fs_access::FileRef) -> Stat {
     }
 }
 
-/// What the app does before the first prompt.
 async fn boot(app: Rc<App>) {
     // The greeting waits for the cache, because whether a journal is loaded is the one
     // thing it has to say and the one thing it cannot know yet. Saying "No journal is
@@ -2747,7 +2722,6 @@ async fn boot(app: Rc<App>) {
 
 // -- history ----------------------------------------------------------------
 
-/// The browser's `localStorage`, or `None` when it is unavailable.
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
 }
@@ -2817,12 +2791,10 @@ thread_local! {
         std::cell::RefCell::new(Settings::default());
 }
 
-/// Read a setting.
 fn settings<R>(read: impl FnOnce(&Settings) -> R) -> R {
     SETTINGS.with(|settings| read(&settings.borrow()))
 }
 
-/// Change a setting, and keep it.
 fn update_settings(change: impl FnOnce(&mut Settings)) {
     SETTINGS.with(|settings| {
         let mut settings = settings.borrow_mut();
@@ -2914,7 +2886,6 @@ fn save_aliases(aliases: &[(String, String)]) {
     update_settings(|settings| settings.aliases = wanted);
 }
 
-/// The font size to start with.
 fn load_font() -> u32 {
     settings(|settings| settings.font)
 }

@@ -79,7 +79,6 @@ pub const HLEDGER_COMMANDS: [&str; 34] = [
     "ui",
 ];
 
-/// Common report and query flags, for completion.
 const FLAGS: [&str; 32] = [
     "-O",
     "--account",
@@ -152,7 +151,6 @@ struct Menu {
 }
 
 impl Editor {
-    /// An editor holding `history`, oldest first.
     pub fn with_history(history: Vec<String>) -> Self {
         Editor {
             history,
@@ -193,7 +191,6 @@ impl Editor {
         }
     }
 
-    /// Delete the character before the cursor.
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             self.chars.remove(self.cursor - 1);
@@ -201,7 +198,6 @@ impl Editor {
         }
     }
 
-    /// Delete the character under the cursor.
     pub fn delete(&mut self) {
         if self.cursor < self.chars.len() {
             self.chars.remove(self.cursor);
@@ -301,7 +297,6 @@ impl Editor {
     /// Alt+F: move past the end of the word after the cursor.
     pub fn word_right(&mut self) {
         let mut index = self.cursor;
-        // Skip the whitespace we are sitting in, then the word itself.
         while index < self.chars.len() && self.chars[index].is_whitespace() {
             index += 1;
         }
@@ -311,7 +306,6 @@ impl Editor {
         self.cursor = index;
     }
 
-    /// Where the word before the cursor begins.
     fn word_start(&self) -> usize {
         let mut index = self.cursor;
         while index > 0 && self.chars[index - 1].is_whitespace() {
@@ -323,7 +317,6 @@ impl Editor {
         index
     }
 
-    /// Replace the whole line, as completion does.
     pub fn set_line(&mut self, line: &str) {
         self.chars = line.chars().collect();
         self.cursor = self.chars.len();
@@ -363,8 +356,6 @@ impl Editor {
         }
     }
 
-    /// Enter was pressed: take the line, and remember it.
-    ///
     /// Blank lines return `None` and are not remembered, so pressing Enter twice
     /// does not put an empty entry in the history.
     pub fn take(&mut self) -> Option<String> {
@@ -382,8 +373,6 @@ impl Editor {
         Some(line)
     }
 
-    /// Add a line to the history worth recalling as a command.
-    ///
     /// Journal text typed into a file is not a command and does not belong here,
     /// which is why this is the caller's decision rather than `take`'s.
     pub fn remember(&mut self, line: &str) {
@@ -394,8 +383,6 @@ impl Editor {
         self.history.push(line.to_string());
     }
 
-    /// The whole words before the token under the cursor: the command, then its arguments.
-    ///
     /// None means the cursor is in the first word, where commands go; one means it is the
     /// first argument, which is where a plugin's own words are offered on their own.
     pub fn words_before_token(&self) -> Vec<String> {
@@ -407,7 +394,6 @@ impl Editor {
         done.split_whitespace().map(str::to_string).collect()
     }
 
-    /// The token under the cursor, for completion.
     pub fn token(&self) -> String {
         let head: String = self.chars[..self.cursor].iter().collect();
         match head.rfind(char::is_whitespace) {
@@ -416,8 +402,6 @@ impl Editor {
         }
     }
 
-    /// Complete the token under the cursor from `candidates`.
-    ///
     /// One match completes outright; several extend as far as they agree, and
     /// otherwise the caller lists them. That is what a shell does, and it is the
     /// behaviour that makes Tab worth pressing twice.
@@ -484,7 +468,6 @@ impl Editor {
         }
     }
 
-    /// Offer `candidates` as a menu, with the first one on the line.
     fn open_menu(&mut self, candidates: &[String]) {
         let menu = Menu {
             original: self.chars.clone(),
@@ -496,7 +479,6 @@ impl Editor {
         self.show_candidate(0);
     }
 
-    /// Put candidate `index` on the line, replacing whatever was there.
     fn show_candidate(&mut self, index: usize) {
         let Some(mut menu) = self.menu.take() else {
             return;
@@ -553,8 +535,6 @@ impl Editor {
         true
     }
 
-    /// Replace the token under the cursor, keeping the rest of the line.
-    ///
     /// The cursor moves to just after the replacement, so completing a token in
     /// the middle of a command line, a query term, say, leaves the arguments
     /// that follow it alone and still editable.
@@ -766,7 +746,6 @@ pub fn split_first_token(line: &str) -> (String, String) {
     (first_value(trimmed), String::new())
 }
 
-/// The unquoted value of a lone token.
 fn first_value(token: &str) -> String {
     tokenize(token)
         .ok()
@@ -774,8 +753,6 @@ fn first_value(token: &str) -> String {
         .unwrap_or_default()
 }
 
-/// One argument, with any quoting removed.
-///
 /// The app's own commands take a single path, address or number, and a path can
 /// have a space in it, an uploaded file is named whatever it was named. Refusing
 /// two arguments rather than guessing which one was meant keeps `journal a b` from
@@ -792,8 +769,6 @@ pub fn single_argument(rest: &str) -> Result<Option<String>, String> {
 }
 
 
-/// A paste, split into the lines it contains.
-///
 /// Terminals deliver a paste as one string with newlines in it, which otherwise
 /// ends up inserted into the line being edited, a journal snippet pasted into a
 /// single-line editor is how this was noticed. `rest` is what follows the last
@@ -804,8 +779,6 @@ pub struct Paste {
     pub rest: String,
 }
 
-/// Split `data` when it is a paste, or `None` when it is an ordinary keypress.
-///
 /// A single character is never a paste, however it looks, so Enter stays Enter.
 pub fn paste(data: &str) -> Option<Paste> {
     if !data.contains(['\n', '\r']) || data.chars().count() < 2 {
@@ -1756,7 +1729,6 @@ mod tests {
         assert_eq!(prompt_redraw("$ ", "balance", 5), "\r\u{1b}[K$ balance\u{1b}[2D");
         // End of the line: nothing to step back over.
         assert_eq!(prompt_redraw("$ ", "balance", 7), "\r\u{1b}[K$ balance");
-        // Empty line.
         assert_eq!(prompt_redraw("$ ", "", 0), "\r\u{1b}[K$ ");
         // The cursor index is in characters, not bytes.
         assert_eq!(prompt_redraw("$ ", "café", 4), "\r\u{1b}[K$ café");

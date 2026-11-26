@@ -36,19 +36,15 @@ use web_sys::FileSystemDirectoryHandle;
 
 use crate::hledger::JournalFile;
 
-/// Name of the IndexedDB database.
 const DB_NAME: &str = "hledger-anywhere";
 
 /// Schema version. Bump only alongside a migration in `open`.
 const DB_VERSION: u32 = 2;
 
-/// Object store holding one record per mounted file, keyed by `path`.
 const FILES_STORE: &str = "files";
 
-/// Object store holding small metadata records, keyed by `key`.
 const META_STORE: &str = "meta";
 
-/// Object store holding the File System Access handle for `open`, keyed by `key`.
 const HANDLES_STORE: &str = "handles";
 
 /// The key the `handles` store's one record lives under.
@@ -60,13 +56,10 @@ const HANDLE_FIELD: &str = "handle";
 /// The metadata record this module writes.
 const SESSION_KEY: &str = "terminal_session";
 
-/// KeyPath of the `files` store: the field used as the key.
 const FILES_KEY_PATH: &str = "path";
 
-/// KeyPath of the `meta` store.
 const META_KEY_PATH: &str = "key";
 
-/// What the last session looked like: which file hledger was reading.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
@@ -100,14 +93,11 @@ impl From<StoredFile> for JournalFile {
     }
 }
 
-/// A connection to the snapshot cache.
 pub struct Store {
     db: idb::Database,
 }
 
 impl Store {
-    /// Open (creating on first use) the snapshot database.
-    ///
     /// A browser with no usable IndexedDB fails here, and the caller carries on
     /// without a cache.
     pub async fn open() -> Result<Store, idb::Error> {
@@ -160,8 +150,6 @@ impl Store {
         Ok(())
     }
 
-    /// Load the cached files, or an empty vector when there are none.
-    ///
     /// Records that cannot be decoded are skipped: a cache that has drifted from
     /// the current schema should cost one upload, not a failed start.
     pub async fn load_files(&self) -> Result<Vec<JournalFile>, idb::Error> {
@@ -184,7 +172,6 @@ impl Store {
         Ok(files)
     }
 
-    /// Record which journal is being read.
     pub async fn save_session(&self, session: &Session) -> Result<(), idb::Error> {
         // The `meta` store's keyPath is `key`, so the record carries that
         // property; the rest is the serialised `Session`, which ignores the extra
@@ -208,7 +195,6 @@ impl Store {
         Ok(())
     }
 
-    /// Read the last session, or a default one.
     pub async fn load_session(&self) -> Result<Session, idb::Error> {
         let transaction = self
             .db
@@ -244,7 +230,6 @@ impl Store {
         Ok(())
     }
 
-    /// The directory handle saved by the last `open`, if any.
     pub async fn load_handle(&self) -> Result<Option<FileSystemDirectoryHandle>, idb::Error> {
         let transaction = self
             .db
@@ -270,12 +255,10 @@ fn to_json<T: Serialize>(value: &T) -> Result<String, idb::Error> {
     })
 }
 
-/// Parse a JSON string into the JS value IndexedDB stores.
 fn json_to_js(json: &str) -> Result<JsValue, idb::Error> {
     js_sys::JSON::parse(json).map_err(|error| idb::Error::UnexpectedJsType("a JSON string", error))
 }
 
-/// The `handles` store's one record: the store's key, and the handle beside it.
 fn handle_record(root: &FileSystemDirectoryHandle) -> js_sys::Object {
     let record = js_sys::Object::new();
     let _ = js_sys::Reflect::set(

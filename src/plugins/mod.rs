@@ -47,7 +47,6 @@ use crate::terminal;
 /// Where a plugin is filed in the help when it does not say.
 const DEFAULT_GROUP: &str = "Plugins";
 
-/// A colour theme a plugin offers.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct ThemeInfo {
     pub name: String,
@@ -84,7 +83,6 @@ pub struct PluginInfo {
     /// Commands worth trying, shown last, under Examples, as the app's own pages do.
     #[serde(default)]
     pub examples: Vec<(String, String)>,
-    /// Themes it contributes.
     #[serde(default)]
     pub themes: Vec<ThemeInfo>,
     /// The module that implements it, as the manifest named it.
@@ -95,7 +93,6 @@ pub struct PluginInfo {
     pub repository: String,
 }
 
-/// A heading on a plugin's help page, over rows of a form and what it does.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 pub struct HelpSection {
     pub title: String,
@@ -104,7 +101,6 @@ pub struct HelpSection {
 }
 
 impl PluginInfo {
-    /// The help section it belongs to.
     pub fn group_or_default(&self) -> &str {
         if self.group.trim().is_empty() {
             DEFAULT_GROUP
@@ -219,18 +215,15 @@ impl Registry {
         Ok(())
     }
 
-    /// The plugin that answers to `name`, if one does.
     pub fn find(&self, name: &str) -> Option<&PluginInfo> {
         self.plugins.iter().find(|plugin| plugin.name == name)
     }
 
-    /// The plugin that owns the first word of `line`, if one does.
     pub fn owner(&self, line: &str) -> Option<&PluginInfo> {
         let (head, _) = terminal::split_first_token(line);
         self.find(&head)
     }
 
-    /// Forget everything that came from a repository.
     pub fn remove_repository(&mut self, repository: &str) -> usize {
         let before = self.plugins.len();
         self.plugins.retain(|plugin| plugin.repository != repository);
@@ -238,7 +231,8 @@ impl Registry {
         before - self.plugins.len()
     }
 
-    /// The repositories that have plugins registered.
+    /// Only repositories that registered something; a theme-only repository is
+    /// not listed here.
     pub fn repositories(&self) -> Vec<&str> {
         let mut seen: Vec<&str> = Vec::new();
         for plugin in &self.plugins {
@@ -249,7 +243,6 @@ impl Registry {
         seen
     }
 
-    /// Each plugin as the listing shows it: name, summary, and where it came from.
     pub fn listing(&self) -> Vec<(&str, &str, &str)> {
         self.plugins
             .iter()

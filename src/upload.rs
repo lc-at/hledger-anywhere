@@ -26,8 +26,6 @@ pub const MAX_FILE_BYTES: f64 = 5.0 * 1024.0 * 1024.0;
 /// with a message instead of wedging the tab.
 pub const MAX_TOTAL_BYTES: f64 = 50.0 * 1024.0 * 1024.0;
 
-/// Why a file of this size cannot be mounted, if it cannot.
-///
 /// The File System Access walk and the picker share these rules, so a directory
 /// mounted either way obeys exactly the same limits.
 pub fn admit_size(size: f64) -> Option<String> {
@@ -43,7 +41,6 @@ pub fn admit_size(size: f64) -> Option<String> {
     None
 }
 
-/// Why the text of a file cannot be mounted, if it cannot.
 pub fn admit_text(contents: &Option<String>) -> Option<String> {
     match contents {
         None => Some("could not be read as text".to_string()),
@@ -62,7 +59,6 @@ const OFFSCREEN_INPUT_STYLE: &str =
 /// be found in devtools, and driven by tests.
 const UPLOAD_INPUT_ID: &str = "hledger-anywhere-upload-input";
 
-/// Which picker to open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// Individual files, all mounted at the root.
@@ -84,13 +80,9 @@ impl Mode {
 /// What went wrong, in terms the terminal can print.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickError {
-    /// The browser refused to open a picker.
     Unavailable(String),
-    /// The user dismissed the dialog.
     Cancelled,
-    /// Nothing usable was chosen.
     Empty,
-    /// Too much data to mount.
     TooLarge { bytes: u64 },
 }
 
@@ -111,7 +103,6 @@ impl PickError {
     }
 }
 
-/// Outcome of an upload, including what was skipped and why.
 #[derive(Debug, Default)]
 pub struct Picked {
     pub files: Vec<JournalFile>,
@@ -197,7 +188,6 @@ pub fn open_picker(mode: Mode) -> Result<PendingPick, PickError> {
 }
 
 impl PendingPick {
-    /// Wait for the user to finish with the dialog, then read the selection.
     pub async fn await_selection(self) -> Result<Picked, PickError> {
         let PendingPick {
             input,
@@ -254,22 +244,17 @@ fn picker_promise(input: &HtmlInputElement) -> Promise {
     })
 }
 
-/// Read files handed over by a drop, the same way the picker reads them.
-///
 /// Dropped files have no `webkitRelativePath`, a drop carries files, not a
 /// directory, so they land at the root exactly as `upload` puts them.
 pub async fn read_dropped(files: &[File]) -> Result<Picked, PickError> {
     read_files(files, Mode::Files).await
 }
 
-/// Read every chosen file into memory, skipping what cannot be mounted.
 async fn read_files(files: &[File], mode: Mode) -> Result<Picked, PickError> {
     let mut picked = Picked::default();
     let mut total = 0.0f64;
 
     for file in files {
-        // Files land under one directory, so their path is either the name or,
-        // for a directory pick, where they sat inside it.
         let path = match mode {
             Mode::Files => file.name(),
             Mode::Directory => relative_path(file),
@@ -329,11 +314,9 @@ async fn read_files(files: &[File], mode: Mode) -> Result<Picked, PickError> {
     Ok(picked)
 }
 
-/// Where a file sat inside the picked directory.
-///
-/// `webkitRelativePath` is the only thing that carries this, the `File` API has
-/// no directory walk, and it includes the directory the user chose, so a pick of
-/// `~/books` yields `books/hledger.journal`.
+/// `webkitRelativePath` is the only thing that carries the path inside the
+/// picked directory: the `File` API has no directory walk, and it includes the
+/// directory the user chose, so a pick of `~/books` yields `books/hledger.journal`.
 fn relative_path(file: &File) -> String {
     let raw = js_sys::Reflect::get(file.as_ref(), &JsValue::from_str("webkitRelativePath"))
         .ok()

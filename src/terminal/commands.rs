@@ -5,14 +5,11 @@
 
 use super::{FLAGS, FUZZY_MINIMUM, HLEDGER_COMMANDS};
 
-/// What a typed line means.
-///
 /// A few words are the app's own: loading files, the terminal itself, and the account
 /// it can read. Everything else is hledger's, verbatim, which is the point of putting a
 /// real CLI in a browser.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command<'a> {
-    /// Open the file picker and mount the files chosen.
     Upload,
     /// Open a directory on disk through the File System Access API, keeping the
     /// paths and the handles so its files can be edited.
@@ -20,43 +17,28 @@ pub enum Command<'a> {
     /// Take back the folder an earlier `open` was granted, re-granting write
     /// access after a reload dropped it.
     Reopen,
-    /// Show or change which uploaded file is the journal.
     Journal(Option<&'a str>),
-    /// Wipe the screen.
     Clear,
     /// The app's own help: everything for no argument, one command's page for a word.
     Help(Option<&'a str>),
-    /// Load a small built-in journal, so the app can be tried without one.
     Demo,
     /// `/term`, find `term` in the scrollback, or the last term when blank.
     Search(Option<&'a str>),
     /// `n` / `N`, repeat the last search, forwards / backwards.
     SearchAgain(bool),
-    /// `download <path>`, save a file hledger wrote in the last run.
     Download(Option<&'a str>),
-    /// `alias` lists them; `alias name=expansion` sets one.
     Alias(Option<&'a str>),
-    /// `unalias name` removes one.
     Unalias(Option<&'a str>),
-    /// `font [size]` shows or sets the terminal font size.
     Font(Option<&'a str>),
-    /// `screenreader [on|off]` shows or sets the accessibility tree.
     ScreenReader(Option<&'a str>),
-    /// `plugins` lists the installed plugins; `add`, `remove` and `reload` change them.
     Plugins(Option<&'a str>),
-    /// `settings` shows what is remembered; `export` and `import` move it between visits.
     Settings(Option<&'a str>),
-    /// `theme [name]` lists the themes on offer, or selects one.
     Theme(Option<&'a str>),
-    /// `history` lists the commands run, `history <words>` those containing them, and
-    /// `history clear` forgets them.
     History(Option<&'a str>),
     /// Everything else is hledger's, verbatim.
     Hledger(&'a str),
 }
 
-/// Classify a line.
-///
 /// Only four words are the app's; the rest belong to hledger, which is why the
 /// fallback case is the interesting one. `journal` collides with hledger's own
 /// `journal` command, and the app's reading wins: with no journal configured, the
@@ -108,8 +90,6 @@ pub fn classify(line: &str) -> Command<'_> {
     }
 }
 
-/// Lay candidates out in columns, the way a shell lists them.
-///
 /// Column-major, like `ls`: each column is a run down the list, so reading down and
 /// then across finds things in alphabetical order. The widest item decides how many
 /// columns fit, and when only one does, one per line, so nothing is ever cut.
@@ -143,8 +123,6 @@ pub fn format_columns(items: &[String], width: usize) -> Vec<String> {
     lines
 }
 
-/// Every word completion can offer: the app's commands, hledger's, the common
-/// flags, and the uploaded file paths.
 /// The commands the app answers to itself. Everything else is hledger's.
 ///
 /// One list, because three things have to agree about it: completion offers these
@@ -170,8 +148,6 @@ pub const COMMANDS: &[&str] = &[
     "history",
 ];
 
-/// The words a line can start with: the app's own commands, then hledger's reports.
-///
 /// In that order rather than alphabetically, because this is also the list Tab shows on
 /// an empty line, and the app's own commands are the ones worth learning first.
 pub fn starting_words() -> Vec<String> {
@@ -188,14 +164,11 @@ pub struct Sources {
     pub plugins: Vec<String>,
     /// The plugin that owns this line, if one does, and the words it said it takes.
     pub owner: Option<(String, Vec<String>)>,
-    /// The loaded file paths.
     pub paths: Vec<String>,
     pub accounts: Vec<String>,
     pub aliases: Vec<String>,
 }
 
-/// What Tab can offer at the cursor, and the heading for the list it shows.
-///
 /// The start of a line takes a command: the app's, hledger's, or a plugin's. After a plugin's
 /// word, the words that plugin takes come first, and right after the word they are all that is
 /// offered: `chart <Tab>` lists the questions chart answers, not three hundred flags and
@@ -224,8 +197,6 @@ pub fn completion(before: &[String], token: &str, sources: &Sources) -> (Vec<Str
     (words, heading)
 }
 
-/// The words that can follow: report and query flags, then the loaded file paths.
-///
 /// Accounts, aliases and plugin words are added by the caller, which is the only side
 /// that knows whether they have arrived yet.
 pub fn argument_words(paths: &[String]) -> Vec<String> {
@@ -234,7 +205,6 @@ pub fn argument_words(paths: &[String]) -> Vec<String> {
     all
 }
 
-/// Whether two characters are the same letter, whatever their case.
 fn same_ignoring_case(left: char, right: char) -> bool {
     left == right || left.to_lowercase().eq(right.to_lowercase())
 }
@@ -271,13 +241,6 @@ pub fn common_prefix_ignoring_case(values: &[&String]) -> String {
     first.chars().take(shared).collect()
 }
 
-/// The names that come closest to `token` without starting with it.
-///
-/// "Closest" is a subsequence match, scored so that the useful ones come first: a
-/// name that contains the token as a run beats one with the letters scattered, a
-/// letter that starts a word (`:` in an account path, say) is worth more than one in
-/// the middle, and between equals the shorter name wins. Sorted best first, and
-/// capped, because a list nobody reads is not help.
 /// Whether every letter of `wanted` appears in `name`, in order, so `name` contains it.
 fn contains_in_order(wanted: &[char], name: &[char]) -> bool {
     let mut at = 0;
@@ -324,6 +287,13 @@ pub fn unrecognized(stderr: &str) -> Option<String> {
     Some(word.to_string())
 }
 
+/// The names that come closest to `token` without starting with it.
+///
+/// "Closest" is a subsequence match, scored so that the useful ones come first: a
+/// name that contains the token as a run beats one with the letters scattered, a
+/// letter that starts a word (`:` in an account path, say) is worth more than one in
+/// the middle, and between equals the shorter name wins. Sorted best first, and
+/// capped, because a list nobody reads is not help.
 pub fn fuzzy_matches(token: &str, candidates: &[String], limit: usize) -> Vec<String> {
     let needle: Vec<char> = token.chars().collect();
     if needle.len() < FUZZY_MINIMUM {
@@ -347,7 +317,6 @@ pub fn fuzzy_matches(token: &str, candidates: &[String], limit: usize) -> Vec<St
     best
 }
 
-/// How well `token` matches `candidate` as a subsequence, or `None` if it does not.
 fn fuzzy_score(needle: &[char], candidate: &str) -> Option<i32> {
     let letters: Vec<char> = candidate.to_lowercase().chars().collect();
     let wanted: Vec<char> = needle.iter().flat_map(|c| c.to_lowercase()).collect();

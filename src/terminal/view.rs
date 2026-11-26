@@ -62,7 +62,6 @@ extern "C" {
     fn rows(this: &Xterm) -> u32;
 }
 
-/// The terminal on screen.
 pub struct Screen {
     terminal: Xterm,
     /// The fit addon, if it loaded. Without it the terminal still works; it just
@@ -76,7 +75,6 @@ pub struct Screen {
 }
 
 impl Screen {
-    /// Create a terminal inside `element`, at `font` pixels.
     pub fn mount(
         element: &HtmlElement,
         font: u32,
@@ -112,15 +110,10 @@ impl Screen {
         self.terminal.write(text);
     }
 
-    /// Everything written since the mount or the last `clear`, in order.
     pub fn captured(&self) -> String {
         self.capture.borrow().as_text()
     }
 
-    /// Clear the screen, and the capture with it.
-    ///
-    /// `clear` means the scrollback is gone, so the stored copy goes too: the
-    /// next save stores only what was written after this.
     pub fn clear(&self) {
         self.capture.borrow_mut().clear();
         self.terminal.clear();
@@ -130,8 +123,6 @@ impl Screen {
         self.terminal.focus();
     }
 
-    /// The terminal's size in character cells.
-    ///
     /// hledger formats its reports to the width of the terminal it is running in,
     /// and the only way to tell it is through the environment, see
     /// [`Screen::size`]'s callers and `hledger-wasm/terminal-size-stub`.
@@ -154,8 +145,6 @@ impl Screen {
         self.fit();
     }
 
-    /// Turn xterm's accessibility tree on or off.
-    ///
     /// Without it the terminal is a canvas of rows and a screen reader can say
     /// nothing useful about it. xterm watches this option specifically, so it can
     /// be changed at runtime, `cols` and `rows` are the only options that cannot.
@@ -169,7 +158,6 @@ impl Screen {
         }
     }
 
-    /// Resize the terminal to its element.
     /// Repaint the terminal in a theme.
     ///
     /// xterm takes its colours as options and applies them live, so a theme change is a
@@ -192,8 +180,6 @@ impl Screen {
         }
     }
 
-    /// The whole scrollback, oldest first, as plain text.
-    ///
     /// This is what the search reads, including the lines that have scrolled off
     /// screen, which is the whole reason to search a terminal. The app keeps its
     /// own words apart from this so search can skip them; see `App::chatter`.
@@ -273,14 +259,12 @@ impl Screen {
     }
 }
 
-/// A method on a JS object, ready to call.
 fn method(target: &JsValue, name: &str) -> Option<Function> {
     Reflect::get(target, &JsValue::from_str(name))
         .ok()
         .and_then(|value| value.dyn_into::<Function>().ok())
 }
 
-/// A numeric property of a JS object.
 fn property(target: &JsValue, name: &str) -> Option<f64> {
     Reflect::get(target, &JsValue::from_str(name)).ok()?.as_f64()
 }
@@ -322,8 +306,6 @@ fn options(font: u32, screen_reader: bool) -> JsValue {
     options.into()
 }
 
-/// A theme as xterm wants it.
-///
 /// One place maps the app's roles onto xterm's option names, so the colour the terminal
 /// starts in and the colour a `theme` command paints are never two different palettes.
 /// `cursorAccent` is the text under the block cursor: taking the background there keeps

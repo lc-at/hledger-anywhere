@@ -25,8 +25,6 @@ pub struct Rgb {
 }
 
 impl Rgb {
-    /// Read `#rgb` or `#rrggbb`.
-    ///
     /// Only hex, because that is what a manifest is written in and what the browser and
     /// the terminal can both take without a colour parser between them.
     pub fn from_css(text: &str) -> Result<Rgb, String> {
@@ -57,12 +55,10 @@ impl Rgb {
         }
     }
 
-    /// The colour as CSS, and as xterm.js wants it.
     pub fn css(&self) -> String {
         format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
     }
 
-    /// The escape that sets this as the foreground colour.
     pub fn ansi(&self) -> String {
         format!("\u{1b}[38;2;{};{};{}m", self.r, self.g, self.b)
     }
@@ -77,7 +73,6 @@ impl Rgb {
         (299 * self.r as u32 + 587 * self.g as u32 + 114 * self.b as u32) / 1000 >= 128
     }
 
-    /// This colour with `other` mixed in, `percent` of the way.
     pub fn mix(&self, other: Rgb, percent: u32) -> Rgb {
         let percent = percent.min(100);
         let blend = |mine: u8, theirs: u8| -> u8 {
@@ -166,8 +161,6 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// The colour a selection is drawn in.
-    ///
     /// The foreground mixed into the background, so it is visible whichever way round the
     /// theme is, rather than the dark amber that only worked on black.
     pub fn selection(&self) -> String {
@@ -186,7 +179,6 @@ impl Theme {
         }
     }
 
-    /// The brighter of the two reds.
     pub fn red_bright(&self) -> &'static str {
         if self.background.is_light() {
             "#cc241d"
@@ -208,13 +200,10 @@ impl Theme {
         }
     }
 
-    /// The theme the app ships with, by name.
     pub fn built_in() -> Theme {
         Theme::default()
     }
 
-    /// A theme from a plugin, over the built-in colours.
-    ///
     /// Roles the app does not know are ignored, and every role that is set has to be a
     /// colour: the first one that is not is reported, with the role's name, because that
     /// is the only way the author finds out which line to fix.
