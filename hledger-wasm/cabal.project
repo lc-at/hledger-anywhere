@@ -1,17 +1,13 @@
--- Cabal project for building the real hledger CLI for wasm32-wasi.
---
--- Used by scripts/build-hledger-wasm.sh:
+-- Cabal project for building the real hledger CLI for wasm32-wasi, used by
+-- scripts/build-hledger-wasm.sh:
 --   wasm32-wasi-cabal build hledger --project-dir hledger-wasm
 --
--- NOTE: cabal.project comments are `--`, NOT `#`. A `#` here is a hard parse
--- error, which is easy to hit given every other config format in this repo uses
--- `#`.
+-- NOTE: cabal.project comments are `--`, NOT `#`: a `#` here is a hard parse
+-- error, easy to hit since every other config format in this repo uses `#`.
 --
--- Why this file exists at all
--- ---------------------------
--- hledger's dependency tree assumes a POSIX host. Almost all of it cross-compiles
--- to wasm32-wasi unchanged. Two parts do not, and both are replaced by local
--- stub packages:
+-- Why this file exists: hledger's dependency tree assumes a POSIX host. Almost
+-- all of it cross-compiles to wasm32-wasi unchanged; two parts do not, and both
+-- are replaced by local stub packages:
 --
 --   terminal-size  queries the terminal window size via ioctl, which does not
 --                  exist under WASI. The stub reports "no terminal", which is
@@ -35,8 +31,8 @@
 -- The `allow-newer`/`constraints` block below pins GHC's own boot libraries to
 -- the copies that ship inside the wasm bindist. Without it, cabal tries to
 -- rebuild (or refuses to accept) base/text/bytestring/etc. from Hackage because
--- the cross-compiler reports unusual versions for them. This mirrors the working
--- configuration used by the upstream hledger-wasm project.
+-- the cross-compiler reports unusual versions for them. This mirrors the
+-- upstream hledger-wasm configuration.
 
 packages:
     ../vendor/hledger/hledger

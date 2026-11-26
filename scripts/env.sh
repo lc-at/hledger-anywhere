@@ -1,20 +1,18 @@
 #!/bin/sh
-# Central environment for building hledger-anywhere.
+# Central environment for building hledger-anywhere:
 #
 #   . scripts/env.sh && trunk serve
 #
-# Two things are redirected into the workspace on purpose:
+# Two cache locations are redirected into the workspace on purpose:
 #
-#   CARGO_HOME  Cargo writes its registry and crate caches under CARGO_HOME.
-#               Pointing it inside the project keeps builds self-contained and
-#               working under a restricted (workspace-write) file sandbox, where
-#               ~/.cargo is read-only.
-#   npm_config_cache
-#               The ghc-wasm-meta bootstrap installs a Node runtime internally
-#               and npm otherwise fails with EROFS writing to ~/.npm/_cacache.
+#   CARGO_HOME        Cargo writes its registry and crate caches under
+#                     CARGO_HOME; inside the project builds stay
+#                     self-contained and work where ~/.cargo is read-only.
+#   npm_config_cache  ghc-wasm-meta's bootstrap installs a Node runtime, and
+#                     npm otherwise fails with EROFS writing to
+#                     ~/.npm/_cacache.
 #
-# Both are overridable, so a normal developer machine can just use its defaults
-# by exporting CARGO_HOME/npm_config_cache beforehand.
+# Both are overridable: export them beforehand to keep your own caches.
 #
 # NOTE: this file is POSIX sh and is *sourced*, so it must not `exit`, and it
 # must be sourced from the repository root or referenced by absolute path.
@@ -31,26 +29,24 @@ fi
 if [ -n "$_env_dir" ] && [ -f "$_env_dir/../Cargo.toml" ]; then
     _env_root=$(CDPATH= cd -- "$_env_dir/.." && pwd)
 else
-    # Walk up from the current directory looking for the crate root.
     _env_root=$PWD
     while [ "$_env_root" != "/" ] && [ ! -f "$_env_root/Cargo.toml" ]; do
         _env_root=$(dirname -- "$_env_root")
     done
 fi
 
-# Workspace-local tooling: trunk. The ghc-wasm toolchain is deliberately not put
-# on PATH here; see its `env` note at the bottom.
+# Workspace-local trunk on PATH. The ghc-wasm toolchain is deliberately not
+# put on PATH here; see its `env` note at the bottom.
 PATH="$_env_root/.tools/bin:$PATH"
 export PATH
 
 # Redirect a cache location into the workspace unless the one already in effect
 # is genuinely usable.
 #
-# Testing "is the variable set?" is not enough here. The environment this runs in
-# exports npm_config_cache=/home/<user>/.npm (inherited from the npm/npx process
-# that launched the agent), and a value can be set yet point at a read-only
-# location. A real write probe is the only reliable test, and it also means a
-# normal developer machine keeps its existing caches instead of re-downloading.
+# Testing "is the variable set?" is not enough: npm_config_cache can be
+# inherited from an npm/npx parent and still point at a read-only location, so
+# _use_dir writes a probe file instead. A machine whose cache is writable keeps
+# its own instead of re-downloading.
 #
 #   _use_dir <VARIABLE_NAME> <workspace fallback>
 _use_dir() {
@@ -72,22 +68,21 @@ _use_dir() {
 _use_dir CARGO_HOME "$_env_root/.tools/cargo"
 _use_dir npm_config_cache "$_env_root/.tools/npm-cache"
 
-# Trunk keeps downloaded tools (the wasm-bindgen CLI matching our crate version,
-# and binaryen for wasm-opt) plus its build cache under the XDG cache home, so
-# that has to be writable too.
+# Trunk keeps downloaded tools (the wasm-bindgen CLI matching our crate
+# version, and binaryen for wasm-opt) plus its build cache under the XDG cache
+# home, so that has to be writable too.
 _use_dir XDG_CACHE_HOME "$_env_root/.tools/cache"
 
 unset _current _probe _var _fallback
 
-# Quiet, non-interactive npm for the toolchain bootstrap.
 npm_config_update_notifier=false
 npm_config_fund=false
 npm_config_audit=false
 export npm_config_update_notifier npm_config_fund npm_config_audit
 
-# Trunk parses NO_COLOR as a *boolean* flag value (clap's `env` support), so the
-# conventional NO_COLOR=1 aborts every trunk command with
-# "invalid value '1' for '--no-color'". Normalise it to the form clap accepts,
+# Trunk parses NO_COLOR as a *boolean* flag value (clap's `env` support), so
+# the conventional NO_COLOR=1 aborts every trunk command with
+# "invalid value '1' for '--no-color'". Normalise it to what clap accepts,
 # which still means "do not colourise".
 if [ "${NO_COLOR:-}" = "1" ]; then
     NO_COLOR=true
@@ -97,11 +92,11 @@ fi
 # The Haskell WASM toolchain installed by scripts/build-hledger-wasm.sh.
 #
 # Only the prefix is exported. Its `env` is deliberately NOT sourced here: it
-# prepends the wasi-sdk to PATH and exports CC/CXX/LD/AR pointing at wasm32-wasi
-# tools, which are cross-compilation settings. Sourcing it into an ordinary
+# prepends the wasi-sdk to PATH and exports CC/CXX/LD/AR pointing at
+# wasm32-wasi tools — cross-compilation settings. Sourcing it into an ordinary
 # `cargo`/`trunk` build hands rustc's linker a wasm sysroot and the build fails
 # with a linker error instead of compiling the host build script. The build
-# script sources it itself when it actually needs the cross toolchain.
+# script sources it itself when it needs the cross toolchain.
 GHC_WASM_PREFIX="${GHC_WASM_PREFIX:-$_env_root/.tools/ghc-wasm}"
 export GHC_WASM_PREFIX
 

@@ -1,8 +1,8 @@
 [build]
 target = "index.html"
 dist = "dist"
-# The hledger WASM module is large; keep asset fingerprinting off so the bridge
-# can reference stable paths like /wasm/hledger.wasm.
+# No fingerprinting: the hledger WASM module is large and the bridge needs
+# stable paths like /wasm/hledger.wasm.
 filehash = false
 
 [serve]
@@ -11,11 +11,10 @@ port = 8080
 open = false
 
 [watch]
-# assets/wasm is watched so that installing a new engine, which
-# scripts/fetch-hledger-wasm.sh does, is copied into dist without having to
-# notice that the file that changed is the one nothing else watches.
-# assets/plugins and assets/icons are watched for the same reason: without them an
-# edit to a plugin was never copied, and the served app kept running the old one.
+# assets/wasm is watched so that installing a new engine
+# (scripts/fetch-hledger-wasm.sh) is copied into dist; assets/plugins and
+# assets/icons for the same reason — without them an edit was never copied and
+# the served app kept running the old file.
 watch = [
     "src",
     "assets/css",
@@ -26,9 +25,9 @@ watch = [
     "index.html",
 ]
 
-# Resolve assets/wasm/hledger.wasm before every build/serve. The script is
-# intentionally non-fatal: without the artifact the app still builds and runs, and
-# says the engine is missing instead of failing to start.
+# Resolve assets/wasm/hledger.wasm before every build/serve; intentionally
+# non-fatal — without the artifact the app still builds, runs, and reports the
+# engine missing instead of failing to start.
 [[hooks]]
 stage = "pre_build"
 command = "sh"

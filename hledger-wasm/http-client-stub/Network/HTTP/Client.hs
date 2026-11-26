@@ -1,9 +1,7 @@
--- | WASI/browser stub for "Network.HTTP.Client".
---
--- Only the exception constructors hledger's @setup@ command pattern-matches on,
--- and the two accessors it would apply to a response. None of it can run: the
--- stub 'Network.HTTP.Req.req' throws before a request is ever attempted.
---
+-- | WASI/browser stub for "Network.HTTP.Client": only the exception
+-- constructors hledger's @setup@ command pattern-matches on, and the two
+-- accessors it would apply to a response. None of it can run — the stub
+-- 'Network.HTTP.Req.req' throws before a request is ever attempted.
 -- See http-client.cabal for why this package exists.
 module Network.HTTP.Client
     ( HttpException (..)
@@ -24,7 +22,6 @@ data Request = Request deriving (Show)
 -- | A response. Carries nothing, for the same reason.
 data Response body = Response deriving (Show)
 
--- | The exception type of the real @http-client@.
 data HttpException
     = HttpExceptionRequest Request HttpExceptionContent
     | InvalidUrlException String String
@@ -42,9 +39,9 @@ data HttpExceptionContent
 --
 -- 'Network.HTTP.Req.req' throws 'Network.HTTP.Req.JsonHttpException', so the
 -- 'StatusCodeException' branch hledger matches is never entered and no
--- @Response@ value is ever built. Defined as an error rather than given a fake
--- value so that, if that ever stops being true, it fails loudly instead of
--- reporting a nonsense status.
+-- @Response@ value is ever built. An @error@ rather than a fake value so that,
+-- if that ever stops being true, it fails loudly instead of reporting a
+-- nonsense status.
 responseStatus :: Response body -> Status
 responseStatus _ = error "http-client wasm stub: responseStatus is unavailable"
 

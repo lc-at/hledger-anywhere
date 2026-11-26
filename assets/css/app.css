@@ -1,14 +1,10 @@
-/* hledger-anywhere, the whole stylesheet.
- *
- * There is one thing on screen, so there is almost nothing to style: xterm.js
- * draws the terminal, and this file only makes sure it has the window to itself
- * and that the page itself never scrolls.
- */
+/* One thing on screen: xterm draws the terminal, this file only gives it the
+ * window to itself and stops the page scrolling. */
 
 :root {
-  /* These are the built-in theme, and only the first paint: `apply_theme` rewrites
-   * all of them on the document element whenever the theme changes, and sets
-   * `color-scheme` with them, so native scrollbars and form controls follow too. */
+  /* Built-in theme, and only the first paint: `apply_theme` rewrites all of
+   * them on the document element (and `color-scheme`, so native scrollbars and
+   * form controls follow) whenever the theme changes. */
   color-scheme: dark;
   --term-bg: #000000;
   --term-fg: #d8d8d8;
@@ -35,11 +31,11 @@ body.drop-target #terminal {
   outline-offset: -2px;
 }
 
-/* A little air between the text and the window edge; without it the first column
- * of text sits against the glass. The space is an inset on this element rather than
- * padding inside it: the fit addon measures this box to work out how many columns
- * fit, so padding would be handed back as columns and the terminal would overflow.
- * The body behind it is already the terminal's background, so the air is invisible. */
+/* A little air between the text and the window edge. It is an inset on this
+ * element rather than padding inside it: the fit addon measures this box to work
+ * out how many columns fit, so padding would be handed back as columns and the
+ * terminal would overflow. The body behind it is already the terminal's
+ * background, so the air is invisible. */
 #terminal {
   position: fixed;
   inset: 10px 12px;
@@ -65,8 +61,8 @@ body.drop-target #terminal {
 }
 
 /* Selection and cursor come from the terminal's own theme (see
- * src/terminal/view.rs); this is only the focus outline, which xterm draws on
- * the helper textarea and which should not be visible. */
+ * src/terminal/view.rs); this only hides the focus outline xterm draws on the
+ * helper textarea. */
 .xterm .xterm-helper-textarea {
   outline: none;
 }

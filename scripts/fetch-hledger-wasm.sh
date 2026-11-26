@@ -1,13 +1,12 @@
 #!/bin/sh
-# Resolve assets/wasm/hledger.wasm from wasm.lock.
+# Resolve assets/wasm/hledger.wasm from wasm.lock. Run automatically as a
+# Trunk `pre_build` hook, and safe to run by hand.
 #
-# Run automatically as a Trunk `pre_build` hook, and safe to run by hand.
-#
-# This script ALWAYS exits 0. That is deliberate: a missing hledger.wasm must
-# not stop the project from building or from starting `trunk serve`. Without the
+# This script ALWAYS exits 0, deliberately: a missing hledger.wasm must not
+# stop the project from building or from starting `trunk serve`. Without the
 # artifact the app still compiles and renders, and shows an explicit
-# "hledger.wasm is missing" state with the instructions below, rather than
-# failing the build or showing blank panels.
+# "hledger.wasm is missing" state rather than failing the build or showing
+# blank panels.
 #
 # Resolution order:
 #   1. $HLEDGER_WASM_PATH          explicit override, for experimenting
@@ -15,9 +14,9 @@
 #   3. wasm.lock `url`             the published asset, checksummed
 #   4. nothing available           print instructions, exit 0
 #
-# Whenever a checksum is recorded in wasm.lock it is enforced, including on
-# files that are already in place, so a stale or corrupted binary is replaced
-# rather than silently used.
+# Whenever a checksum is recorded in wasm.lock it is enforced, including on a
+# file already in place, so a stale or corrupted binary is replaced rather than
+# silently used.
 
 set -u
 
@@ -65,7 +64,6 @@ want_sha=$(lock_get sha256)
 flavor=$(lock_get flavor)
 version=$(lock_get hledger_version)
 
-# Is the file already in place and does it match the recorded checksum?
 already_ok() {
     [ -f "$dest" ] || return 1
     if [ -z "$want_sha" ]; then

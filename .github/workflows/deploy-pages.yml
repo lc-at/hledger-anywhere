@@ -2,16 +2,14 @@ name: Deploy to GitHub Pages
 
 # Builds the client-side app and publishes `dist/` to GitHub Pages.
 #
-# The hledger WASM module is NOT in the repository: it is a ~17 MB binary pinned
-# by URL and SHA-256 in `wasm.lock`, fetched at build time by
-# `scripts/fetch-hledger-wasm.sh`. That keeps the repository small and keeps the
-# artifact reproducible from its checksum, which matters because hledger is
-# GPL-3.0-or-later and its corresponding source has to stay identifiable.
+# The hledger WASM module is NOT in the repository: a ~17 MB binary pinned by
+# URL and SHA-256 in `wasm.lock`, fetched at build time. That keeps the
+# repository small and the artifact reproducible from its checksum, which
+# matters because hledger is GPL-3.0-or-later and its corresponding source has
+# to stay identifiable.
 #
-# Requires, once, in the repository settings:
-#   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
-#   Settings -> Pages -> Custom domain: hledger.gru.fi
-# and a DNS CNAME record `hledger` -> `<owner>.github.io`.
+# Once, in the repository settings: Pages -> Source: GitHub Actions, custom
+# domain hledger.gru.fi; DNS CNAME `hledger` -> `<owner>.github.io`.
 
 on:
   push:
@@ -29,9 +27,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Pinned to match Trunk.toml and the toolchain the project is tested with.
-  # Trunk 0.22 requires rustc 1.96.1, which is newer than the MSRV this project
-  # targets, so the version is deliberate rather than "latest".
+  # Pinned, not "latest": Trunk 0.22 requires rustc 1.96.1, newer than the MSRV
+  # this project targets. 0.21.14 matches Trunk.toml and the tested toolchain.
   TRUNK_VERSION: "0.21.14"
   TRUNK_TARGET: x86_64-unknown-linux-gnu
 
@@ -70,8 +67,8 @@ jobs:
           .tools/bin/trunk --version
 
       - name: Fetch the pinned hledger WASM artifact
-        # Run explicitly rather than relying on Trunk's pre-build hook, so a
-        # missing or mismatched artifact fails as its own clearly-labelled step.
+        # Explicit rather than Trunk's pre-build hook, so a missing or
+        # mismatched artifact fails as its own clearly-labelled step.
         run: sh scripts/fetch-hledger-wasm.sh
 
       - name: Test
@@ -84,46 +81,47 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo clippy --target wasm32-unknown-unknown --all-targets -- -D warnings
 
-      # The browser check needs Node's built-in WebSocket, which is Node 22 and later.
+      # The browser check needs Node's built-in WebSocket: Node 22 or later.
       - name: Install Node
         uses: actions/setup-node@v7
         with:
           node-version: 22
 
-      # The plugin host is written down three times: `App::host` in Rust, the table in
-      # docs/plugins.md, and the adapter every check builds a host from. This reads all
-      # three and fails if they name different methods, take different arguments, or
-      # answer differently than the table says.
+      # The plugin host is written down three times — `App::host` in Rust, the
+      # table in docs/plugins.md, the adapter every check builds a host from —
+      # and this fails if the three disagree.
       - name: Check the host contract
         run: node scripts/check-host-contract.mjs
 
-      # The bundled plugins are the worked example in docs/plugins.md, and nothing in the
-      # Rust tests can reach them.
+      # The bundled plugins are the worked example in docs/plugins.md, which
+      # nothing in the Rust tests can reach.
       - name: Check the example plugin
         run: node scripts/check-example-plugin.mjs
 
-      # Their windows, drawn and used in headless Chrome, which the runner image ships. This
-      # also measures how much of the plugins' code the two checks execute, and fails below 90%.
+      # Their windows in headless Chrome, which the runner image ships; also
+      # measures how much of the plugins' code the two checks execute and fails
+      # below 90%.
       - name: Check the plugin windows in a browser
         run: node scripts/check-plugin-windows.mjs
 
-      # The reconcile write path: every change the window makes, written to a real journal
-      # and read back, with the refusals and the rollback beside them. No browser — the
-      # engine and the file do the talking, and a write that leaves the journal wrong fails
-      # here before the build ships it.
+      # The reconcile write path: every change the window makes, written to a
+      # real journal and read back, refusals and rollback beside them. No
+      # browser — a write that leaves the journal wrong fails here before the
+      # build ships it.
       - name: Check the reconcile write path
         run: node scripts/check-reconcile-write.mjs
 
-      # A returning visitor must get the changed plugin file, not the one in their cache:
-      # the service worker's network-first promise, served with the ten-minute cache
-      # headers GitHub Pages sends, with the file changed underneath it.
+      # A returning visitor must get the changed plugin file, not the cached
+      # one: the service worker's network-first promise, served with the
+      # ten-minute cache headers GitHub Pages sends, with the file changed
+      # underneath it.
       - name: Check the service worker's freshness
         run: node scripts/check-plugin-freshness.mjs
 
       - name: Engine smoke test
         # The shipped engine, driven the way the app drives it: no -f, with the
-        # journal exported as $LEDGER_FILE. Nothing here needs a browser, so a
-        # broken engine or a broken bare-command path fails before the build.
+        # journal exported as $LEDGER_FILE. No browser here, so a broken engine
+        # or bare-command path fails before the build.
         run: |
           set -eu
           journal="$RUNNER_TEMP/journal"
@@ -135,19 +133,19 @@ jobs:
       - name: Build
         run: trunk build --release
 
-      # The app itself, in a browser, against the build that was just made: the wasm
-      # booting to its banner, a command typed at the terminal and answered by the
-      # engine, and the scrollback coming back after a reload — and `clear` taking it
-      # away for good. Nothing else reaches that chain, so a broken boot or a lost
+      # The app itself, in a browser, against the build that was just made: the
+      # wasm booting to its banner, a command answered by the engine, the
+      # scrollback coming back after a reload and `clear` taking it away for
+      # good. Nothing else reaches that chain, so a broken boot or a lost
       # scrollback would otherwise ship unnoticed.
       - name: Check the app in a browser
         run: node scripts/check-app.mjs
 
       - name: Add Pages metadata
-        # Written here rather than committed, so the domain has one home and the
-        # dotfile cannot be lost to a copy rule that skips hidden files.
-        # `.nojekyll` matters: without it Pages runs the output through Jekyll,
-        # which drops files it considers special.
+        # Written here rather than committed: CNAME has one home, and a dotfile
+        # is easy to lose to a copy rule that skips hidden files. `.nojekyll`
+        # matters because without it Pages runs the output through Jekyll, which
+        # drops files it considers special.
         run: |
           set -eu
           test -f dist/wasm/hledger.wasm || { echo "::error::hledger.wasm missing from dist"; exit 1; }

@@ -9,7 +9,7 @@
     <link data-trunk rel="copy-dir" href="assets/js" />
     <link data-trunk rel="copy-dir" href="assets/wasm" />
     <link data-trunk rel="copy-dir" href="assets/icons" />
-    <!-- The bundled plugin repository: installed at every start, at /plugins/. -->
+    <!-- Installed at every start, at /plugins/. -->
     <link data-trunk rel="copy-dir" href="assets/plugins" />
 
     <!--
@@ -21,7 +21,7 @@
 
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#000000" />
-    <!-- The vector mark where it is understood, raster copies for everything else. -->
+    <!-- The vector mark where understood, raster copies for everything else. -->
     <link rel="icon" href="/icons/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png" />
     <link rel="icon" href="/icons/favicon-16.png" sizes="16x16" type="image/png" />
@@ -49,7 +49,6 @@
       is deferred automatically and cannot race the terminal's first command.
     -->
     <script type="module" src="/js/hledger-wasi.js"></script>
-    <!-- The plugin loader: repositories of plugins, and the API they are given. -->
     <script type="module" src="/js/plugins.js"></script>
   </body>
 </html>

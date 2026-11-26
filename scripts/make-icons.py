@@ -53,7 +53,6 @@ def draw(size: int) -> Image.Image:
     for row in ROWS:
         bar(0.0, 0.52, row)
         bar(AMOUNT_LEFT, 1.0, row)
-    # The rule, thinner than a bar, and the total sitting under it.
     rule = max(1, round(thick * 0.5))
     y = left + box * RULE_TOP
     pen.rectangle([(left, y), (left + box - 1, y + rule - 1)], fill=INK)

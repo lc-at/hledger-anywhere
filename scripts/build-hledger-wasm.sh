@@ -1,21 +1,19 @@
 #!/bin/sh
-# Build the real hledger CLI for WebAssembly (wasm32-wasi).
-#
+# Build the real hledger CLI for WebAssembly (wasm32-wasi):
 #   sh scripts/build-hledger-wasm.sh
+# Output: artifacts/hledger.wasm (size and SHA-256 printed at the end).
 #
-# Output: artifacts/hledger.wasm  (plus its size and SHA-256 printed at the end)
+# A LONG build: the ghc-wasm-meta toolchain is a 1-2 GB download and hledger's
+# dependency tree is compiled twice (native for Template Haskell splices, then
+# for wasm). Budget an hour or more.
 #
-# This is a LONG build. The ghc-wasm-meta toolchain is a 1-2 GB download, and
-# hledger pulls in a large dependency tree that is compiled twice (native for
-# Template Haskell splices, then for wasm). Budget an hour or more.
+# A separate step from `trunk build` on purpose: trunk runs
+# fetch-hledger-wasm.sh, which treats a missing artifact as non-fatal, so the
+# app stays buildable and runnable while this runs in the background.
 #
-# It is a separate step from `trunk build` on purpose: `trunk build` runs
-# fetch-hledger-wasm.sh, which treats a missing artifact as non-fatal so the app
-# stays buildable and runnable while this runs in the background.
-#
-# After a successful build, update wasm.lock: set flavor = "hledger-cli",
-# hledger_version, ghc_version, size and sha256 to the printed values. The fetch
-# script then prefers artifacts/hledger.wasm and verifies it.
+# After a successful build, record the printed flavor, versions, size and
+# sha256 in wasm.lock; the fetch script then prefers artifacts/hledger.wasm and
+# verifies it.
 
 set -eu
 
@@ -25,15 +23,13 @@ root=$(CDPATH= cd -- "$_here/.." && pwd)
 # shellcheck disable=SC1091
 . "$root/scripts/env.sh"
 
-# ghc-wasm-meta's setup.sh bundles a Node runtime and then runs `npm install`
-# inside its own source tree, and cabal keeps its config and package store under
-# $HOME as well. On a machine whose ~ is writable this is all invisible, but it
-# means the toolchain install and every cabal build need a writable home.
-# Point HOME (and the XDG dirs) at the workspace so everything lands in
-# .tools/home, and so this stays self-contained and reproducible.
+# ghc-wasm-meta's bootstrap runs `npm install` in its own source tree and cabal
+# keeps its config and store under $HOME, so the toolchain install and every
+# cabal build need a writable home; HOME (and the XDG dirs) point at
+# .tools/home to keep them inside the workspace.
 #
-# This is deliberately scoped to this script: `trunk build` and `cargo` do not
-# want a relocated HOME, which is why scripts/env.sh does not set it.
+# Deliberately scoped to this script: `trunk build` and `cargo` do not want a
+# relocated HOME, which is why scripts/env.sh does not set it.
 HASKELL_HOME="${HLEDGER_WASM_HOME:-$root/.tools/home}"
 mkdir -p "$HASKELL_HOME"
 HOME="$HASKELL_HOME"
@@ -54,11 +50,10 @@ OUT="$OUT_DIR/hledger.wasm"
 say() { printf '%s\n' "$*"; }
 die() { printf '\n%s\n' "$*" >&2; exit 1; }
 
-# The ghc-wasm environment is applied here rather than in scripts/env.sh. It is a
-# wasm32-wasi cross-compilation environment (PATH, CC, CXX, LD, AR), and letting
-# it leak into an ordinary `cargo`/`trunk` build replaces the host linker with the
-# wasi-sdk one. Sourcing it here keeps `env.sh` safe for host builds while this
-# script still gets the cross toolchain on PATH.
+# The ghc-wasm env is a wasm32-wasi cross-compilation environment (PATH, CC,
+# CXX, LD, AR); leaking it into an ordinary `cargo`/`trunk` build replaces the
+# host linker with the wasi-sdk one. Sourced here rather than in scripts/env.sh
+# so host builds stay safe while this script gets the cross toolchain.
 if [ -f "$GHC_WASM_PREFIX/env" ]; then
     # shellcheck disable=SC1091
     . "$GHC_WASM_PREFIX/env"
@@ -68,8 +63,8 @@ fi
 if ! command -v wasm32-wasi-cabal >/dev/null 2>&1; then
     say "==> wasm32-wasi-cabal not found; installing ghc-wasm-meta (FLAVOUR=$GHC_FLAVOUR)"
     say "    prefix: $GHC_WASM_PREFIX"
-    # bootstrap.sh reads PREFIX (not our namespaced GHC_WASM_PREFIX), so export
-    # it right here rather than leaking such a generic name from env.sh.
+    # bootstrap.sh reads PREFIX, not our namespaced GHC_WASM_PREFIX, so export
+    # it right here rather than leaking that generic name from env.sh.
     PREFIX="$GHC_WASM_PREFIX" FLAVOUR="$GHC_FLAVOUR" \
         sh -c 'curl -sSL https://gitlab.haskell.org/haskell-wasm/ghc-wasm-meta/-/raw/master/bootstrap.sh | sh' \
         || die "ghc-wasm-meta installation failed."
@@ -96,18 +91,15 @@ fi
 
 # --- 2b. wasm adaptations to the vendored source ---------------------------
 # GHC's wasm backend has no *threaded* RTS: the toolchain ships
-# libHSrts-1.0.3.a (plus _p and _debug variants) but no _thr. hledger's
-# executable stanza asks for `-threaded`, which makes the linker look for
-# libHSrts-1.0.3_thr and fail with "unable to find library".
+# libHSrts-1.0.3.a (plus _p and _debug variants) but no _thr, so hledger's
+# `-threaded` makes the linker look for libHSrts-1.0.3_thr and fail with
+# "unable to find library". WASI has no threads to hand out in any case, so
+# dropping the flag selects the RTS that actually exists; the rest of the
+# stanza, `-with-rtsopts=-T` (RTS statistics), is unaffected.
 #
-# WASI has no threads to hand out in any case, so the threaded RTS is not
-# something this build could use: dropping the flag selects the RTS that
-# actually exists. The rest of the stanza, `-with-rtsopts=-T`, which only turns
-# on RTS statistics, is unaffected.
-#
-# Done with sed rather than by editing vendor/hledger, because vendor/ is a
-# pristine, gitignored clone of the upstream tag and should stay that way. It is
-# idempotent: once patched, the pattern no longer matches.
+# sed rather than editing vendor/hledger: vendor/ is a pristine, gitignored
+# clone of the upstream tag. Idempotent — once patched the pattern no longer
+# matches.
 CABAL_FILE="$SRC/hledger/hledger.cabal"
 if grep -q -- '-threaded -with-rtsopts=-T' "$CABAL_FILE"; then
     say "==> dropping -threaded from the hledger executable (wasm has no threaded RTS)"
@@ -120,8 +112,8 @@ fi
 say "==> building hledger for wasm32-wasi (this takes a while)"
 cd "$root"
 # `--project-dir`, not `-f`: cabal's `-f` is a *flag assignment* (as in
-# `-fdebug`), and an absolute `--project-file` is deprecated. `--builddir` is
-# absolute so the output stays at the repository root rather than inside
+# `-fdebug`), and an absolute `--project-file` is deprecated. Absolute
+# `--builddir` keeps the output at the repository root rather than inside
 # hledger-wasm/.
 wasm32-wasi-cabal build hledger \
     --project-dir="$root/hledger-wasm" \
@@ -130,7 +122,6 @@ wasm32-wasi-cabal build hledger \
 (terminal-size, githash) and their stubs."
 
 # --- 4. collect the artifact ----------------------------------------------
-# The wasm backend emits the executable as <name>.wasm under dist-newstyle.
 built=$(find "$root/dist-newstyle" -type f -name 'hledger.wasm' 2>/dev/null | head -1)
 if [ -z "$built" ]; then
     built=$(find "$root/dist-newstyle" -type f -name '*.wasm' 2>/dev/null | head -1)
@@ -141,13 +132,12 @@ mkdir -p "$OUT_DIR"
 cp "$built" "$OUT"
 
 # --- 3b. shrink the artifact ----------------------------------------------
-# GHC's wasm output is far larger than it needs to be. Binaryen's `-Oz` takes the
-# module down by about 60% (32 MB -> 13 MB) without changing behaviour, and that
-# matters twice over: it is what every visitor's browser downloads, and it is what
-# would have to be stored if the artifact is ever committed instead of fetched.
-#
-# Optional, because binaryen is not guaranteed to be present: without it the
-# build still produces a correct, just larger, artifact, and says so.
+# GHC's wasm output is far larger than it needs to be: Binaryen's `-Oz` takes
+# the module down about 60% (32 MB -> 13 MB) unchanged, and that size is what
+# every visitor's browser downloads (or what would have to be stored if the
+# artifact were ever committed instead of fetched). Optional — binaryen is not
+# guaranteed to be present; without it the build still produces a correct, just
+# larger, artifact, and says so.
 WASM_OPT=$(command -v wasm-opt 2>/dev/null || true)
 if [ -z "$WASM_OPT" ]; then
     for candidate in \
@@ -177,9 +167,9 @@ else
 fi
 
 size=$(wc -c <"$OUT" | tr -d ' ')
-# Plain if/elif rather than `sha=$(A || B) | cut`: that form puts the assignment
-# on the left of a pipeline, so it lands in a subshell and the variable is still
-# unset afterwards, which `set -u` then reports as "parameter not set".
+# if/elif rather than `sha=$(A || B) | cut`: the pipeline puts the assignment
+# in a subshell, so the variable stays unset and `set -u` then reports
+# "parameter not set".
 if command -v sha256sum >/dev/null 2>&1; then
     sha=$(sha256sum "$OUT" | cut -d' ' -f1)
 elif command -v shasum >/dev/null 2>&1; then
