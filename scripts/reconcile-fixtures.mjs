@@ -53,16 +53,9 @@ const cut = (value, shape) => {
   return out;
 };
 
-// The two prints were cut by hand at different times and the cuts are not quite the same one,
-// so each is written out as it was: the generic print kept the posting's `ptype` and the whole
-// balance assertion, the reconcile print kept only the assertion's amount, and a cost is in the
-// generic print only where hledger printed one. The bytes of both stay what the checks read.
+// The one shape both prints are cut with: the fields the window reads, a posting's `ptype`,
+// its cost where hledger printed one, and the whole balance assertion among them.
 const CUT = {
-  tindex: true, tdate: true, tdescription: true, tstatus: true,
-  tsourcepos: [{ sourceName: true, sourceLine: true }],
-  tpostings: [{ paccount: true, pstatus: true, pdate: true, ptags: true, pamount: [AMOUNT], pbalanceassertion: { baamount: AMOUNT } }],
-};
-const GENERIC_CUT = {
   tindex: true, tdate: true, tdescription: true, tstatus: true,
   tsourcepos: [{ sourceName: true, sourceLine: true }],
   tpostings: [{
@@ -148,4 +141,4 @@ commodity 1,000.00 USD
     expenses:software                           25.00 USD
     assets:bank`;
 
-export const GENERIC_PRINT = await printed(GENERIC_JOURNAL, 'generic.journal', 'acct:^assets:bank$', GENERIC_CUT);
+export const GENERIC_PRINT = await printed(GENERIC_JOURNAL, 'generic.journal', 'acct:^assets:bank$', CUT);
