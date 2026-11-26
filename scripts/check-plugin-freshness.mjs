@@ -35,7 +35,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { findChrome, launch, Protocol, Tab } from './browser.mjs';
+import { findChrome, launch, Protocol, Tab, until } from './browser.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WORKER = process.env.SW_FILE || join(HERE, '..', 'sw.js');
@@ -214,12 +214,28 @@ async function openPage(url) {
   });
 }
 
-async function untilControlled(page, want) {
-  for (let i = 0; i < 80; i += 1) {
-    const controlled = await page.eval('Boolean(navigator.serviceWorker.controller)');
-    if (controlled === want) return;
-    await sleep(100);
+/**
+ * `until`, answering whether it settled rather than throwing: a wait that runs out of time is
+ * the caller's own check to report — with whatever detail it is already holding — so only an
+ * error that is not that timeout travels on.
+ */
+async function settled(label, fn, timeoutMs) {
+  try {
+    await until(label, fn, { timeoutMs, pollMs: 100 });
+    return true;
+  } catch (error) {
+    if (!String(error && error.message).startsWith('timed out waiting for')) throw error;
+    return false;
   }
+}
+
+async function untilControlled(page) {
+  const controlled = await settled(
+    'the worker to take control of the page',
+    () => page.eval('Boolean(navigator.serviceWorker.controller)'),
+    8000,
+  );
+  if (controlled) return;
   // Say what the registration actually is, rather than only that it never arrived.
   const why = await page.eval(`JSON.stringify({
     scriptRan: typeof window.openBlob,
@@ -233,7 +249,7 @@ async function untilControlled(page, want) {
     scope: r.scope, active: Boolean(r.active), installing: Boolean(r.installing), waiting: Boolean(r.waiting),
     error: r.installing ? 'installing' : (r.waiting ? 'waiting' : (r.active ? 'active' : 'none')),
   })))`).catch((error) => String(error));
-  throw new Error(`the worker did not become ${want ? 'controlling' : 'uninstalled'} in time: ${why} / ${JSON.stringify(state)}`);
+  throw new Error(`the worker did not become controlling in time: ${why} / ${JSON.stringify(state)}`);
 }
 
 async function pageVersion(page) {
@@ -253,17 +269,15 @@ async function versionAfterReload(page, base) {
  * fetch, and this only makes sure there is an answer to give.
  */
 async function untilCached(page, url, want) {
-  for (let i = 0; i < 50; i += 1) {
+  return settled('a cache to hold the copy the server just had', async () => {
     const bodies = await page.eval(`caches.keys()
       .then((names) => Promise.all(names.map((name) => caches.open(name)
         .then((c) => c.match(${JSON.stringify(url)}))
         .then((r) => (r ? r.text() : null)))))
       .then((bodies) => bodies.filter(Boolean).map((body) => body.trim()))
       .catch((e) => 'cache read failed: ' + e.message)`);
-    if (Array.isArray(bodies) && bodies.includes(want)) return true;
-    await sleep(100);
-  }
-  return false;
+    return Array.isArray(bodies) && bodies.includes(want);
+  }, 5000);
 }
 
 async function main() {
@@ -276,9 +290,9 @@ async function main() {
   // request the fetch handler is actually given, so "the worker saw it" can be measured
   // rather than assumed.
   const workerSource = await readFile(WORKER, 'utf8');
-  // Only the first request for a URL, so a later fetch in a check cannot make this look true.
-  // A count per URL, so the handler's traffic can be compared with the server's log.
-  const probe = "  event.waitUntil(caches.open('probe').then((c) => c.match(request.url).then((m) => c.put(request.url, new Response(m ? String(Number(m.headers.get('x-count') || '0') + 1) : '1')))));\n";
+  // A count per URL, carried in the stored response's `x-count` header, so the handler's
+  // traffic can be compared with the server's log.
+  const probe = "  event.waitUntil(caches.open('probe').then((c) => c.match(request.url).then((m) => { const n = Number((m && m.headers.get('x-count')) || '0') + 1; return c.put(request.url, new Response(String(n), { headers: { 'x-count': String(n) } })); })));\n";
   const anchor = '  const url = new URL(request.url);';
   if (!workerSource.includes(anchor)) throw new Error('the worker changed shape; the probe has nowhere to go');
   await writeFile(join(dir, 'sw.js'), workerSource.replace(anchor, `${anchor}\n${probe}`));
@@ -299,7 +313,7 @@ async function main() {
   try {
     // 1. Through the worker: this is the path a returning visitor takes.
     await page.navigate(`${base}/`);
-    await untilControlled(page, true);
+    await untilControlled(page);
     const first = await page.eval(`import('${base}/plugins/demo.js').then((m) => m.version)`);
     results.push(['the page imports the plugin it was served', first === 'v1', first]);
     await writeFile(join(dir, 'plugins', 'demo.js'), moduleFor('v2'));
@@ -353,7 +367,6 @@ async function main() {
     const pageSaw = await pageVersion(page);
     const detail = await page.eval(`(async () => {
       const viaFetch = await fetch('${base}/plugins/demo.js', { cache: 'no-cache' }).then((r) => r.text());
-      const probe = await caches.open('probe').then((c) => c.match('${base}/plugins/demo.js')).then((r) => Boolean(r)).catch(() => 'no probe cache');
       const inCache = await caches.keys()
         .then((names) => Promise.all(names.map((name) => caches.open(name)
           .then((c) => c.match('${base}/plugins/demo.js'))
@@ -410,7 +423,7 @@ async function main() {
     // and one it answered — and warms the two things offline has to come from the cache:
     // the plugin module, and the engine's versioned URL.
     await page.navigate(`${base}/`);
-    await untilControlled(page, true);
+    await untilControlled(page);
     await page.reload();
     const engineUrl = `${base}/wasm/hledger.wasm?v=test`;
     const warm = JSON.parse(await page.eval(`(async () => {
@@ -446,12 +459,14 @@ async function main() {
       // been fetched: a 404 means the network still answers, a failure means only the
       // worker's own cache is left to answer anything.
       let cutOff = 'still up';
-      for (let i = 0; i < 50 && !cutOff.startsWith('failed'); i += 1) {
-        cutOff = await page.eval(`fetch('${base}/never-requested-${i}.txt', { cache: 'no-cache' })
+      let attempt = 0;
+      await settled('the network to be gone for the worker', async () => {
+        attempt += 1;
+        cutOff = await page.eval(`fetch('${base}/never-requested-${attempt}.txt', { cache: 'no-cache' })
           .then((r) => 'served: http ' + r.status)
           .catch((e) => 'failed: ' + e.message)`);
-        if (!cutOff.startsWith('failed')) await sleep(100);
-      }
+        return cutOff.startsWith('failed');
+      }, 5000);
       results.push(['the network is gone for the worker, and only its cache can answer',
         cutOff.startsWith('failed'), cutOff]);
 
