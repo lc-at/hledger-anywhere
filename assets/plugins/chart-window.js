@@ -29,7 +29,7 @@
 
 import { chosen, chosenSeries, counted, format, leftOut, palette, percent, periodTotal, seriesTotal, shape, trimmed } from './chart-data.js';
 import { escape, isLight } from './window-kit.js';
-import { foldFlows, headlineFor, heightFor, isCustom, multiples, render, tableFor } from './chart-d3.js';
+import { axesFor, foldFlows, headlineFor, heightFor, isCustom, multiples, onEdge, render, tableFor } from './chart-d3.js';
 import { MORE, SHAPED, renderMore, viewMore } from './chart-more.js';
 import { player, timeline } from './chart-play.js';
 import { ANIMATED, drill, parse } from './chart-args.js';
@@ -210,10 +210,13 @@ export function viewOf(original) {
 
 // --------------------------------------------------------------------------- the page
 
-/** The keys, as the window's footer says them. */
-export function keysLine(animated = false) {
+/** The keys, as the window's footer says them: only the ones this chart can answer. */
+export function keysLine(animated = false, axes = { y: true, x: true }) {
   const keys = animated ? [['Space', 'play, pause'], ...KEYS.map(([key, action]) => (key === '← →' ? [key, 'step a period'] : [key, action]))] : KEYS;
-  return keys.map(([key, action]) => `${key} ${action}`).join(' · ');
+  const offered = { 'y Y': axes.y, 'x X': axes.x };
+  return keys
+    .filter(([key]) => offered[key] !== false)
+    .map(([key, action]) => `${key} ${action}`).join(' · ');
 }
 
 /**
@@ -252,6 +255,9 @@ export function page({ report, colors, title, command, token, kind, options = {}
   h1 { font-size:18px; font-weight:600; margin:0 0 2px; }
   .sub { color:${colors.dim}; margin:0 0 14px; }
   .frame { position:relative; height:${view.height}px; }
+  /* The bottom edge of the frame is its resize handle: held there, it changes height, and the
+     chart's own text is not dragged into a selection while it moves. */
+  .frame.holding { cursor:ns-resize; user-select:none; }
   svg.chart { display:block; width:100%; height:100%; overflow:visible; }
   svg.chart :focus { outline:none; }
   .legend { display:flex; flex-wrap:wrap; gap:4px 16px; list-style:none; margin:0 0 12px; padding:0; font-size:12px; }
@@ -303,7 +309,7 @@ export function page({ report, colors, title, command, token, kind, options = {}
   <p class="also" id="also"${related.length ? '' : ' hidden'}>${alsoLine(related)}</p>
   <div id="table">${view.table}</div>
   <p class="note">from hledger's own numbers: <code id="command">${escape(command)}</code></p>
-  <p class="keys" id="keys">${escape(keysLine(view.draw === 'animate'))}</p>
+  <p class="keys" id="keys">${escape(keysLine(view.draw === 'animate', axesFor(view.draw)))}</p>
 </main>
 <script type="application/json" id="chart-data">${data}</script>
 ${scripts.map((src) => `<script src="${escape(src)}"></script>`).join('\n')}
@@ -512,7 +518,7 @@ export function mount(root = document) {
       playing = null;
     }
     const shown = viewOf(state);
-    keysNote.textContent = keysLine(shown.draw === 'animate');
+    keysNote.textContent = keysLine(shown.draw === 'animate', axesFor(shown.draw));
     heading.textContent = state.title;
     document.title = `hledger: ${state.title}`;
     sub.textContent = shown.sub;
@@ -521,7 +527,15 @@ export function mount(root = document) {
     show(mixed, shown.mixed);
     also.innerHTML = alsoLine(state.related || []);
     also.hidden = !(state.related || []).length;
-    holder.style.height = `${shown.height}px`;
+    // A height the frame's edge was dragged to is the window's own; anything else is the
+    // chart's, and the chart's own guess at it (`frame`'s `want`) is free to apply again.
+    if (view.height) {
+      holder.dataset.held = 'yes';
+      holder.style.height = `${view.height}px`;
+    } else {
+      delete holder.dataset.held;
+      holder.style.height = `${shown.height}px`;
+    }
     svg.setAttribute('aria-label', state.title);
     drawLegend(shown.items);
     if (shown.draw === 'animate') animate(shown);
@@ -546,7 +560,24 @@ export function mount(root = document) {
     if (action === 'next' && controls.step) controls.step(1);
     if (action === 'zoom-in' && controls.zoomBy) controls.zoomBy(1.6);
     if (action === 'zoom-out' && controls.zoomBy) controls.zoomBy(1 / 1.6);
-    if (action === 'reset' && controls.reset) controls.reset();
+    // One press on an axis key widens or narrows that axis by a third; the chart that owns
+    // the axis sets the span, and the window draws it again.
+    if (action === 'y-in' && controls.ySpan) { controls.ySpan(1 / 1.35); paint(); }
+    if (action === 'y-out' && controls.ySpan) { controls.ySpan(1.35); paint(); }
+    if (action === 'x-in' && controls.xSpan) { controls.xSpan(1 / 1.35); paint(); }
+    if (action === 'x-out' && controls.xSpan) { controls.xSpan(1.35); paint(); }
+    if (action === 'reset') {
+      const scaled = view.xDomain || view.yDomain;
+      view.xDomain = null;
+      view.yDomain = null;
+      if (controls.reset) controls.reset();
+      // The zoom's reset draws itself, as it always did; an axis override is drawn again
+      // only when there was one to clear.
+      if (scaled) {
+        view.transform = null;
+        paint();
+      }
+    }
     if (action === 'play' && controls.play) controls.play();
     if (action === 'save-svg' || action === 'save-png') {
       // The picture says what the page around it said: the subtitle, and the legend for
@@ -563,6 +594,68 @@ export function mount(root = document) {
   window.addEventListener('resize', () => {
     clearTimeout(timer);
     timer = setTimeout(() => paint(), 120);
+  });
+
+  // The bottom edge of the frame resizes it: pressed in the strip along it, held, dragged.
+  // The strip is the resize handle, so a press in it is the drag's and never a mark's click,
+  // and the chart's own zoom starts no pan there either — chart-d3's filter asks `onEdge`
+  // the same question this does.
+  let held = null;
+  let staleClick = false;
+  let queued = null;
+  const redrawSoon = () => {
+    // One redraw a frame: pointermove fires faster than a full redraw is worth, and a frame
+    // coalesces a burst of moves into the one that follows them.
+    if (queued !== null) return;
+    queued = requestAnimationFrame(() => {
+      queued = null;
+      paint();
+    });
+  };
+  const resizeTo = (height) => {
+    view.height = height;
+    holder.dataset.held = 'yes';
+    holder.style.height = `${height}px`;
+    redrawSoon();
+  };
+  holder.addEventListener('pointerdown', (event) => {
+    staleClick = false;
+    if (event.button !== 0 || !onEdge(event, holder)) return;
+    held = { at: event.clientY, height: holder.getBoundingClientRect().height };
+    holder.setPointerCapture(event.pointerId);
+    holder.classList.add('holding');
+  });
+  holder.addEventListener('pointermove', (event) => {
+    if (held) {
+      const height = Math.min(3000, Math.max(140, held.height + event.clientY - held.at));
+      if (height !== view.height) resizeTo(height);
+      return;
+    }
+    holder.style.cursor = onEdge(event, holder) ? 'ns-resize' : '';
+  });
+  const letGo = (event, click) => {
+    if (!held) return;
+    held = null;
+    holder.classList.remove('holding');
+    staleClick = click;
+    if (holder.hasPointerCapture(event.pointerId)) holder.releasePointerCapture(event.pointerId);
+  };
+  holder.addEventListener('pointerup', (event) => letGo(event, true));
+  holder.addEventListener('pointercancel', (event) => letGo(event, false));
+  holder.addEventListener('click', (event) => {
+    if (!staleClick) return;
+    staleClick = false;
+    event.stopPropagation();
+    event.preventDefault();
+  }, true);
+  // A double-click on the edge gives the height back: the one the chart asks for, worked out
+  // again rather than remembered, so a chart that wants a different height gets its own.
+  holder.addEventListener('dblclick', (event) => {
+    if (!onEdge(event, holder)) return;
+    view.height = null;
+    delete holder.dataset.held;
+    holder.style.height = `${viewOf(state).height}px`;
+    paint();
   });
 
   draw();

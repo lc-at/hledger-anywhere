@@ -862,6 +862,173 @@ async function zooming(tab) {
   check('a double-click resets it too', (await labels()) === first, await labels());
 }
 
+/**
+ * The frame's bottom edge resizes it, and the axis keys widen and narrow what the axes show.
+ *
+ * A drag is driven the way a person drives one — press, move, release, through the input
+ * events — and every axis press is read back from the axis text it changed, since that text
+ * is what the keys promise. The drag on the line chart runs sideways as well as down, so a
+ * pan the zoom should have refused would move the period labels and fail the same check.
+ */
+async function edgesAndAxes(tab) {
+  const frameBox = () => tab.eval("(() => { const b = document.querySelector('.frame').getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; })()");
+  const chartHeight = () => tab.eval("document.getElementById('chart').getBoundingClientRect().height");
+  const texts = (keep) => tab.eval(`[...document.querySelectorAll('#chart text')].map((node) => node.textContent).filter((text) => ${keep}).join()`);
+  const money = () => texts("text.charAt(0) === '$'");
+  const periods = () => texts("/^2024-/.test(text)");
+  const all = () => tab.eval("[...document.querySelectorAll('#chart text')].map((node) => node.textContent).join('|')");
+  const marks = (selector) => tab.eval(`document.querySelectorAll('#chart ${selector}').length`);
+  const asked = () => tab.eval('window.__asked.length');
+  const keys = () => tab.eval("document.getElementById('keys').textContent");
+  const cursor = () => tab.eval("getComputedStyle(document.querySelector('.frame')).cursor");
+  const axisKey = (key) => tab.key(key, {
+    code: `Key${key.toUpperCase()}`,
+    keyCode: key.toUpperCase().charCodeAt(0),
+    text: key,
+    ...(key === key.toUpperCase() ? { modifiers: 8 } : {}),
+  });
+  const edge = async () => {
+    const [left, top, width, height] = await frameBox();
+    return [left + width / 2, top + height - 6];
+  };
+  const drag = async (from, to) => {
+    await tab.mouse('mouseMoved', from[0], from[1]);
+    await tab.mouse('mousePressed', from[0], from[1], { button: 'left', clickCount: 1 });
+    await tab.mouse('mouseMoved', (from[0] + to[0]) / 2, (from[1] + to[1]) / 2, { button: 'left' });
+    await tab.mouse('mouseMoved', to[0], to[1], { button: 'left' });
+    await sleep(150); // a few frames of redraw while the pointer is held
+    await tab.mouse('mouseReleased', to[0], to[1], { button: 'left', clickCount: 1 });
+    await sleep(250);
+  };
+
+  await tab.show('daily');
+  const at = await edge();
+  await tab.mouse('mouseMoved', at[0], at[1]);
+  await sleep(60);
+  check('the bottom edge of the frame is a resize handle', (await cursor()) === 'ns-resize', await cursor());
+  const [, , , tall] = await frameBox();
+  await tab.mouse('mouseMoved', at[0] - 200, at[1] - 100);
+  await sleep(60);
+  check('and only along the edge', (await cursor()) === 'auto', await cursor());
+
+  const lines = await marks('path.line');
+  const label = await periods();
+  await drag(at, [at[0] + 80, at[1] + 70]);
+  const grown = await frameBox();
+  check('dragging it grows the frame, and the chart with it',
+    grown[3] >= tall + 60 && await chartHeight() >= grown[3] - 2 && tab.errors.length === 0,
+    `${tall} -> ${grown[3]}, chart ${await chartHeight()}, errors ${tab.errors.join(' | ')}`);
+  check('the chart still draws every line, and time has not slid sideways',
+    (await marks('path.line')) === lines && (await periods()) === label,
+    `${await marks('path.line')} lines, ${await periods()}`);
+  await sleep(350);
+  check('and the drag is not also a click: nothing was opened', (await asked()) === 0, String(await asked()));
+  const edgeNow = await edge();
+  await tab.click(edgeNow[0], edgeNow[1], 2);
+  await sleep(200);
+  check('a double-click on the edge gives the height back', (await frameBox())[3] === tall, String((await frameBox())[3]));
+
+  const yBefore = await money();
+  await axisKey('Y');
+  await sleep(80);
+  const yWide = await money();
+  check('Y widens the y axis, its ticks saying so', yWide !== yBefore && yWide !== '', `${yBefore} -> ${yWide}`);
+  await axisKey('y');
+  await sleep(80);
+  const yNarrow = await money();
+  check('and y narrows it again', yNarrow !== yWide, `${yWide} -> ${yNarrow}`);
+  check('the axis keys are written under the chart',
+    /y Y y axis in, out/.test(await keys()) && /x X x axis in, out/.test(await keys()), await keys());
+
+  const xBefore = await periods();
+  await axisKey('X');
+  await sleep(80);
+  const xNarrow = await periods();
+  check('X narrows the x axis to fewer periods', xNarrow !== xBefore && xNarrow !== '', `${xBefore} -> ${xNarrow}`);
+  await axisKey('x');
+  await sleep(80);
+  check('and x widens it back to exactly where it was', (await periods()) === xBefore, await periods());
+
+  // A chart whose x axis is bands of periods has no x scale to widen, and says so.
+  await tab.show('columns');
+  const bandKeys = await keys();
+  check('a chart whose x axis is bands leaves the x keys out of the line under it',
+    /y Y y axis in, out/.test(bandKeys) && !/x X/.test(bandKeys), bandKeys);
+  const bandX = await periods();
+  await axisKey('x');
+  await sleep(80);
+  check('so x does nothing to it', (await periods()) === bandX, await periods());
+  const bandY = await money();
+  await axisKey('y');
+  await sleep(80);
+  check('while y still rescales its value axis', (await money()) !== bandY, `${bandY} -> ${await money()}`);
+
+  await tab.show('daily');
+  const fitY = await money();
+  const fitX = await periods();
+  const fitSpot = await tab.eval("document.querySelector('#chart circle').getAttribute('cx')");
+  await tab.key('+', { code: 'Equal', keyCode: 187, text: '+' });
+  await sleep(300);
+  check('+ moves the marks into the zoom', (await tab.eval("document.querySelector('#chart circle').getAttribute('cx')")) !== fitSpot,
+    `${fitSpot} -> ${await tab.eval("document.querySelector('#chart circle').getAttribute('cx')")}`);
+  await axisKey('Y');
+  await sleep(80);
+  check('Y rescales the value axis under the zoom', (await money()) !== fitY, `${fitY} -> ${await money()}`);
+  await tab.key('0', { code: 'Digit0', keyCode: 48, text: '0' });
+  await sleep(400);
+  check('0 puts the axes back to their fitted ticks', (await money()) === fitY && (await periods()) === fitX,
+    `${await money()} / ${await periods()}`);
+  check('and clears the zoom', (await tab.eval("document.querySelector('#chart circle').getAttribute('cx')")) === fitSpot,
+    await tab.eval("document.querySelector('#chart circle').getAttribute('cx')"));
+
+  // A circle pack reaches the very bottom of its frame, so its drag ends over a mark: the
+  // press in the edge must stay the resize's and not become a click that opens the account.
+  await tab.show('pack');
+  const packAt = await edge();
+  const packTall = (await frameBox())[3];
+  const circles = await marks('circle[role=button]');
+  await drag(packAt, [packAt[0], packAt[1] + 70]);
+  check('the pack grows with a drag of its edge, and the circle under the pointer stays unclicked',
+    (await frameBox())[3] >= packTall + 60 && (await marks('circle[role=button]')) === circles && (await asked()) === 0,
+    `${packTall} -> ${(await frameBox())[3]}, ${await marks('circle[role=button]')} circles, asked ${await asked()}`);
+  await tab.click((await edge())[0], (await edge())[1], 2);
+  await sleep(200);
+  check('and a double-click gives its height back too', (await frameBox())[3] === packTall, String((await frameBox())[3]));
+
+  // The treemap grows its own frame from the width, which must not undo a dragged height.
+  await tab.show('treemap');
+  const mapTall = (await frameBox())[3];
+  const mapAt = await edge();
+  await drag(mapAt, [mapAt[0], mapAt[1] - 70]);
+  check('the treemap keeps a height dragged on it rather than fitting itself again',
+    (await frameBox())[3] <= mapTall - 60 && (await marks('rect[role=button]')) === 6,
+    `${mapTall} -> ${(await frameBox())[3]}`);
+  await tab.click((await edge())[0], (await edge())[1], 2);
+  await sleep(200);
+  check('and a double-click fits it to its own rule again', (await frameBox())[3] === mapTall, String((await frameBox())[3]));
+
+  // Every chart whose axis is a numerical one answers its keys, read back from its ticks.
+  const yMissed = [];
+  for (const [name, key] of [['waterfall', 'Y'], ['cashflow', 'Y'], ['loglines', 'y']]) {
+    await tab.show(name);
+    const before = await money();
+    await axisKey(key);
+    await sleep(80);
+    if ((await money()) === before) yMissed.push(name);
+  }
+  check('the y keys rescale the value axis of every chart that draws one', yMissed.length === 0, yMissed.join());
+  const xMissed = [];
+  for (const [name, key] of [['bar', 'x'], ['budget', 'x'], ['swarm', 'x']]) {
+    await tab.show(name);
+    const before = await all();
+    await axisKey(key);
+    await sleep(80);
+    if ((await all()) === before) xMissed.push(name);
+  }
+  check('the x keys rescale the x axis of every chart with a continuous one', xMissed.length === 0, xMissed.join());
+  check('and none of it leaves an error behind', tab.errors.length === 0, tab.errors.join(' | '));
+}
+
 async function byKeyboard(tab) {
   // What Enter on the first mark asks for: that account over time, in the same period, with the
   // options that still mean something for one account (--log does; --top and --sort do not).
@@ -2564,6 +2731,7 @@ try {
     await everyChartDraws(tab);
     await theLineChart(tab);
     await zooming(tab);
+    await edgesAndAxes(tab);
     await byKeyboard(tab);
     await saving(tab, downloads);
     await relatedCharts(tab);

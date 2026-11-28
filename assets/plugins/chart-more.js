@@ -11,7 +11,7 @@
  * Tab to a mark for its numbers, click or Enter to chart that account over time.
  */
 
-import { amountOf, fit, frame, groupsOf, interactive, nestTree, nothing, tick, valueScale } from './chart-d3.js';
+import { amountOf, fit, frame, groupsOf, interactive, nestTree, nothing, retarget, tick, valueScale, withDomain } from './chart-d3.js';
 import { counted, format, group, inOneCommodity, leftOutOf, palette, percent, seriesTotal, split } from './chart-data.js';
 import { escape, mix } from './window-kit.js';
 
@@ -22,13 +22,13 @@ export const MORE = ['heatmap', 'bump', 'sunburst', 'pack', 'cashflow', 'budget'
 export const SHAPED = ['cashflow', 'budget', 'swarm', 'histogram'];
 
 /** Draw a chart this module owns. */
-export function renderMore(kind, svg, data, colors, hooks) {
+export function renderMore(kind, svg, data, colors, hooks, state = {}) {
   if (kind === 'heatmap') return drawHeatmap(svg, data, colors, hooks);
   if (kind === 'bump') return drawBump(svg, data, colors, hooks);
   if (kind === 'pack') return drawPack(svg, data, colors, hooks);
-  if (kind === 'cashflow') return drawCashflow(svg, data, colors, hooks);
-  if (kind === 'budget') return drawBudget(svg, data, colors, hooks);
-  if (kind === 'swarm') return drawSwarm(svg, data, colors, hooks);
+  if (kind === 'cashflow') return drawCashflow(svg, data, colors, hooks, state);
+  if (kind === 'budget') return drawBudget(svg, data, colors, hooks, state);
+  if (kind === 'swarm') return drawSwarm(svg, data, colors, hooks, state);
   if (kind === 'histogram') return drawHistogram(svg, data, colors, hooks);
   return drawSunburst(svg, data, colors, hooks);
 }
@@ -516,7 +516,7 @@ function valueAxis(root, scale, ticks, left, right, unit, colors) {
  * Income above the line, spending below it, a column each per period, and the net as a line
  * with a dot per period: green-side when kept, the other side when overspent.
  */
-function drawCashflow(svg, data, colors, hooks) {
+function drawCashflow(svg, data, colors, hooks, state) {
   const { d3, width, height, root } = frame(svg);
   if (!data.periods.length || (!data.income.length && !data.spending.length)) {
     nothing(root, colors, 'No income or expense accounts in this report.');
@@ -527,7 +527,7 @@ function drawCashflow(svg, data, colors, hooks) {
   const low = Math.min(0, ...data.out.map((value) => -value), ...data.net);
   const margin = { top: 14, right: 14, bottom: 30, left: 12 };
   const count = Math.max(2, Math.floor((height - margin.top - margin.bottom) / 46));
-  const { scale: y, ticks } = valueScale(d3, false, low, high, [height - margin.bottom, margin.top], count);
+  const { scale: y, ticks } = valueScale(d3, false, low, high, [height - margin.bottom, margin.top], count, state.yDomain);
   margin.left = 14 + Math.max(...ticks.map((value) => tick(value, unit).length)) * 6.6;
   const x = d3.scaleBand().domain(d3.range(data.periods.length)).range([margin.left, width - margin.right]).paddingInner(0.25).paddingOuter(0.1);
   valueAxis(root, y, ticks, margin.left, width - margin.right, unit, colors);
@@ -590,7 +590,11 @@ function drawCashflow(svg, data, colors, hooks) {
   periodAxis(root, x, data.periods, height - margin.bottom + 18, colors);
   root.append('text').attr('x', margin.left + 4).attr('y', margin.top + 10).attr('fill', colors.dim).attr('font-size', 11).text('in ↑');
   root.append('text').attr('x', margin.left + 4).attr('y', height - margin.bottom - 6).attr('fill', colors.dim).attr('font-size', 11).text('out ↓ · line: net');
-  return {};
+  return {
+    ySpan(factor) {
+      state.yDomain = retarget(y.domain(), factor);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- budget
@@ -600,7 +604,7 @@ function drawCashflow(svg, data, colors, hooks) {
  * spent as a bar over it, and a tick at the budget, so over-budget is a bar running past the
  * tick. Bars over budget are drawn in the foreground colour, the others in the accent.
  */
-function drawBudget(svg, data, colors, hooks) {
+function drawBudget(svg, data, colors, hooks, state) {
   const rowHeight = 34;
   const { d3, width, root } = frame(svg, () => 30 + data.rows.length * rowHeight + 30);
   if (!data.rows.length) { nothing(root, colors, 'No budgeted accounts in this report.'); return {}; }
@@ -608,7 +612,8 @@ function drawBudget(svg, data, colors, hooks) {
   const left = Math.min(width * 0.35, 16 + Math.max(...data.rows.map((row) => row.label.length)) * 6.4);
   const right = 70;
   const largest = Math.max(...data.rows.map((row) => Math.max(row.actual, row.budget)));
-  const x = d3.scaleLinear().domain([0, largest]).nice().range([left, width - right]);
+  // The budget's axis runs along x, so it is the x keys that widen and narrow it.
+  const x = withDomain(d3.scaleLinear().domain([0, largest]).nice().range([left, width - right]), state.xDomain);
   const top = 10;
   for (const value of x.ticks(Math.max(2, Math.floor((width - left - right) / 110)))) {
     root.append('line').attr('x1', x(value)).attr('x2', x(value)).attr('y1', top).attr('y2', top + data.rows.length * rowHeight)
@@ -644,7 +649,11 @@ function drawBudget(svg, data, colors, hooks) {
     account: (row) => row.label,
     label: (row) => `${row.label}, spent ${amountOf(row.actual, unit)} of ${amountOf(row.budget, unit)}, ${Math.round(100 * row.used)}%`,
   });
-  return {};
+  return {
+    xSpan(factor) {
+      state.xDomain = retarget(x.domain(), factor);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- swarm
@@ -654,14 +663,15 @@ function drawBudget(svg, data, colors, hooks) {
  * hides another. Colour is the category. The eye goes to the big ones, which is the point: the
  * three purchases that were a third of a month's spending.
  */
-function drawSwarm(svg, data, colors, hooks) {
+function drawSwarm(svg, data, colors, hooks, state) {
   const { d3, width, height, root } = frame(svg);
   if (!data.points.length) { nothing(root, colors, 'No transactions to draw.'); return {}; }
   const unit = data.unit;
   const margin = { top: 12, right: 16, bottom: 28, left: 16 };
   const dates = data.points.map((point) => new Date(`${point.date}T00:00:00`));
-  const x = d3.scaleTime().domain(d3.extent(dates)).range([margin.left + 8, width - margin.right - 8]);
-  if (dates[0].getTime() === dates[dates.length - 1].getTime()) x.domain([d3.timeDay.offset(dates[0], -1), d3.timeDay.offset(dates[0], 1)]);
+  const fitted = d3.scaleTime().domain(d3.extent(dates)).range([margin.left + 8, width - margin.right - 8]);
+  if (dates[0].getTime() === dates[dates.length - 1].getTime()) fitted.domain([d3.timeDay.offset(dates[0], -1), d3.timeDay.offset(dates[0], 1)]);
+  const x = withDomain(fitted, state.xDomain);
   const largest = Math.max(...data.points.map((point) => point.value));
   const room = height - margin.top - margin.bottom;
   // The largest dot is a share of the room; a swarm that would not fit is drawn smaller.
@@ -696,7 +706,11 @@ function drawSwarm(svg, data, colors, hooks) {
     account: (point) => point.account,
     label: (point) => `${point.date}, ${point.description}, ${point.account}, ${amountOf(point.value, unit)}`,
   });
-  return {};
+  return {
+    xSpan(factor) {
+      state.xDomain = retarget(x.domain(), factor);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- histogram

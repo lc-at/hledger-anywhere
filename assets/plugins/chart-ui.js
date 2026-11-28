@@ -18,6 +18,8 @@ export const KEYS = [
   ['Esc', 'back'],
   ['← →', 'step through periods'],
   ['+ − 0', 'zoom in, out, reset'],
+  ['y Y', 'y axis in, out'],
+  ['x X', 'x axis in, out'],
   ['Tab, Enter', 'reach and open a mark'],
   ['s', 'save SVG'],
   ['p', 'save PNG'],
@@ -34,6 +36,10 @@ export function keyFor(event) {
     case '+': case '=': return 'zoom-in';
     case '-': case '_': return 'zoom-out';
     case '0': return 'reset';
+    case 'y': return 'y-in';
+    case 'Y': return 'y-out';
+    case 'x': return 'x-in';
+    case 'X': return 'x-out';
     case 's': case 'S': return 'save-svg';
     case 'p': case 'P': return 'save-png';
     default: return null;

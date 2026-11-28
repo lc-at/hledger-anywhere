@@ -532,10 +532,13 @@ function decade(value) {
  *
  * Logarithmic is d3's symmetric log, which is a log scale that also has a zero and negatives:
  * balances cross zero, and a plain log scale cannot draw one that does.
+ *
+ * `override` is a span the axis key asked for instead of the fitted one: it is used as it
+ * stands, since making it nice again would undo the press that set it.
  */
-export function valueScale(d3, log, low, high, range, count) {
+export function valueScale(d3, log, low, high, range, count, override = null) {
   if (log) {
-    const domain = [decade(Math.min(low, 0)), decade(Math.max(high, 0))];
+    const domain = override ? [...override] : [decade(Math.min(low, 0)), decade(Math.max(high, 0))];
     if (domain[0] === domain[1]) domain[1] = 10;
     const scale = d3.scaleSymlog().constant(1).domain(domain).range(range);
     // Near zero a symmetric log scale puts 0, 1 and 10 almost on top of each other, so a tick
@@ -550,8 +553,66 @@ export function valueScale(d3, log, low, high, range, count) {
     });
     return { scale, ticks };
   }
-  const scale = d3.scaleLinear().domain([low, high]).nice(count).range(range);
+  const scale = d3.scaleLinear().domain(override || [low, high]);
+  if (!override) scale.nice(count);
+  scale.range(range);
   return { scale, ticks: scale.ticks(count) };
+}
+
+/** A scale with the span an axis key asked for in place of the fitted one. */
+export function withDomain(scale, override) {
+  return override ? scale.domain(override) : scale;
+}
+
+/**
+ * One press on an axis key: the visible span times `factor`, so what is shown keeps its shape
+ * and more or less of it fits. An axis whose domain reaches zero grows from there — a value
+ * axis that slid off zero would stop reading against it — and any other grows around its
+ * middle. The endpoints keep their full precision, so widening and narrowing again lands
+ * where it started rather than an epsilon off it; a span that arithmetic would flatten to
+ * nothing keeps the one it had.
+ */
+export function retarget(domain, factor) {
+  const time = domain[0] instanceof Date;
+  const [lo, hi] = domain.map((value) => (value instanceof Date ? value.getTime() : value));
+  const span = (hi - lo) * factor;
+  if (!Number.isFinite(span) || span <= 0) return domain;
+  const at = (value) => (time ? new Date(Math.round(value)) : value);
+  const next = (lo === 0 ? [0, span] : hi === 0 ? [-span, 0] : [(lo + hi) / 2 - span / 2, (lo + hi) / 2 + span / 2]).map(at);
+  return +next[0] === +next[1] ? domain : next;
+}
+
+/**
+ * Which axes a chart can be scaled on with the axis keys, as the keys line says of it: only a
+ * numerical one, so a band or a ring is named nowhere rather than promised and refused.
+ */
+const AXES = {
+  line: { y: true, x: true },
+  stacked: { y: true, x: true },
+  stream: { y: true, x: true },
+  bar: { y: false, x: true },
+  columns: { y: true, x: false },
+  waterfall: { y: true, x: false },
+  cashflow: { y: true, x: false },
+  budget: { y: false, x: true },
+  swarm: { y: false, x: true },
+};
+
+export function axesFor(kind) {
+  return AXES[kind] || { y: false, x: false };
+}
+
+/**
+ * The strip along the bottom of a chart's frame that resizes it, read from a pointer event.
+ * One rule for the drag and for the zoom's own filter: a pan must not begin on the edge the
+ * resize begins on.
+ */
+const EDGE = 12;
+
+export function onEdge(event, element) {
+  const frame = element.getBoundingClientRect();
+  return event.clientY >= frame.bottom - EDGE
+    && event.clientX >= frame.left && event.clientX <= frame.right;
 }
 
 /** How tall a chart wants to be, before it is drawn. The charts may grow their frame. */
@@ -581,7 +642,9 @@ export function frame(svg, want) {
   if (!d3) throw new Error('the chart library did not load');
   const holder = svg.parentElement;
   const width = Math.max(320, Math.round(holder?.clientWidth || svg.clientWidth || 900));
-  if (want && holder) holder.style.height = `${Math.round(want(width))}px`;
+  // `want` is the height this chart needs for its width — unless the frame's edge was
+  // dragged, which is a height the person chose and the chart's guess must not undo.
+  if (want && holder && !holder.dataset.held) holder.style.height = `${Math.round(want(width))}px`;
   const height = Math.max(160, Math.round(holder?.clientHeight || svg.clientHeight || 420));
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('width', String(width));
@@ -669,12 +732,12 @@ export function nothing(root, colors, message = 'Nothing to draw.') {
 export function render(kind, svg, data, colors, hooks, state = {}) {
   state.hidden = state.hidden || new Set();
   if (kind === 'line' || kind === 'stacked' || kind === 'stream') return drawSeries(svg, data, colors, hooks, state);
-  if (kind === 'bar') return drawBar(svg, data, colors, hooks);
+  if (kind === 'bar') return drawBar(svg, data, colors, hooks, state);
   if (kind === 'columns') return drawColumns(svg, data, colors, hooks, state);
   if (kind === 'doughnut') return drawDoughnut(svg, data, colors, hooks, state);
   if (kind === 'treemap') return drawTreemap(svg, data, colors, hooks);
   if (kind === 'calendar') return drawCalendar(svg, data, colors, hooks);
-  if (kind === 'waterfall') return drawWaterfall(svg, data, colors, hooks);
+  if (kind === 'waterfall') return drawWaterfall(svg, data, colors, hooks, state);
   if (kind === 'multiples') return drawMultiples(svg, data, colors, hooks);
   if (kind === 'sankey') return drawSankey(svg, data, colors, hooks);
   throw new Error(`no chart for ${kind}`);
@@ -737,11 +800,11 @@ function drawSeries(svg, model, colors, hooks, state) {
   // One count for both: a domain made nice for ten ticks and labelled with eight leaves its
   // top unlabelled, and the highest value floating above the last gridline.
   const tickCount = Math.max(2, Math.floor((height - margin.top - margin.bottom) / 46));
-  const { scale: y, ticks: ticksY } = valueScale(d3, model.log, low, high, [height - margin.bottom, margin.top], tickCount);
+  const { scale: y, ticks: ticksY } = valueScale(d3, model.log, low, high, [height - margin.bottom, margin.top], tickCount, state.yDomain);
   margin.left = stream ? 16 : 12 + Math.max(...ticksY.map((value) => tick(value, unit).length)) * 6.6;
-  const x0 = d3.scaleLinear()
+  const x0 = withDomain(d3.scaleLinear()
     .domain(count > 1 ? [0, count - 1] : [-0.5, 0.5])
-    .range([margin.left, width - margin.right]);
+    .range([margin.left, width - margin.right]), state.xDomain);
   let x = x0;
 
   const grid = root.append('g');
@@ -802,11 +865,13 @@ function drawSeries(svg, model, colors, hooks, state) {
     }
     if (dots) for (const group of dots) group.attr('cx', (_, index) => x(index)).attr('cy', (value) => y(value));
 
-    // Period labels: as many as fit, never overlapping, always whole periods.
+    // Period labels: as many as fit, never overlapping, always whole periods. The edges of a
+    // widened-then-narrowed axis sit an epsilon off a whole period, and a label belongs to
+    // the period it is that close to rather than falling off it.
     axis.selectAll('*').remove();
     const [from, to] = x.domain();
-    const first = Math.max(0, Math.ceil(from));
-    const last = Math.min(count - 1, Math.floor(to));
+    const first = Math.max(0, Math.ceil(from - 1e-9));
+    const last = Math.min(count - 1, Math.floor(to + 1e-9));
     const widest = Math.max(...model.periods.map((period) => period.length)) * 6.6 + 14;
     const every = Math.max(1, Math.ceil((last - first + 1) / Math.max(1, Math.floor((width - margin.left - margin.right) / widest))));
     // The first and last labels are anchored to stay inside the plot, which moves them; a label
@@ -910,13 +975,13 @@ function drawSeries(svg, model, colors, hooks, state) {
       state.pending = setTimeout(() => hooks.pick(series.label), DOUBLE_CLICK);
     });
 
-  // Zoom along time only.
+  // Zoom along time only, and not from the edge the frame's resize begins on.
   const zoom = d3.zoom()
     .scaleExtent([1, most])
     .extent([[margin.left, 0], [width - margin.right, height]])
     .translateExtent([[margin.left, -Infinity], [width - margin.right, Infinity]])
     .clickDistance(4)
-    .filter((event) => most > 1 && event.type !== 'dblclick' && !event.button)
+    .filter((event) => most > 1 && event.type !== 'dblclick' && !event.button && !onEdge(event, svg))
     .on('zoom', (event) => {
       state.transform = event.transform;
       place(event.transform.rescaleX(x0));
@@ -945,6 +1010,12 @@ function drawSeries(svg, model, colors, hooks, state) {
       const centre = state.at !== null && state.at !== undefined ? x(state.at) : (margin.left + width - margin.right) / 2;
       root.transition().duration(180).call(zoom.scaleBy, factor, [centre, height / 2]);
     },
+    ySpan(factor) {
+      state.yDomain = retarget(y.domain(), factor);
+    },
+    xSpan(factor) {
+      state.xDomain = retarget(x0.domain(), factor);
+    },
     reset() {
       root.transition().duration(220).call(zoom.transform, d3.zoomIdentity);
     },
@@ -958,7 +1029,7 @@ function drawSeries(svg, model, colors, hooks, state) {
 // ---------------------------------------------------------------- a ranking
 
 /** One bar per account, largest first, labelled on the left and valued on the right. */
-function drawBar(svg, model, colors, hooks) {
+function drawBar(svg, model, colors, hooks, state) {
   const { d3, width, height, root } = frame(svg);
   // In a race every account has a place, `at`, part of the way between its ranks in two
   // periods, and only the first `slots` places are on screen.
@@ -971,8 +1042,9 @@ function drawBar(svg, model, colors, hooks) {
   const right = 16 + Math.max(...rows.map((row) => amountOf(row.value, unit).length)) * 6.6;
   const margin = { top: 6, bottom: 26 };
   const values = rows.map((row) => row.value);
+  // The value axis runs along x here, so it is the x keys that widen and narrow it.
   const { scale: x, ticks } = valueScale(d3, model.log, Math.min(0, ...values), Math.max(0, ...values),
-    [left, width - right], Math.max(2, Math.floor((width - left - right) / 90)));
+    [left, width - right], Math.max(2, Math.floor((width - left - right) / 90)), state.xDomain);
   const band = d3.scaleBand().domain(d3.range(race ? race.slots : rows.length))
     .range([margin.top, height - margin.bottom]).paddingInner(0.24).paddingOuter(0.12);
   const place = (row, index) => (race ? band(0) + row.at * band.step() : band(index));
@@ -1022,7 +1094,11 @@ function drawBar(svg, model, colors, hooks) {
     .attr('fill', colors.dim).attr('font-size', 11)
     .style('pointer-events', 'none')
     .text((row) => amountOf(row.value, unit));
-  return {};
+  return {
+    xSpan(factor) {
+      state.xDomain = retarget(x.domain(), factor);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- columns
@@ -1047,7 +1123,7 @@ function drawColumns(svg, model, colors, hooks, state) {
   const margin = { top: 12, right: 12, bottom: 28, left: 12 };
   const tickCount = Math.max(2, Math.floor((height - margin.top - margin.bottom) / 46));
   const { scale: y, ticks } = valueScale(d3, model.log, Math.min(0, ...values), Math.max(0, ...values),
-    [height - margin.bottom, margin.top], tickCount);
+    [height - margin.bottom, margin.top], tickCount, state.yDomain);
   margin.left = 12 + Math.max(...ticks.map((value) => tick(value, unit).length)) * 6.6;
   const x = d3.scaleBand().domain(model.periods.map((_, index) => index)).range([margin.left, width - margin.right]).paddingInner(0.2);
   const inner = d3.scaleBand().domain(visible.map((_, index) => index)).range([0, x.bandwidth()]).padding(0.08);
@@ -1085,7 +1161,11 @@ function drawColumns(svg, model, colors, hooks, state) {
     root.append('text').attr('x', x(at) + x.bandwidth() / 2).attr('y', height - margin.bottom + 18)
       .attr('text-anchor', 'middle').attr('fill', colors.dim).attr('font-size', 11).text(period);
   });
-  return {};
+  return {
+    ySpan(factor) {
+      state.yDomain = retarget(y.domain(), factor);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- shares
@@ -1345,7 +1425,7 @@ function drawCalendar(svg, data, colors, hooks) {
 // ---------------------------------------------------------------- income to net
 
 /** Income down to net, as a waterfall: each category a step down from what came in. */
-function drawWaterfall(svg, data, colors, hooks) {
+function drawWaterfall(svg, data, colors, hooks, state) {
   const { d3, width, height, root } = frame(svg);
   // As many steps as fit at a readable width; the smallest categories beyond that are one
   // "other (n)" step, which the table under the chart still lists one by one.
@@ -1369,8 +1449,8 @@ function drawWaterfall(svg, data, colors, hooks) {
     return { ...step, start, end };
   });
   const values = bars.flatMap((bar) => [bar.start, bar.end, 0]);
-  const y = d3.scaleLinear().domain([Math.min(...values), Math.max(...values)]).nice(5)
-    .range([height - margin.bottom, margin.top]);
+  const y = withDomain(d3.scaleLinear().domain([Math.min(...values), Math.max(...values)]).nice(5)
+    .range([height - margin.bottom, margin.top]), state.yDomain);
   const ticksY = y.ticks(5);
   margin.left = 12 + Math.max(...ticksY.map((value) => tick(value, data.unit).length)) * 6.6;
   const x = d3.scaleBand().domain(steps.map((step) => step.label))
@@ -1429,7 +1509,11 @@ function drawWaterfall(svg, data, colors, hooks) {
         .attr('stroke', colors.dim).attr('stroke-dasharray', '2 3');
     }
   });
-  return {};
+  return {
+    ySpan(factor) {
+      state.yDomain = retarget(y.domain(), factor);
+    },
+  };
 }
 
 // ---------------------------------------------------------------- sparklines
