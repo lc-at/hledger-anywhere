@@ -1198,13 +1198,29 @@ impl App {
             ));
         }
 
-        let files = self.files.borrow().clone();
         self.busy.set(true);
         self.waiting_note();
         self.title(&format!("running {command}"));
 
         let app = Rc::clone(self);
         spawn_local(async move {
+            // The folder is read again before the file list is taken, so an edit an
+            // outside editor made — an included journal among them — is what the
+            // engine gets. Without this the copies in memory were the engine's whole
+            // filesystem, forever.
+            let folder = app.writable.borrow().is_some();
+            if folder {
+                let report = app.host_refresh().await;
+                if let Some(error) = report.error {
+                    // A refused read is news; it does not stop the command, which
+                    // runs on the copies still in memory.
+                    app.say(&format!(
+                        "Could not read the folder again ({error}); running with the files \
+                         as they are."
+                    ));
+                }
+            }
+            let files = app.files.borrow().clone();
             let result = hledger::run(HledgerRequest::new(argv, files)).await;
             app.finish(result);
         });
